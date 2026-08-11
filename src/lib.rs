@@ -8,6 +8,7 @@
 //!
 //! - [`engine`]:存储引擎(单文件 `.nodb`,策略为"先现成后自研",通过 [`Storage`] trait 抽象)。
 //! - [`document`]:文档模型(`Document`)与 ObjectId 主键生成。
+//! - [`query`]:查询语义(filter 解析/匹配、sort、limit/skip)。
 //! - [`database`]:对外门面 [`Database`],提供 `open/insert/find` 等文档级 API。
 //! - [`cli`]:类 sqlite3 的命令行工具。
 //!
@@ -17,6 +18,7 @@ pub mod cli;
 pub mod database;
 pub mod document;
 pub mod engine;
+pub mod query;
 
 pub use database::{Database, DatabaseError};
 pub use document::{Document, DocumentError};

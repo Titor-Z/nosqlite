@@ -241,4 +241,43 @@ impl Storage for RedbEngine {
             .commit()
             .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))
     }
+
+    fn scan(&self, collection: &str) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 构造前缀 = 集合名(0x00),集合内所有文档的 key 均以该前缀开头
+        let prefix = build_doc_key(collection, "");
+
+        // 3. 读取事务 + 打开文档表
+        let read_tx = self
+            .db
+            .begin_read()
+            .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
+        let table = match read_tx.open_table(DOCS_TABLE) {
+            Ok(table) => table,
+            // 文档表尚不存在(从未插入过文档)→ 该集合为空
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(StorageError::Other(format!("打开文档表失败: {}", e))),
+        };
+
+        // 4. 从前缀处开始迭代,B+树按 key 有序,集合内 doc_id 即按序返回
+        let mut results = Vec::new();
+        let range = table
+            .range(prefix.as_slice()..)
+            .map_err(|e| StorageError::Other(format!("遍历文档表失败: {}", e)))?;
+        for entry in range {
+            let (key, value) = entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
+            let key_bytes = key.value();
+            // 不再是该集合前缀 → 该集合文档已遍历完毕
+            if !key_bytes.starts_with(&prefix) {
+                break;
+            }
+            // key = 前缀 + doc_id
+            let doc_id_bytes = &key_bytes[prefix.len()..];
+            let doc_id = String::from_utf8_lossy(doc_id_bytes).into_owned();
+            results.push((doc_id, value.value().to_vec()));
+        }
+        Ok(results)
+    }
 }

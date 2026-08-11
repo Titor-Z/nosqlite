@@ -93,4 +93,10 @@ pub trait Storage {
     /// ObjectId)。返回 [`StorageError::DuplicateKey`] 表示主键冲突。
     fn insert(&self, collection: &str, doc_id: &str, doc_bytes: &[u8])
         -> Result<(), StorageError>;
+
+    /// 扫描指定集合内的全部文档,返回 `(doc_id, doc_bytes)` 列表。
+    ///
+    /// 结果按 doc_id 有序(利用 B+树主键索引的顺序性)。M3 阶段不做索引下推,
+    /// 由上层(门面层)反序列化后做过滤/排序/分页。
+    fn scan(&self, collection: &str) -> Result<Vec<(String, Vec<u8>)>, StorageError>;
 }

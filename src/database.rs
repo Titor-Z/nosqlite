@@ -9,8 +9,11 @@
 
 use std::path::Path;
 
+use serde_json::{Map, Value};
+
 use crate::document::{Document, DocumentError};
 use crate::engine::{RedbEngine, Storage, StorageError};
+use crate::query::{Filter, FilterError, FindOptions, SortError};
 
 /// nosqlite 数据库门面。
 ///
@@ -30,6 +33,10 @@ pub enum DatabaseError {
     Storage(StorageError),
     /// 文档模型错误(见 [`DocumentError`])。
     Document(DocumentError),
+    /// 查询条件错误(见 [`FilterError`])。
+    Filter(FilterError),
+    /// 排序规格错误(见 [`SortError`])。
+    Sort(SortError),
 }
 
 impl std::fmt::Display for DatabaseError {
@@ -37,6 +44,8 @@ impl std::fmt::Display for DatabaseError {
         match self {
             DatabaseError::Storage(e) => write!(f, "{}", e),
             DatabaseError::Document(e) => write!(f, "{}", e),
+            DatabaseError::Filter(e) => write!(f, "{}", e),
+            DatabaseError::Sort(e) => write!(f, "{}", e),
         }
     }
 }
@@ -52,6 +61,18 @@ impl From<StorageError> for DatabaseError {
 impl From<DocumentError> for DatabaseError {
     fn from(e: DocumentError) -> Self {
         DatabaseError::Document(e)
+    }
+}
+
+impl From<FilterError> for DatabaseError {
+    fn from(e: FilterError) -> Self {
+        DatabaseError::Filter(e)
+    }
+}
+
+impl From<SortError> for DatabaseError {
+    fn from(e: SortError) -> Self {
+        DatabaseError::Sort(e)
     }
 }
 
@@ -93,6 +114,56 @@ impl Database {
     pub fn close(&self) -> Result<(), DatabaseError> {
         self.engine.close()?;
         Ok(())
+    }
+
+    /// 查询集合内满足 filter 的文档,返回其 JSON 对象列表。
+    ///
+    /// - `filter` 为空(null/省略)时匹配全部文档;
+    /// - 结果按 B+树主键顺序返回,不做排序与分页;
+    /// - 若要排序/分页,请使用 [`Database::find_with_options`]。
+    pub fn find(&self, collection: &str, filter: &Filter) -> Result<Vec<Map<String, Value>>, DatabaseError> {
+        self.find_with_options(collection, filter, &FindOptions::default())
+    }
+
+    /// 查询集合内满足 filter 的文档,支持排序、跳过与限制。
+    ///
+    /// 处理流水线:反序列化 → 过滤 → 排序 → skip → limit。
+    pub fn find_with_options(
+        &self,
+        collection: &str,
+        filter: &Filter,
+        options: &FindOptions,
+    ) -> Result<Vec<Map<String, Value>>, DatabaseError> {
+        // 1. 引擎扫描该集合全部文档(id + bytes)
+        let rows = self.engine.scan(collection)?;
+
+        // 2. 反序列化 + 过滤
+        let mut docs: Vec<Map<String, Value>> = Vec::new();
+        for (_doc_id, bytes) in rows {
+            let doc = Document::from_bytes(&bytes)?;
+            let map = doc.as_map().clone();
+            if filter.matches(&map) {
+                docs.push(map);
+            }
+        }
+
+        // 3. 排序
+        if let Some(sort) = &options.sort {
+            sort.sort(&mut docs);
+        }
+
+        // 4. skip
+        if options.skip > 0 {
+            let skip = options.skip.min(docs.len());
+            docs.drain(0..skip);
+        }
+
+        // 5. limit
+        if let Some(limit) = options.limit {
+            docs.truncate(limit);
+        }
+
+        Ok(docs)
     }
 
     /// 数据库文件路径。

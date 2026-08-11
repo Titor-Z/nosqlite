@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.08.12: M3 完成 —— find + filter 子集($eq/$gt/$in/$regex 等)+ sort/limit/skip,BSON 风格类型序,点号路径与逻辑组合。参见 [taolun #7](#7-20260812-m3-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M2 完成 —— 文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。参见 [taolun #4](#4-20260812-m2-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M1 完成 —— 项目骨架 + AGENTS.md + `.nodb` 文件创建/打开(魔数头 + 版本校验,拒绝非法后缀)。参见 [taolun #2](#2-20260812-m1-执行) / [项目进度-已完成](#已完成)。
 
@@ -66,6 +67,33 @@
 
 - M2 打 tag `2026.08.12.<commitID>` 发布。
 
+### 7. 2026.08.12 M3 设计
+
+- M2 打 tag `2026.08.12.1da8f95` 发布。
+- M3 范围:find + filter 子集 + sort/limit/skip。
+- 查询语法设计:仿 MongoDB 文档过滤。
+  - filter 顶层为 JSON 对象;每个字段的值若是普通 Value 则视为隐式 `$eq`;
+  - 值若是对象且键以 `$` 开头,则视为操作符对象,同一字段多个操作符按 AND 组合;
+  - 操作符子集:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex`;支持点号路径(如 `a.b.c`);
+  - 顶层支持 `$and/$or/$nor/$not` 逻辑组合;
+  - 类型序:MongoDB BSON 风格,缺失 < null < bool < number < string < array < object;
+  - number 内部按数值比较(int/float 可互比);`$regex` 用 Rust `regex` crate 匹配字符串字段。
+- sort/limit/skip:sort 为 `{"age": 1, "name": -1}` 形式的字段方向映射(1 升序 / -1 降序),支持多字段与点号路径;limit/skip 应用于排序后的结果。
+- 存储侧:`Storage` trait 扩展 `scan(collection)` 返回集合内所有文档(id + bytes);find 在门面层反序列化 → 过滤 → 排序 → 分页。全量扫描对 MVP 规模足够,M3 不做索引下推。
+
+### 8. 2026.08.12 M3 执行
+
+- 新增 `query` 模块:`compare`(BSON 风格类型序比较:缺失 < null < bool < number < string < array < object,number 按数值互比)、`filter`(操作符子集 `$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex`,点号路径,顶层 `$and/$or/$nor/$not`,普通值视为隐式 `$eq`,同字段多操作符按 AND 组合)、`options`(`SortSpec` 多字段排序 `{"age":1,"name":-1}` + `FindOptions` skip/limit)。
+- `Storage` trait 扩展 `scan(collection)`,redb 实现按 key 前缀(`集合名(0x00)`)遍历,返回 `(doc_id, doc_bytes)`;文档表不存在(空库)时返回空列表而非报错。
+- `Database::find` / `find_with_options` 端到端流水线:扫描 → 反序列化 → 过滤 → 排序 → skip → limit。
+- CLI 新增 `find <file> <collection> [filter] [--sort <json>] [--skip <n>] [--limit <n>]` 命令,全中文输出。
+- 按功能模块拆分测试:`tests/query.rs`(30 例)、`tests/find.rs`(13 例),连同现有测试共 81 例全绿。
+- CLI 冒烟验证:空 filter 全量、`$gte`、`$regex`、sort+limit 降序取前 2 均正确。
+
+### 9. 2026.08.12 M3 发布
+
+- M3 打 tag `2026.08.12.<commitID>` 发布。
+
 ## Agents
 
 ### 规范
@@ -80,15 +108,15 @@
 ### 项目进度
 
 #### 计划中
-- M3:find + filter 子集($eq/$gt/$in/$regex)+ sort/limit/skip。
 - M4:update/delete,CRUD 闭环。
 - M5:CLI 全命令 + 单文件复制粘贴验证 + 测试补全。
 - 后续:Server 模式(协议让 TS/Go 可访问)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- 无(当前 M2 执行中)。
+- 无(当前 M3 执行中)。
 
 #### 已完成
+- M3:find + filter 子集($eq/$gt/$in/$regex)+ sort/limit/skip。
 - M2:文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。
 - M1:项目骨架 + AGENTS.md + `.nodb` 创建/打开(魔数头 + 版本校验,拒绝非法后缀)。
 
