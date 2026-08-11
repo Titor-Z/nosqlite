@@ -280,4 +280,63 @@ impl Storage for RedbEngine {
         }
         Ok(results)
     }
+
+    fn update(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        doc_bytes: &[u8],
+    ) -> Result<bool, StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 构造 key = 集合名(0x00)doc_id
+        let key = build_doc_key(collection, doc_id);
+
+        // 3. 写事务:覆盖写入(redb insert 同 key 即覆盖,返回旧值)
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        let updated = {
+            let mut table = write_tx
+                .open_table(DOCS_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            let old = table
+                .insert(&key[..], doc_bytes)
+                .map_err(|e| StorageError::Other(format!("更新文档失败: {}", e)))?;
+            old.is_some()
+        };
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))?;
+        Ok(updated)
+    }
+
+    fn delete(&self, collection: &str, doc_id: &str) -> Result<bool, StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 构造 key
+        let key = build_doc_key(collection, doc_id);
+
+        // 3. 写事务:删除该 key(返回是否实际删除)
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        let deleted = {
+            let mut table = write_tx
+                .open_table(DOCS_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            let removed = table
+                .remove(&key[..])
+                .map_err(|e| StorageError::Other(format!("删除文档失败: {}", e)))?;
+            removed.is_some()
+        };
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))?;
+        Ok(deleted)
+    }
 }

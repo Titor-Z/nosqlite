@@ -99,4 +99,17 @@ pub trait Storage {
     /// 结果按 doc_id 有序(利用 B+树主键索引的顺序性)。M3 阶段不做索引下推,
     /// 由上层(门面层)反序列化后做过滤/排序/分页。
     fn scan(&self, collection: &str) -> Result<Vec<(String, Vec<u8>)>, StorageError>;
+
+    /// 覆盖更新指定主键的文档(主键不变,仅替换内容)。
+    ///
+    /// 返回是否实际更新(主键不存在则返回 `false`,不报错)。
+    fn update(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        doc_bytes: &[u8],
+    ) -> Result<bool, StorageError>;
+
+    /// 删除指定主键的文档,返回是否实际删除。
+    fn delete(&self, collection: &str, doc_id: &str) -> Result<bool, StorageError>;
 }

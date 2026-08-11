@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::document::{Document, DocumentError};
 use crate::engine::{RedbEngine, Storage, StorageError};
-use crate::query::{Filter, FilterError, FindOptions, SortError};
+use crate::query::{Filter, FilterError, FindOptions, SortError, Update, UpdateError};
 
 /// nosqlite 数据库门面。
 ///
@@ -37,6 +37,8 @@ pub enum DatabaseError {
     Filter(FilterError),
     /// 排序规格错误(见 [`SortError`])。
     Sort(SortError),
+    /// 更新操作错误(见 [`UpdateError`])。
+    Update(UpdateError),
 }
 
 impl std::fmt::Display for DatabaseError {
@@ -46,11 +48,24 @@ impl std::fmt::Display for DatabaseError {
             DatabaseError::Document(e) => write!(f, "{}", e),
             DatabaseError::Filter(e) => write!(f, "{}", e),
             DatabaseError::Sort(e) => write!(f, "{}", e),
+            DatabaseError::Update(e) => write!(f, "{}", e),
         }
     }
 }
 
 impl std::error::Error for DatabaseError {}
+
+impl From<UpdateError> for DatabaseError {
+    fn from(e: UpdateError) -> Self {
+        DatabaseError::Update(e)
+    }
+}
+
+impl From<serde_json::Error> for DatabaseError {
+    fn from(e: serde_json::Error) -> Self {
+        DatabaseError::Document(DocumentError::Json(e))
+    }
+}
 
 impl From<StorageError> for DatabaseError {
     fn from(e: StorageError) -> Self {
@@ -164,6 +179,60 @@ impl Database {
         }
 
         Ok(docs)
+    }
+
+    /// 更新集合内所有满足 filter 的文档,返回修改条数。
+    ///
+    /// - 更新操作符当前支持 `$set`(字段点号路径赋值,嵌套自动创建/覆盖);
+    /// - `_id` 主键不可被修改(修改报 [`DatabaseError::Update`]);
+    /// - 流水线:扫描 → 过滤 → 应用更新 → 逐个写回(主键不变)。
+    pub fn update(
+        &self,
+        collection: &str,
+        filter: &Filter,
+        update: &Update,
+    ) -> Result<usize, DatabaseError> {
+        // 1. 引擎扫描该集合全部文档
+        let rows = self.engine.scan(collection)?;
+
+        // 2. 过滤 + 应用更新 + 写回
+        let mut modified = 0usize;
+        for (doc_id, bytes) in rows {
+            // 反序列化
+            let doc = Document::from_bytes(&bytes)?;
+            let map = doc.as_map();
+            // 判断是否满足 filter
+            if !filter.matches(map) {
+                continue;
+            }
+            // 应用更新(可能失败,如尝试修改 _id)
+            let mut map_mut = map.clone();
+            update.apply(&mut map_mut)?;
+            // 更新后的文档序列化写回(主键不变)
+            let new_bytes = serde_json::to_vec(&map_mut)?;
+            let _ = self.engine.update(collection, &doc_id, &new_bytes)?;
+            modified += 1;
+        }
+        Ok(modified)
+    }
+
+    /// 删除集合内所有满足 filter 的文档,返回删除条数。
+    ///
+    /// 流水线:扫描 → 过滤 → 逐个删除。
+    pub fn delete(&self, collection: &str, filter: &Filter) -> Result<usize, DatabaseError> {
+        // 1. 引擎扫描该集合全部文档
+        let rows = self.engine.scan(collection)?;
+
+        // 2. 过滤 + 删除
+        let mut deleted = 0usize;
+        for (doc_id, bytes) in rows {
+            let doc = Document::from_bytes(&bytes)?;
+            if filter.matches(doc.as_map()) {
+                let _ = self.engine.delete(collection, &doc_id)?;
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
     }
 
     /// 数据库文件路径。

@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.08.12: M4 完成 —— update/delete,CRUD 闭环。`$set` 更新操作符(点号路径赋值,嵌套自动创建,`_id` 主键不可改),`Storage` trait 扩展 `update/delete`,CLI 新增 `update`/`delete` 命令。参见 [taolun #10](#10-20260812-m4-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M3 完成 —— find + filter 子集($eq/$gt/$in/$regex 等)+ sort/limit/skip,BSON 风格类型序,点号路径与逻辑组合。参见 [taolun #7](#7-20260812-m3-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M2 完成 —— 文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。参见 [taolun #4](#4-20260812-m2-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M1 完成 —— 项目骨架 + AGENTS.md + `.nodb` 文件创建/打开(魔数头 + 版本校验,拒绝非法后缀)。参见 [taolun #2](#2-20260812-m1-执行) / [项目进度-已完成](#已完成)。
@@ -94,6 +95,32 @@
 
 - M3 打 tag `2026.08.12.<commitID>` 发布。
 
+### 10. 2026.08.12 M4 设计
+
+- M3 打 tag `2026.08.12.4efebdc` 发布。
+- M4 范围:update/delete,CRUD 闭环。
+- 更新语义设计(仿 MongoDB):
+  - filter 匹配与 M3 find 完全一致(操作符子集 + 点号路径 + 逻辑组合);
+  - `update(collection, filter, update)` 对所有匹配文档执行更新,返回修改条数;
+  - 更新操作符先做 `$set`(字段点号路径赋值,嵌套自动创建/覆盖);
+  - `delete(collection, filter)` 删除所有匹配文档,返回删除条数;
+  - 更新后 `_id` 保持不变(只改内容,不动主键)。
+- 存储侧:`Storage` trait 扩展 `update(collection, doc_id, doc_bytes)` 与 `delete(collection, doc_id)`:
+  - redb `update` 直接覆盖 key 对应 value,主键不变;
+  - redb `delete` 删除 key 对应条目;
+  - 二者均在写事务中完成,返回受影响条数。
+- 门面层流水线:扫描 → 过滤 → 对匹配文档执行更新/删除 → 逐个写回/移除。
+- 说明:由于存储以 doc_id 为主键索引,update 仅支持"替换字段"而非"改主键";M4 不做索引下推。
+
+### 11. 2026.08.12 M4 执行
+
+- 新增 `query::update` 模块:`Update`(仅 `$set`,点号路径赋值,中间对象自动创建/覆盖,`_id` 主键不可修改报错,未知操作符报错)与 `UpdateError`。
+- `Storage` trait 扩展 `update(collection, doc_id, doc_bytes)`(覆盖写,主键不变,返回是否实际更新)与 `delete(collection, doc_id)`(删除 key,返回是否实际删除);redb 实现均在写事务中完成,复用 `insert` 覆盖语义与 `remove`。
+- `Database::update(collection, filter, update)` 与 `Database::delete(collection, filter)`:扫描 → 过滤 → 应用更新/删除 → 逐个写回/移除,返回修改/删除条数;`DatabaseError` 新增 `Update(UpdateError)` 变体。
+- CLI 新增 `update <file> <collection> <filter> <update>` 与 `delete <file> <collection> <filter>` 命令,全中文输出;帮助信息同步更新。
+- 按功能模块拆分测试:`tests/update.rs`(9 例)、`tests/delete.rs`(9 例),连同现有测试共 99 例全绿;`cargo build/clippy --all-targets` 零警告。
+- CLI 冒烟验证:`$set` 更新 2 条、`delete` 条件删除、复制粘贴 `.nodb` 后数据仍完整(单文件可迁移成立)。
+
 ## Agents
 
 ### 规范
@@ -108,14 +135,14 @@
 ### 项目进度
 
 #### 计划中
-- M4:update/delete,CRUD 闭环。
 - M5:CLI 全命令 + 单文件复制粘贴验证 + 测试补全。
 - 后续:Server 模式(协议让 TS/Go 可访问)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- 无(当前 M3 执行中)。
+- 无(当前 M4 已完成,待 M5)。
 
 #### 已完成
+- M4:update/delete,CRUD 闭环(`$set` 更新操作符、`Storage` trait 扩展 update/delete、CLI update/delete)。
 - M3:find + filter 子集($eq/$gt/$in/$regex)+ sort/limit/skip。
 - M2:文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。
 - M1:项目骨架 + AGENTS.md + `.nodb` 创建/打开(魔数头 + 版本校验,拒绝非法后缀)。

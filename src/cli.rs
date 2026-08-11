@@ -5,9 +5,9 @@
 //! - `nosqlite open   <file.nodb>`:打开并校验已有数据库;
 //! - `nosqlite insert <file.nodb> <collection> <json>`:向集合插入一条文档;
 //! - `nosqlite find   <file.nodb> <collection> [filter] [--sort <json>] [--skip <n>] [--limit <n>]`:
-//!   查询集合内文档。
-//!
-//! 后续里程碑会扩展 update/delete 等完整命令。
+//!   查询集合内文档;
+//! - `nosqlite update <file.nodb> <collection> <filter> <update>`:更新匹配文档;
+//! - `nosqlite delete <file.nodb> <collection> <filter>`:删除匹配文档。
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -17,7 +17,7 @@ use serde_json::Value;
 use crate::database::Database;
 use crate::document::Document;
 use crate::engine::{RedbEngine, Storage};
-use crate::query::{Filter, FindOptions, SortSpec};
+use crate::query::{Filter, FindOptions, SortSpec, Update};
 
 /// 命令行子命令。
 enum Command {
@@ -42,6 +42,10 @@ enum Command {
         /// 限制条数。
         limit: Option<usize>,
     },
+    /// 更新集合内满足 filter 的文档。
+    Update(String, String, String, String),
+    /// 删除集合内满足 filter 的文档。
+    Delete(String, String, String),
     /// 显示帮助信息。
     Help,
 }
@@ -72,6 +76,19 @@ fn parse(args: &[String]) -> Result<Command, String> {
             path.clone(),
             collection.clone(),
             json.clone(),
+        )),
+        // update <file> <collection> <filter> <update>
+        [sub, path, collection, filter, update] if sub == "update" => Ok(Command::Update(
+            path.clone(),
+            collection.clone(),
+            filter.clone(),
+            update.clone(),
+        )),
+        // delete <file> <collection> <filter>
+        [sub, path, collection, filter] if sub == "delete" => Ok(Command::Delete(
+            path.clone(),
+            collection.clone(),
+            filter.clone(),
         )),
         // find <file> <collection> [filter] [--sort json] [--skip n] [--limit n]
         [sub, path, collection, rest @ ..] if sub == "find" => {
@@ -160,6 +177,10 @@ fn execute(cmd: Command) -> ExitCode {
             skip,
             limit,
         } => run_find(&path, &collection, &filter, sort.as_deref(), skip, limit),
+        Command::Update(path, collection, filter, update) => {
+            run_update(&path, &collection, &filter, &update)
+        }
+        Command::Delete(path, collection, filter) => run_delete(&path, &collection, &filter),
         Command::Help => {
             print_help();
             ExitCode::SUCCESS
@@ -287,6 +308,88 @@ fn parse_sort(json: &str) -> Result<SortSpec, String> {
     SortSpec::from_value(&value).map_err(|e| e.to_string())
 }
 
+/// 执行 update 子命令:打开数据库 → 解析 filter/update → 更新 → 打印结果。
+fn run_update(path: &str, collection: &str, filter_json: &str, update_json: &str) -> ExitCode {
+    // 1. 打开数据库
+    let db = match Database::open(Path::new(path)) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("打开数据库失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 2. 解析 filter
+    let filter = match parse_filter(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("filter 错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 3. 解析 update
+    let update_value: Value = match serde_json::from_str(update_json) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("update JSON 解析失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let update = match Update::from_value(&update_value) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("update 错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 4. 执行更新
+    match db.update(collection, &filter, &update) {
+        Ok(n) => {
+            println!("更新成功: 集合 `{}` 共修改 {} 条文档", collection, n);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("更新失败: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// 执行 delete 子命令:打开数据库 → 解析 filter → 删除 → 打印结果。
+fn run_delete(path: &str, collection: &str, filter_json: &str) -> ExitCode {
+    // 1. 打开数据库
+    let db = match Database::open(Path::new(path)) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("打开数据库失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 2. 解析 filter
+    let filter = match parse_filter(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("filter 错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 3. 执行删除
+    match db.delete(collection, &filter) {
+        Ok(n) => {
+            println!("删除成功: 集合 `{}` 共删除 {} 条文档", collection, n);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("删除失败: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// 打印帮助信息。
 fn print_help() {
     println!("nosqlite —— 像 SQLite 一样小巧的单文件 NoSQL 数据库");
@@ -297,6 +400,8 @@ fn print_help() {
     println!("  nosqlite insert <file.nodb> <collection> <json>   向集合插入一条文档");
     println!("  nosqlite find   <file.nodb> <collection> [filter] 查询文档");
     println!("                 [--sort <json>] [--skip <n>] [--limit <n>]");
+    println!("  nosqlite update <file.nodb> <collection> <filter> <update>  更新文档");
+    println!("  nosqlite delete <file.nodb> <collection> <filter>  删除文档");
     println!("  nosqlite help                                     显示本帮助");
     println!();
     println!("示例:");
@@ -304,6 +409,8 @@ fn print_help() {
     println!("  nosqlite find   data.nodb users '{{\"age\": {{\"$gte\": 18}}}}'");
     println!("  nosqlite find   data.nodb users '{{\"name\": {{\"$regex\": \"^张\"}}}}'");
     println!("  nosqlite find   data.nodb users null --sort '{{\"age\": -1}}' --limit 10");
+    println!("  nosqlite update data.nodb users '{{\"age\": {{\"$gte\": 18}}}}' '{{\"$set\": {{\"vip\": true}}}}'");
+    println!("  nosqlite delete data.nodb users '{{\"age\": {{\"$lt\": 18}}}}'");
     println!();
     println!("说明:");
     println!("  - 文件后缀必须为 .nodb,不支持其他后缀或无后缀");
@@ -311,4 +418,5 @@ fn print_help() {
     println!("  - 文档顶层必须是 JSON 对象;_id 缺省时自动生成");
     println!("  - filter 操作符:$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex");
     println!("  - 顶层逻辑:$and/$or/$nor/$not;字段支持点号路径(a.b.c)");
+    println!("  - update 操作符:$set(点号路径赋值,嵌套自动创建;主键 _id 不可修改)");
 }
