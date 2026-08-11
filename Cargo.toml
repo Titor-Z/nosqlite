@@ -1,0 +1,11 @@
+[package]
+name = "nosqlite"
+version = "0.1.0"
+edition = "2024"
+description = "一个像 SQLite 一样小巧的单文件 NoSQL 数据库(.nodb)"
+
+[dependencies]
+redb = "3"
+
+[dev-dependencies]
+redb = "3"
