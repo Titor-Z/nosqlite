@@ -29,6 +29,37 @@ const KEY_MAGIC: &str = "magic";
 /// 元数据表内版本键名。
 const KEY_VERSION: &str = "version";
 
+/// 文档表:存放所有集合的文档。
+///
+/// key = `集合名(0x00)doc_id` 字节拼接,value = 文档 JSON bytes。
+/// redb B+树天然按 key 有序,集合内 doc_id 有序即为主键索引。
+const DOCS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("nosqlite_docs");
+/// 集合名与 doc_id 的分隔符(集合名不允许包含该字节)。
+const KEY_SEPARATOR: u8 = 0x00;
+
+/// 校验集合名:非空,且不包含分隔符 `\0`。
+fn validate_collection(collection: &str) -> Result<(), StorageError> {
+    if collection.is_empty() {
+        return Err(StorageError::InvalidCollection("集合名不能为空".to_string()));
+    }
+    if collection.as_bytes().contains(&KEY_SEPARATOR) {
+        return Err(StorageError::InvalidCollection(format!(
+            "集合名不能包含分隔符(\\0): {}",
+            collection
+        )));
+    }
+    Ok(())
+}
+
+/// 构造文档表 key:`集合名(0x00)doc_id`。
+fn build_doc_key(collection: &str, doc_id: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(collection.len() + 1 + doc_id.len());
+    key.extend_from_slice(collection.as_bytes());
+    key.push(KEY_SEPARATOR);
+    key.extend_from_slice(doc_id.as_bytes());
+    key
+}
+
 /// redb 存储引擎。
 #[derive(Debug)]
 pub struct RedbEngine {
@@ -172,5 +203,42 @@ impl Storage for RedbEngine {
     fn close(&self) -> Result<(), StorageError> {
         // redb 在 Drop 时会自动落盘并释放资源,此处保持接口完整
         Ok(())
+    }
+
+    fn insert(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        doc_bytes: &[u8],
+    ) -> Result<(), StorageError> {
+        // 1. 校验集合名(非空、不含分隔符)
+        validate_collection(collection)?;
+
+        // 2. 构造 key = 集合名(0x00)doc_id
+        let key = build_doc_key(collection, doc_id);
+
+        // 3. 写入事务:打开文档表并插入;若主键已存在则返回冲突
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        {
+            let mut table = write_tx
+                .open_table(DOCS_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            let existing = table
+                .insert(&key[..], doc_bytes)
+                .map_err(|e| StorageError::Other(format!("写入文档失败: {}", e)))?;
+            // redb 的 insert 若 key 已存在会返回旧值,借此检测主键冲突
+            if existing.is_some() {
+                return Err(StorageError::DuplicateKey {
+                    collection: collection.to_string(),
+                    id: doc_id.to_string(),
+                });
+            }
+        }
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))
     }
 }

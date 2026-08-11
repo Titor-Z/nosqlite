@@ -24,6 +24,10 @@ pub enum StorageError {
         /// 当前引擎支持的版本号。
         expected: u32,
     },
+    /// 集合名非法(为空或包含分隔符 `\0`)。
+    InvalidCollection(String),
+    /// 主键冲突:集合中已存在相同 `_id`。
+    DuplicateKey { collection: String, id: String },
     /// 其他未知错误。
     Other(String),
 }
@@ -49,6 +53,12 @@ impl fmt::Display for StorageError {
                     )
                 }
             }
+            StorageError::InvalidCollection(msg) => write!(f, "{}", msg),
+            StorageError::DuplicateKey { collection, id } => write!(
+                f,
+                "主键冲突:集合 `{}` 中已存在 _id = `{}`",
+                collection, id
+            ),
             StorageError::Other(msg) => write!(f, "{}", msg),
         }
     }
@@ -76,4 +86,11 @@ pub trait Storage {
         Self: Sized;
     /// 关闭数据库,释放底层资源。
     fn close(&self) -> Result<(), StorageError>;
+
+    /// 向指定集合插入一条文档。
+    ///
+    /// 文档以序列化后的字节形式传入,主键 `doc_id` 由调用方决定(可为自动生成的
+    /// ObjectId)。返回 [`StorageError::DuplicateKey`] 表示主键冲突。
+    fn insert(&self, collection: &str, doc_id: &str, doc_bytes: &[u8])
+        -> Result<(), StorageError>;
 }

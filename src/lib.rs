@@ -7,11 +7,16 @@
 //! # 模块结构
 //!
 //! - [`engine`]:存储引擎(单文件 `.nodb`,策略为"先现成后自研",通过 [`Storage`] trait 抽象)。
+//! - [`document`]:文档模型(`Document`)与 ObjectId 主键生成。
+//! - [`database`]:对外门面 [`Database`],提供 `open/insert/find` 等文档级 API。
 //! - [`cli`]:类 sqlite3 的命令行工具。
-//!
-//! 后续里程碑将新增 `document`(文档模型)与 `query`(查询语义)模块。
 //!
 //! [`Storage`]: engine::Storage
 
 pub mod cli;
+pub mod database;
+pub mod document;
 pub mod engine;
+
+pub use database::{Database, DatabaseError};
+pub use document::{Document, DocumentError};

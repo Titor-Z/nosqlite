@@ -6,7 +6,8 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
-- 2026.08.12: M1 完成 —— 项目骨架 + AGENTS.md + `.nodb` 文件创建/打开(魔数头 + 版本校验,拒绝非法后缀)。参见 [taolun #2](##taolun) / [项目进度-已完成](#已完成)。
+- 2026.08.12: M2 完成 —— 文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。参见 [taolun #4](#4-20260812-m2-设计) / [项目进度-已完成](#已完成)。
+- 2026.08.12: M1 完成 —— 项目骨架 + AGENTS.md + `.nodb` 文件创建/打开(魔数头 + 版本校验,拒绝非法后缀)。参见 [taolun #2](#2-20260812-m1-执行) / [项目进度-已完成](#已完成)。
 
 ## taolun
 
@@ -38,6 +39,33 @@
 - 版本号约定 `YYYY.MM.DD.xxxx`,`xxxx` 为打 git tag 前的 commitID,便于溯源。
 - 本里程碑 M1 先由当前 commit 打 tag 发布,后续每个里程碑同样处理。
 
+### 4. 2026.08.12 M2 设计
+
+- M1 打 tag `2026.08.12.df632a5` 发布。
+- M2 范围:文档模型 + insert + 主键索引。
+- 文档模型设计:
+  - 文档顶层为 JSON 对象,用 `serde_json::Map<String, Value>` 包装成 `Document`(支持嵌套任意 Value)。
+  - 主键 `_id`:用户可显式提供;未提供时自动生成 12 字节 ObjectId 风格 ID(4 字节时间戳 + 5 字节随机 + 3 字节计数器,hex 编码 24 字符),与 MongoDB 对齐。
+  - 序列化:文档 JSON bytes 作为 value。
+- 存储布局:单表 `nosqlite_docs`,key = `集合名(0x00)doc_id` 字节拼接,value = 文档 JSON bytes。redb B+树天然按 key 有序,集合内 doc_id 有序即主键索引。
+- 重复 `_id` 插入 → 报"主键冲突"错误。
+- 文件格式版本保持 v1:旧 M1 空库可被 M2 直接打开使用(写事务中自动建 docs 表),无需升降级。
+
+### 5. 2026.08.12 M2 执行
+
+- 新增 `document` 模块:`Document`(顶层 JSON 对象,支持嵌套任意 Value,`from_json/to_bytes/ensure_id` 等)+ `ObjectId` 生成器(12 字节 = 4 字节时间戳 + 5 字节伪随机 + 3 字节计数器,hex 编码 24 字符,与 MongoDB 对齐;伪随机种子 = 启动纳秒 ^ PID)。
+- 新增 `database` 门面:`Database::create/open/insert/close`,`insert` 自动生成或沿用 `_id` 并回填,非字符串 `_id` 报 `IdNotString`。
+- `Storage` trait 扩展 `insert(collection, doc_id, doc_bytes)`,redb 实现采用单表 `nosqlite_docs`,key = `集合名(0x00)doc_id` 字节拼接(集合名校验:非空、不含 `\0`),value = 文档 JSON bytes;redb B+树按 key 有序,集合内 doc_id 有序即主键索引。
+- 主键冲突检测:利用 redb `insert` 返回旧值判断重复,报 `DuplicateKey` 错误。
+- CLI 新增 `insert <file> <collection> <json>` 命令,全中文输出。
+- 文件格式版本保持 v1:旧 M1 空库可直接打开使用(写事务自动建 docs 表),无需升降级。
+- 按功能模块拆分测试:`tests/document.rs`(10 例)、`tests/insert.rs`(6 例),连同 `tests/engine.rs`(9 例)与 ObjectId 单测(3 例)共 28 例全绿。
+- CLI 冒烟验证:自动/显式 ID、重复主键拒绝、非对象顶层拒绝、复制粘贴 `.nodb` 后数据仍可打开。
+
+### 6. 2026.08.12 M2 发布
+
+- M2 打 tag `2026.08.12.<commitID>` 发布。
+
 ## Agents
 
 ### 规范
@@ -52,16 +80,16 @@
 ### 项目进度
 
 #### 计划中
-- M2:文档模型 + insert + 主键索引。
 - M3:find + filter 子集($eq/$gt/$in/$regex)+ sort/limit/skip。
 - M4:update/delete,CRUD 闭环。
 - M5:CLI 全命令 + 单文件复制粘贴验证 + 测试补全。
 - 后续:Server 模式(协议让 TS/Go 可访问)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- 无(当前 M1 执行中)。
+- 无(当前 M2 执行中)。
 
 #### 已完成
+- M2:文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。
 - M1:项目骨架 + AGENTS.md + `.nodb` 创建/打开(魔数头 + 版本校验,拒绝非法后缀)。
 
 ### 开发流程
