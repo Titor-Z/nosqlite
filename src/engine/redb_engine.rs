@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use super::storage::{Storage, StorageError};
 
@@ -338,5 +338,93 @@ impl Storage for RedbEngine {
             .commit()
             .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))?;
         Ok(deleted)
+    }
+
+    fn list_collections(&self) -> Result<Vec<String>, StorageError> {
+        // 读取事务 + 打开文档表
+        let read_tx = self
+            .db
+            .begin_read()
+            .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
+        let table = match read_tx.open_table(DOCS_TABLE) {
+            Ok(table) => table,
+            // 文档表尚不存在 → 空库
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(StorageError::Other(format!("打开文档表失败: {}", e))),
+        };
+
+        // 遍历全部 key,按 `集合名(0x00)` 前缀提取集合名并去重(B+树按 key 有序,
+        // 相同集合的 key 相邻,因此只需与上一个集合名比较即可去重)。
+        let mut collections: Vec<String> = Vec::new();
+        let range = table
+            .iter()
+            .map_err(|e| StorageError::Other(format!("遍历文档表失败: {}", e)))?;
+        for entry in range {
+            let (key, _value) = entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
+            let key_bytes = key.value();
+            // 找到分隔符 0x00,其前部分即为集合名
+            let sep_pos = match key_bytes.iter().position(|b| *b == KEY_SEPARATOR) {
+                Some(p) => p,
+                // 理论上不会发生:key 始终由 build_doc_key 构造,必含分隔符
+                None => continue,
+            };
+            let name = String::from_utf8_lossy(&key_bytes[..sep_pos]).into_owned();
+            // 集合名不得为空(防御性跳过)
+            if name.is_empty() {
+                continue;
+            }
+            // 去重:与上一个集合名不同才追加
+            if collections.last() != Some(&name) {
+                collections.push(name);
+            }
+        }
+        Ok(collections)
+    }
+
+    fn drop_collection(&self, collection: &str) -> Result<usize, StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 构造前缀
+        let prefix = build_doc_key(collection, "");
+
+        // 3. 写事务:遍历该前缀并逐个删除
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        let mut dropped = 0usize;
+        {
+            let mut table = write_tx
+                .open_table(DOCS_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            // 收集待删除的 key(避免在迭代中直接修改表)
+            let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+            let range = table
+                .range(prefix.as_slice()..)
+                .map_err(|e| StorageError::Other(format!("遍历文档表失败: {}", e)))?;
+            for entry in range {
+                let (key, _value) =
+                    entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
+                let key_bytes = key.value();
+                if !key_bytes.starts_with(&prefix) {
+                    break;
+                }
+                keys_to_delete.push(key_bytes.to_vec());
+            }
+            // 逐个删除
+            for key in &keys_to_delete {
+                let removed = table
+                    .remove(key.as_slice())
+                    .map_err(|e| StorageError::Other(format!("删除文档失败: {}", e)))?;
+                if removed.is_some() {
+                    dropped += 1;
+                }
+            }
+        }
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))?;
+        Ok(dropped)
     }
 }

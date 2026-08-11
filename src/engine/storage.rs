@@ -112,4 +112,15 @@ pub trait Storage {
 
     /// 删除指定主键的文档,返回是否实际删除。
     fn delete(&self, collection: &str, doc_id: &str) -> Result<bool, StorageError>;
+
+    /// 列出数据库内全部集合名(去重,按集合名有序)。
+    ///
+    /// 利用 key = `集合名(0x00)doc_id` 的有序性,遍历时按分隔符提取集合名。
+    /// 空库(文档表不存在)返回空列表,不报错。
+    fn list_collections(&self) -> Result<Vec<String>, StorageError>;
+
+    /// 删除整个集合及其全部文档(不可恢复),返回删除的文档条数。
+    ///
+    /// 集合不存在时返回 `0`,不报错。
+    fn drop_collection(&self, collection: &str) -> Result<usize, StorageError>;
 }

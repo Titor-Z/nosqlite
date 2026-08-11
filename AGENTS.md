@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.08.12: M5 完成 —— CLI 全命令(count/collections/drop)+ 单文件复制粘贴验证(tests/migration.rs 自动化回归)+ 测试补全(tests/manage.rs,112 例全绿)。参见 [taolun #13](#13-20260812-m5-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M4 完成 —— update/delete,CRUD 闭环。`$set` 更新操作符(点号路径赋值,嵌套自动创建,`_id` 主键不可改),`Storage` trait 扩展 `update/delete`,CLI 新增 `update`/`delete` 命令。参见 [taolun #10](#10-20260812-m4-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M3 完成 —— find + filter 子集($eq/$gt/$in/$regex 等)+ sort/limit/skip,BSON 风格类型序,点号路径与逻辑组合。参见 [taolun #7](#7-20260812-m3-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M2 完成 —— 文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。参见 [taolun #4](#4-20260812-m2-设计) / [项目进度-已完成](#已完成)。
@@ -121,6 +122,36 @@
 - 按功能模块拆分测试:`tests/update.rs`(9 例)、`tests/delete.rs`(9 例),连同现有测试共 99 例全绿;`cargo build/clippy --all-targets` 零警告。
 - CLI 冒烟验证:`$set` 更新 2 条、`delete` 条件删除、复制粘贴 `.nodb` 后数据仍完整(单文件可迁移成立)。
 
+### 12. 2026.08.12 M4 发布
+
+- M4 打 tag `2026.08.12.663e4c9` 发布。
+
+### 13. 2026.08.12 M5 设计
+
+- M4 打 tag `2026.08.12.663e4c9` 发布。
+- M5 范围:CLI 全命令 + 单文件复制粘贴验证 + 测试补全。
+- CLI 命令补全(对齐 CRUD + 管理场景):
+  - `count <file> <collection> [filter]`:统计满足 filter 的文档条数(filter 缺省统计全集合);
+  - `collections <file>`:列出数据库内全部集合名;
+  - `drop <file> <collection>`:删除整个集合及其全部文档(不可恢复);
+  - 保留 create/open/insert/find/update/delete/help。
+- 存储侧:`Storage` trait 扩展:
+  - `list_collections()`:遍历文档表 key(有序),按 `集合名(0x00)` 前缀提取去重后的全部集合名;
+  - `drop_collection(collection)`:遍历该集合前缀删除全部 key,返回删除条数(集合不存在返回 0 不报错);
+  - 二者均在事务中完成。
+- 门面层:`Database::count/find` 计数复用 find 过滤语义;`Database::collections()`、`Database::drop_collection()` 代理引擎。
+- 单文件复制粘贴验证:新增 `tests/migration.rs` 自动化测试 —— 创建 → 插入多集合多文档 → 关闭 → 复制 `.nodb` 副本 → 打开副本校验数据与 _id 完整一致(把 CLI 冒烟验证固化为自动化回归)。
+- 测试补全:新增 `tests/manage.rs`(count/collections/drop 门面 + CLI 行为);M5 收尾共 ~120 例全绿。
+
+### 14. 2026.08.12 M5 执行
+
+- CLI 命令补全:`count <file> <collection> [filter]`(filter 缺省统计全集合)、`collections <file>`(列出全部集合,空库提示"暂无集合")、`drop <file> <collection>`(删除整个集合,返回删除条数,不可恢复);与既有 create/open/insert/find/update/delete/help 组成完整命令集,全中文输出,帮助信息同步更新。
+- `Storage` trait 扩展 `list_collections()` 与 `drop_collection(collection)`:redb 实现利用 key = `集合名(0x00)doc_id` 的有序性,遍历提取去重集合名(集合名必含分隔符,相同集合 key 相邻故去重只需比较上一个);drop 写事务内先收集该前缀全部 key 再逐个删除,返回删除条数,集合不存在返回 0 不报错。
+- `Database::count/collections/drop_collection` 门面:`count` 复用 scan + filter 过滤语义(与 `find(...).len()` 等价),`collections`/`drop_collection` 代理引擎。
+- 单文件复制粘贴验证:新增 `tests/migration.rs`(2 例)—— 复制 `.nodb` 副本后打开,多集合多文档数据与 _id 完整一致;副本可独立 update/delete 且不影响原库(把 CLI 冒烟验证固化为自动化回归)。
+- 测试补全:新增 `tests/manage.rs`(11 例:count 全量/带 filter/空集合/与 find 一致,collections 去重有序/空库,drop 删除/不存在返回 0/再插入/持久化),连同现有测试共 112 例全绿;`cargo build/clippy --all-targets` 零警告。
+- CLI 冒烟验证:count 全量与条件统计、collections 列出两集合、drop 后集合消失且其余集合不受影响均正确。
+
 ## Agents
 
 ### 规范
@@ -135,13 +166,13 @@
 ### 项目进度
 
 #### 计划中
-- M5:CLI 全命令 + 单文件复制粘贴验证 + 测试补全。
 - 后续:Server 模式(协议让 TS/Go 可访问)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- 无(当前 M4 已完成,待 M5)。
+- 无(当前 M5 已完成,待 Server 模式)。
 
 #### 已完成
+- M5:CLI 全命令(count/collections/drop)+ 单文件复制粘贴自动化验证 + 测试补全(112 例全绿)。
 - M4:update/delete,CRUD 闭环(`$set` 更新操作符、`Storage` trait 扩展 update/delete、CLI update/delete)。
 - M3:find + filter 子集($eq/$gt/$in/$regex)+ sort/limit/skip。
 - M2:文档模型 + insert + 主键索引(自动/显式 `_id`,重复主键拒绝,集合隔离)。

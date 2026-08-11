@@ -7,7 +7,10 @@
 //! - `nosqlite find   <file.nodb> <collection> [filter] [--sort <json>] [--skip <n>] [--limit <n>]`:
 //!   查询集合内文档;
 //! - `nosqlite update <file.nodb> <collection> <filter> <update>`:更新匹配文档;
-//! - `nosqlite delete <file.nodb> <collection> <filter>`:删除匹配文档。
+//! - `nosqlite delete <file.nodb> <collection> <filter>`:删除匹配文档;
+//! - `nosqlite count  <file.nodb> <collection> [filter]`:统计匹配文档条数;
+//! - `nosqlite collections <file.nodb>`:列出数据库内全部集合名;
+//! - `nosqlite drop   <file.nodb> <collection>`:删除整个集合及其全部文档。
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -46,6 +49,12 @@ enum Command {
     Update(String, String, String, String),
     /// 删除集合内满足 filter 的文档。
     Delete(String, String, String),
+    /// 统计集合内满足 filter 的文档条数。
+    Count(String, String, String),
+    /// 列出数据库内全部集合名。
+    Collections(String),
+    /// 删除整个集合及其全部文档(不可恢复)。
+    Drop(String, String),
     /// 显示帮助信息。
     Help,
 }
@@ -90,6 +99,21 @@ fn parse(args: &[String]) -> Result<Command, String> {
             collection.clone(),
             filter.clone(),
         )),
+        // count <file> <collection> [filter]
+        [sub, path, collection] if sub == "count" => {
+            Ok(Command::Count(path.clone(), collection.clone(), "null".to_string()))
+        }
+        [sub, path, collection, filter] if sub == "count" => Ok(Command::Count(
+            path.clone(),
+            collection.clone(),
+            filter.clone(),
+        )),
+        // collections <file>
+        [sub, path] if sub == "collections" => Ok(Command::Collections(path.clone())),
+        // drop <file> <collection>
+        [sub, path, collection] if sub == "drop" => {
+            Ok(Command::Drop(path.clone(), collection.clone()))
+        }
         // find <file> <collection> [filter] [--sort json] [--skip n] [--limit n]
         [sub, path, collection, rest @ ..] if sub == "find" => {
             parse_find(path, collection, rest)
@@ -181,6 +205,9 @@ fn execute(cmd: Command) -> ExitCode {
             run_update(&path, &collection, &filter, &update)
         }
         Command::Delete(path, collection, filter) => run_delete(&path, &collection, &filter),
+        Command::Count(path, collection, filter) => run_count(&path, &collection, &filter),
+        Command::Collections(path) => run_collections(&path),
+        Command::Drop(path, collection) => run_drop(&path, &collection),
         Command::Help => {
             print_help();
             ExitCode::SUCCESS
@@ -390,6 +417,90 @@ fn run_delete(path: &str, collection: &str, filter_json: &str) -> ExitCode {
     }
 }
 
+/// 执行 count 子命令:打开数据库 → 解析 filter → 统计 → 打印结果。
+fn run_count(path: &str, collection: &str, filter_json: &str) -> ExitCode {
+    // 1. 打开数据库
+    let db = match Database::open(Path::new(path)) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("打开数据库失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 2. 解析 filter
+    let filter = match parse_filter(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("filter 错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 3. 统计
+    match db.count(collection, &filter) {
+        Ok(n) => {
+            println!("集合 `{}` 满足条件的文档共 {} 条", collection, n);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("统计失败: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// 执行 collections 子命令:打开数据库 → 列出集合名 → 打印结果。
+fn run_collections(path: &str) -> ExitCode {
+    let db = match Database::open(Path::new(path)) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("打开数据库失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match db.collections() {
+        Ok(names) => {
+            if names.is_empty() {
+                println!("数据库为空,暂无集合");
+            } else {
+                println!("数据库共 {} 个集合:", names.len());
+                for (i, name) in names.iter().enumerate() {
+                    println!("  {}. {}", i + 1, name);
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("列出集合失败: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// 执行 drop 子命令:打开数据库 → 删除整个集合 → 打印结果。
+fn run_drop(path: &str, collection: &str) -> ExitCode {
+    let db = match Database::open(Path::new(path)) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("打开数据库失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match db.drop_collection(collection) {
+        Ok(n) => {
+            println!("已删除集合 `{}` 及其全部 {} 条文档(不可恢复)", collection, n);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("删除集合失败: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// 打印帮助信息。
 fn print_help() {
     println!("nosqlite —— 像 SQLite 一样小巧的单文件 NoSQL 数据库");
@@ -402,6 +513,9 @@ fn print_help() {
     println!("                 [--sort <json>] [--skip <n>] [--limit <n>]");
     println!("  nosqlite update <file.nodb> <collection> <filter> <update>  更新文档");
     println!("  nosqlite delete <file.nodb> <collection> <filter>  删除文档");
+    println!("  nosqlite count  <file.nodb> <collection> [filter]  统计匹配条数");
+    println!("  nosqlite collections <file.nodb>                   列出全部集合");
+    println!("  nosqlite drop   <file.nodb> <collection>           删除整个集合");
     println!("  nosqlite help                                     显示本帮助");
     println!();
     println!("示例:");
@@ -411,6 +525,9 @@ fn print_help() {
     println!("  nosqlite find   data.nodb users null --sort '{{\"age\": -1}}' --limit 10");
     println!("  nosqlite update data.nodb users '{{\"age\": {{\"$gte\": 18}}}}' '{{\"$set\": {{\"vip\": true}}}}'");
     println!("  nosqlite delete data.nodb users '{{\"age\": {{\"$lt\": 18}}}}'");
+    println!("  nosqlite count  data.nodb users '{{\"age\": {{\"$gte\": 18}}}}'");
+    println!("  nosqlite collections data.nodb");
+    println!("  nosqlite drop   data.nodb users");
     println!();
     println!("说明:");
     println!("  - 文件后缀必须为 .nodb,不支持其他后缀或无后缀");

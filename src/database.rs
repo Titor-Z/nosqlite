@@ -235,6 +235,36 @@ impl Database {
         Ok(deleted)
     }
 
+    /// 统计集合内满足 filter 的文档条数。
+    ///
+    /// - filter 语义与 [`find`](Self::find) 完全一致;
+    /// - filter 为 null(匹配全部)时即统计集合内文档总数。
+    /// - 与 `find(...).len()` 等价,但只统计不反序列化出完整文档,
+    ///   语义上更接近 MongoDB 的 `countDocuments`。
+    pub fn count(&self, collection: &str, filter: &Filter) -> Result<usize, DatabaseError> {
+        let rows = self.engine.scan(collection)?;
+        let mut total = 0usize;
+        for (_doc_id, bytes) in rows {
+            let doc = Document::from_bytes(&bytes)?;
+            if filter.matches(doc.as_map()) {
+                total += 1;
+            }
+        }
+        Ok(total)
+    }
+
+    /// 列出数据库内全部集合名(去重,按集合名有序)。
+    pub fn collections(&self) -> Result<Vec<String>, DatabaseError> {
+        Ok(self.engine.list_collections()?)
+    }
+
+    /// 删除整个集合及其全部文档(不可恢复),返回删除的文档条数。
+    ///
+    /// 集合不存在时返回 `0`,不报错。
+    pub fn drop_collection(&self, collection: &str) -> Result<usize, DatabaseError> {
+        Ok(self.engine.drop_collection(collection)?)
+    }
+
     /// 数据库文件路径。
     pub fn path(&self) -> &str {
         &self.path
