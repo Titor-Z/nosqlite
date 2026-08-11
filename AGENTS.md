@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.08.12: M6 完成 —— CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。参见 [taolun #15](#15-20260812-m6-设计cli-交互式-repl) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M5 完成 —— CLI 全命令(count/collections/drop)+ 单文件复制粘贴验证(tests/migration.rs 自动化回归)+ 测试补全(tests/manage.rs,112 例全绿)。参见 [taolun #13](#13-20260812-m5-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M4 完成 —— update/delete,CRUD 闭环。`$set` 更新操作符(点号路径赋值,嵌套自动创建,`_id` 主键不可改),`Storage` trait 扩展 `update/delete`,CLI 新增 `update`/`delete` 命令。参见 [taolun #10](#10-20260812-m4-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M3 完成 —— find + filter 子集($eq/$gt/$in/$regex 等)+ sort/limit/skip,BSON 风格类型序,点号路径与逻辑组合。参见 [taolun #7](#7-20260812-m3-设计) / [项目进度-已完成](#已完成)。
@@ -152,6 +153,28 @@
 - 测试补全:新增 `tests/manage.rs`(11 例:count 全量/带 filter/空集合/与 find 一致,collections 去重有序/空库,drop 删除/不存在返回 0/再插入/持久化),连同现有测试共 112 例全绿;`cargo build/clippy --all-targets` 零警告。
 - CLI 冒烟验证:count 全量与条件统计、collections 列出两集合、drop 后集合消失且其余集合不受影响均正确。
 
+### 15. 2026.08.12 M6 设计:CLI 交互式 REPL
+
+- M5 打 tag `2026.08.12.d1633f8` 发布。
+- 需求:当前 CLI 为单命令模式(`nosqlite <命令> <file> ...`),每次都要带文件路径;用户希望像 sqlite3 一样进入 TTY 交互式 shell。
+- 设计:`nosqlite shell <file.nodb>` 进入交互模式(新子命令,保留单命令模式不变):
+  - 打开数据库后进入 REPL,提示符 `nosqlite> `;
+  - shell 内命令不带文件路径参数,集合命令与单命令对齐:`insert/find/update/delete/count/drop <collection> ...`、`collections`(无参);
+  - `help` 显示 shell 内命令用法;`quit`/`exit` 退出 shell;
+  - 空行忽略;每行一条命令;命令解析复用现有 filter/update 解析逻辑;
+  - 命令执行错误打印后继续循环,不退出。
+- 实现:`Command` 增加 `Shell(String)` 变体;`parse` 识别 `shell <file>`;新增 `run_shell(path)` 循环读取 stdin 每行,行内解析为「shell 命令」再分发到既有 run_* 函数(抽出集合命令为内部函数,避免重复)。
+- 测试:新增 `tests/cli_shell.rs` 交互命令解析(复用 `parse` 测试单命令);交互 stdin 不易自动化,以解析层测试 + CLI 冒烟验证为主。
+
+### 16. 2026.08.12 M6 执行
+
+- `Command` 增加 `Shell(String)` 变体,`parse` 识别 `shell <file>`;新增 `run_shell(path)`:打开数据库 → 打印欢迎语 → 循环读取 stdin 每行 → `parse_shell` 解析为 `ShellCommand`(无路径)→ `exec_shell` 分发执行 → 空行忽略,错误打印后继续循环,`quit/exit/.quit/.exit` 退出,EOF(Ctrl+D)退出。
+- 集合命令抽出为「已打开数据库」内部函数 `exec_insert/exec_find/exec_update/exec_delete/exec_count/exec_collections/exec_drop`,单命令模式的 `run_*` 变为 `open_database(path)` + `exec_*` 的薄壳,避免 shell 与单命令两套逻辑重复。
+- shell 内命令与单命令对齐:`insert/find/update/delete/count/drop <collection> ...`、`collections`(无参);find 支持 `--sort/--skip/--limit`;`help/?` 显示 shell 用法,`quit/exit` 退出;提示符 `nosqlite> `。
+- `parse_shell` 与 `ShellCommand` 公开导出,便于集成测试。
+- 新增 `tests/cli_shell.rs`(11 例:quit/help 各形态、insert/find(含选项)/update/delete/count/collections/drop 解析、空行与缺参/未知命令报错),连同现有测试共 123 例全绿;`cargo build/clippy --all-targets` 零警告。
+- CLI 冒烟验证:stdin 管道注入多行命令,insert/collections/count/find/update/delete/drop/help/quit 全部正确执行(注:PowerShell 双引号 here-string 会插值 `$set/$gte`,冒烟须用单引号 here-string)。
+
 ## Agents
 
 ### 规范
@@ -169,9 +192,10 @@
 - 后续:Server 模式(协议让 TS/Go 可访问)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- 无(当前 M5 已完成,待 Server 模式)。
+- 无(当前 M6 已完成,待 Server 模式)。
 
 #### 已完成
+- M6:CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。
 - M5:CLI 全命令(count/collections/drop)+ 单文件复制粘贴自动化验证 + 测试补全(112 例全绿)。
 - M4:update/delete,CRUD 闭环(`$set` 更新操作符、`Storage` trait 扩展 update/delete、CLI update/delete)。
 - M3:find + filter 子集($eq/$gt/$in/$regex)+ sort/limit/skip。
@@ -193,3 +217,4 @@
 - OOP 要求不是传统类继承,在 Rust 里用 `struct + impl + trait` 表达。
 - `.nodb` 后缀是硬性要求:任何平台、任何场景都不接受其他后缀或无后缀。
 - Windows 下 redb 持有文件独占锁:同一进程内"创建后再打开"必须先 `drop` 释放第一个句柄,否则 `Database::open` 会因锁冲突报"文件不存在或不是有效数据库"的误导性错误。
+- PowerShell 双引号 here-string(`@"..."@`)会插值 `$` 变量(如 `$set`/`$gte` 被清空导致 filter/update 解析异常),多行命令注入 stdin 冒烟时必须用单引号 here-string(`@'...'@`)。
