@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.08.12: M7 完成 —— CLI 默认 TTY(对齐 sqlite3):`nosqlite`/`nosqlite <file>` 无参或带路径直接进 REPL,文件不存在自动创建;移除单命令模式;REPL 内 `open/create/databases` 管理绑定。参见 [taolun #17](#17-20260812-m7-设计cli-默认-tty对齐-sqlite3) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M6 完成 —— CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。参见 [taolun #15](#15-20260812-m6-设计cli-交互式-repl) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M5 完成 —— CLI 全命令(count/collections/drop)+ 单文件复制粘贴验证(tests/migration.rs 自动化回归)+ 测试补全(tests/manage.rs,112 例全绿)。参见 [taolun #13](#13-20260812-m5-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M4 完成 —— update/delete,CRUD 闭环。`$set` 更新操作符(点号路径赋值,嵌套自动创建,`_id` 主键不可改),`Storage` trait 扩展 `update/delete`,CLI 新增 `update`/`delete` 命令。参见 [taolun #10](#10-20260812-m4-设计) / [项目进度-已完成](#已完成)。
@@ -175,6 +176,29 @@
 - 新增 `tests/cli_shell.rs`(11 例:quit/help 各形态、insert/find(含选项)/update/delete/count/collections/drop 解析、空行与缺参/未知命令报错),连同现有测试共 123 例全绿;`cargo build/clippy --all-targets` 零警告。
 - CLI 冒烟验证:stdin 管道注入多行命令,insert/collections/count/find/update/delete/drop/help/quit 全部正确执行(注:PowerShell 双引号 here-string 会插值 `$set/$gte`,冒烟须用单引号 here-string)。
 
+### 17. 2026.08.12 M7 设计:CLI 默认 TTY(对齐 sqlite3)
+
+- M6 打 tag `2026.08.12.2fb977f` 发布。
+- 认知修正:M6 采用 `nosqlite shell <file>` + 单命令并存,但 sqlite3 的 CLI 语义是**默认直接进入 TTY**,且**不依赖数据库文件是否存在**——不管有没有库都能进入,在 TTY 内创建/加载数据库。M6 的形态偏离目标。
+- 设计(对齐 sqlite3):
+  - `nosqlite`(无参数):直接进入 REPL,**未绑定数据库**状态;
+  - `nosqlite <file.nodb>`:打开该库进入 REPL,文件不存在则**自动创建**(对齐 sqlite3 打开即建);
+  - **移除单命令模式**(`create/open/insert/find/update/delete/count/collections/drop <file> ...` 子命令全部删除,只留 TTY;Rust 内嵌 API 与 Storage trait 不受影响);
+  - REPL 内数据库管理命令:`open <file>`(关闭当前,不存在则创建/存在则打开)、`create <file>`(新建,已存在拒绝,沿用 M1 防误覆盖)、`databases`(显示当前绑定);
+  - 集合命令在未绑定数据库时报「尚未打开数据库,请先执行 open/create」,不崩溃;
+  - `run_shell` 持有 `Option<Database>` 可变状态,切换绑定前 drop 旧句柄(Windows redb 独占锁约束)。
+- 实现:`cli.rs` 重写入口 `run()`(无参/单路径/帮助三种形态);`exec_shell` 改为接收 `&mut Option<Database>`;删除单命令 `Command/parse/execute/run_*`;保留 exec_* 内部函数与 `parse_shell`/`ShellCommand`(公开导出)。
+- 测试:`tests/cli_shell.rs` 扩展 open/create/databases 解析;冒烟验证用 stdin 管道覆盖 create→open→databases→insert→quit 与自动创建进入。
+
+### 18. 2026.08.12 M7 执行
+
+- `cli.rs` 重写入口 `run()`:无参数 → `run_shell(None)`(未绑定数据库直接进 REPL);单路径 <file.nodb> → `open_or_create(path)`(先尝试打开,不存在则 `Database::create` 自动创建,对齐 sqlite3"打开即建")→ `run_shell(Some(db))`;`-h/--help/help` → 打印用法;参数过多 → 报错。
+- 移除单命令模式:删除 `Command` 枚举、`parse`、`execute`、`run_insert/find/update/delete/count/collections/drop` 薄壳、`report`、`open_database`;保留 `exec_*` 内部函数与 `parse_shell`/`ShellCommand`(公开导出)。
+- `run_shell(initial: Option<Database>)` 持有 `current: Option<Database>` 可变绑定状态,切换绑定前 `drop(current.take())` 释放旧句柄(Windows redb 独占锁约束);集合命令通过 `require_db` 门卫,未绑定时报「尚未打开数据库,请先执行 `open <file.nodb>` 或 `create <file.nodb>`」,不崩溃。
+- `ShellCommand` 新增数据库管理命令:`open <file>`(关闭当前,不存在则创建/存在则打开)、`create <file>`(新建,目标已存在拒绝,沿用 M1 防误覆盖)、`databases`(别名 `db`,显示当前绑定);`exec_shell` 签名改为 `(&mut Option<Database>, cmd)`。
+- `tests/cli_shell.rs` 扩展 4 例(open/create/databases 解析 + open/create 缺路径报错),连同现有测试共 127 例全绿;`cargo build/clippy --all-targets` 零警告。
+- CLI 冒烟验证(单引号 here-string 注入 stdin):无参进入未绑定提示 + 未绑定执行 find 报错提示 + create/databases/insert/collections/count 正常;`nosqlite <不存在>.nodb` 自动创建后进入、再进入数据仍持久化;非法后缀 create 拒绝;`--help` 显示用法;参数过多报错。均正确。
+
 ## Agents
 
 ### 规范
@@ -192,9 +216,10 @@
 - 后续:Server 模式(协议让 TS/Go 可访问)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- 无(当前 M6 已完成,待 Server 模式)。
+- 无(当前 M7 已完成,待 Server 模式)。
 
 #### 已完成
+- M7:CLI 默认 TTY(对齐 sqlite3,无参/带路径直接进 REPL + 自动创建,移除单命令模式)。
 - M6:CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。
 - M5:CLI 全命令(count/collections/drop)+ 单文件复制粘贴自动化验证 + 测试补全(112 例全绿)。
 - M4:update/delete,CRUD 闭环(`$set` 更新操作符、`Storage` trait 扩展 update/delete、CLI update/delete)。
@@ -218,3 +243,4 @@
 - `.nodb` 后缀是硬性要求:任何平台、任何场景都不接受其他后缀或无后缀。
 - Windows 下 redb 持有文件独占锁:同一进程内"创建后再打开"必须先 `drop` 释放第一个句柄,否则 `Database::open` 会因锁冲突报"文件不存在或不是有效数据库"的误导性错误。
 - PowerShell 双引号 here-string(`@"..."@`)会插值 `$` 变量(如 `$set`/`$gte` 被清空导致 filter/update 解析异常),多行命令注入 stdin 冒烟时必须用单引号 here-string(`@'...'@`)。
+- sqlite3 CLI 语义:默认直接进入 TTY,且不依赖数据库文件是否存在——不管有没有库都能进入,在 TTY 内用 `.open` 等命令创建/加载数据库;对齐目标是「无参数进 REPL、带路径打开(不存在即建)、移除单命令子命令」。

@@ -1,8 +1,8 @@
-//! CLI 交互式 shell 解析测试(M6)。
+//! CLI 交互式 shell 解析测试(M6/M7)。
 //!
 //! 交互式 stdin 不易自动化,故以「命令解析层」测试为主:
-//! 覆盖 shell 内各命令(insert/find/update/delete/count/collections/drop/help/quit)的解析,
-//! 与单命令模式的 filter/update 解析逻辑保持一致。
+//! 覆盖 shell 内各命令(open/create/databases/insert/find/update/delete/count/
+//! collections/drop/help/quit)的解析,与 filter/update 解析逻辑保持一致。
 
 use nosqlite::cli::ShellCommand;
 
@@ -26,6 +26,38 @@ fn shell_help_forms() {
     for cmd in ["help", ".help", "?"] {
         assert_eq!(parse_line(cmd).unwrap(), ShellCommand::Help, "{} 应解析为帮助", cmd);
     }
+}
+
+/// open <file.nodb>:加载数据库(不存在则创建)。
+#[test]
+fn shell_parse_open() {
+    assert_eq!(
+        parse_line("open data.nodb").unwrap(),
+        ShellCommand::Open("data.nodb".to_string())
+    );
+}
+
+/// create <file.nodb>:新建数据库。
+#[test]
+fn shell_parse_create() {
+    assert_eq!(
+        parse_line("create data.nodb").unwrap(),
+        ShellCommand::Create("data.nodb".to_string())
+    );
+}
+
+/// databases / db:显示当前绑定。
+#[test]
+fn shell_parse_databases() {
+    assert_eq!(parse_line("databases").unwrap(), ShellCommand::Databases);
+    assert_eq!(parse_line("db").unwrap(), ShellCommand::Databases);
+}
+
+/// open / create 缺路径参数应报错。
+#[test]
+fn shell_parse_open_create_errors() {
+    assert!(parse_line("open").is_err(), "open 缺路径应报错");
+    assert!(parse_line("create").is_err(), "create 缺路径应报错");
 }
 
 /// insert <collection> <json>。

@@ -1,22 +1,14 @@
-//! 类 sqlite3 的命令行工具。
+//! 类 sqlite3 的命令行工具(交互式 TTY,对齐 sqlite3 形态)。
 //!
-//! 支持两种形态:
-//! - **单命令模式**:`nosqlite <子命令> <file.nodb> ...`,执行完即退出;
-//! - **交互式 shell**:`nosqlite shell <file.nodb>`,进入 REPL(提示符 `nosqlite> `),
-//!   后续命令不再带文件路径。
+//! 使用方法:
+//! - `nosqlite`:直接进入交互式 shell,未绑定任何数据库;
+//! - `nosqlite <file.nodb>`:打开该数据库进入 shell,文件不存在则自动创建;
+//! - `nosqlite -h`/`--help`/`help`:显示用法。
 //!
-//! 单命令子命令:
-//! - `nosqlite create <file.nodb>`:创建新数据库;
-//! - `nosqlite open   <file.nodb>`:打开并校验已有数据库;
-//! - `nosqlite insert <file.nodb> <collection> <json>`:向集合插入一条文档;
-//! - `nosqlite find   <file.nodb> <collection> [filter] [--sort <json>] [--skip <n>] [--limit <n>]`:
-//!   查询集合内文档;
-//! - `nosqlite update <file.nodb> <collection> <filter> <update>`:更新匹配文档;
-//! - `nosqlite delete <file.nodb> <collection> <filter>`:删除匹配文档;
-//! - `nosqlite count  <file.nodb> <collection> [filter]`:统计匹配文档条数;
-//! - `nosqlite collections <file.nodb>`:列出数据库内全部集合名;
-//! - `nosqlite drop   <file.nodb> <collection>`:删除整个集合及其全部文档;
-//! - `nosqlite shell  <file.nodb>`:进入交互式 shell。
+//! shell 内命令(提示符 `nosqlite> `)不带文件路径:
+//! - 数据库管理:`open <file>`(不存在则创建)、`create <file>`(新建,已存在拒绝)、`databases`(显示当前绑定);
+//! - 集合操作:`insert/find/update/delete/count/drop <collection> ...`、`collections`(无参);
+//! - `help`/`?` 显示用法,`quit`/`exit` 退出。
 
 use std::io::Write;
 use std::path::Path;
@@ -26,51 +18,17 @@ use serde_json::Value;
 
 use crate::database::Database;
 use crate::document::Document;
-use crate::engine::{RedbEngine, Storage};
 use crate::query::{Filter, FindOptions, SortSpec, Update};
 
-/// 命令行子命令。
-enum Command {
-    /// 创建新数据库(目标文件必须不存在)。
-    Create(String),
-    /// 打开并校验已有数据库。
-    Open(String),
-    /// 向集合插入一条文档(JSON 对象)。
-    Insert(String, String, String),
-    /// 查询集合内文档。
-    Find {
-        /// 数据库文件路径。
-        path: String,
-        /// 集合名。
-        collection: String,
-        /// filter(JSON 对象,null 表示匹配全部)。
-        filter: String,
-        /// 排序规格(JSON 对象,如 `{"age": 1}`)。
-        sort: Option<String>,
-        /// 跳过条数。
-        skip: usize,
-        /// 限制条数。
-        limit: Option<usize>,
-    },
-    /// 更新集合内满足 filter 的文档。
-    Update(String, String, String, String),
-    /// 删除集合内满足 filter 的文档。
-    Delete(String, String, String),
-    /// 统计集合内满足 filter 的文档条数。
-    Count(String, String, String),
-    /// 列出数据库内全部集合名。
-    Collections(String),
-    /// 删除整个集合及其全部文档(不可恢复)。
-    Drop(String, String),
-    /// 进入交互式 shell(打开指定数据库,后续命令不再带文件路径)。
-    Shell(String),
-    /// 显示帮助信息。
-    Help,
-}
-
-/// shell 内的一条命令(不带文件路径参数,作用于已打开的数据库)。
+/// shell 内的一条命令(不带文件路径参数)。
 #[derive(Debug, PartialEq)]
 pub enum ShellCommand {
+    /// 打开数据库(关闭当前绑定,文件不存在则自动创建)。
+    Open(String),
+    /// 创建新数据库并绑定(目标文件必须不存在)。
+    Create(String),
+    /// 显示当前绑定的数据库文件路径。
+    Databases,
     /// 向集合插入一条文档(JSON 对象)。
     Insert(String, String),
     /// 查询集合内文档。
@@ -102,184 +60,63 @@ pub enum ShellCommand {
     Quit,
 }
 
-/// CLI 程序入口:解析参数 → 执行子命令 → 返回退出码。
+/// CLI 程序入口(对齐 sqlite3):
+/// - 无参数 → 直接进入 shell(未绑定数据库);
+/// - 单个路径参数 → 打开(不存在则创建)后进入 shell;
+/// - `-h`/`--help`/`help` → 显示用法。
 pub fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    match parse(&args) {
-        Ok(cmd) => execute(cmd),
-        Err(msg) => {
-            // 参数解析失败:打印错误并提示帮助
-            eprintln!("错误: {}", msg);
+    match args.as_slice() {
+        // 无参数:直接进入 shell,未绑定数据库
+        [] => run_shell(None),
+        [arg] if arg == "-h" || arg == "--help" || arg == "help" => {
+            print_help();
+            ExitCode::SUCCESS
+        }
+        // 单个路径:打开(不存在则自动创建)后进入 shell
+        [path] => match open_or_create(path) {
+            Ok(db) => run_shell(Some(db)),
+            Err(msg) => {
+                eprintln!("错误: {}", msg);
+                ExitCode::FAILURE
+            }
+        },
+        _ => {
+            eprintln!("错误: 参数过多,`nosqlite` 只接受可选的 <file.nodb> 路径。");
             eprintln!("输入 `nosqlite help` 查看用法。");
             ExitCode::FAILURE
         }
     }
 }
 
-/// 解析命令行参数为 [`Command`]。
-fn parse(args: &[String]) -> Result<Command, String> {
-    match args {
-        [] => Ok(Command::Help),
-        [flag] if flag == "-h" || flag == "--help" || flag == "help" => Ok(Command::Help),
-        [sub, path] if sub == "create" => Ok(Command::Create(path.clone())),
-        [sub, path] if sub == "open" => Ok(Command::Open(path.clone())),
-        [sub, path] if sub == "shell" => Ok(Command::Shell(path.clone())),
-        [sub, path, collection, json] if sub == "insert" => Ok(Command::Insert(
-            path.clone(),
-            collection.clone(),
-            json.clone(),
-        )),
-        // update <file> <collection> <filter> <update>
-        [sub, path, collection, filter, update] if sub == "update" => Ok(Command::Update(
-            path.clone(),
-            collection.clone(),
-            filter.clone(),
-            update.clone(),
-        )),
-        // delete <file> <collection> <filter>
-        [sub, path, collection, filter] if sub == "delete" => Ok(Command::Delete(
-            path.clone(),
-            collection.clone(),
-            filter.clone(),
-        )),
-        // count <file> <collection> [filter]
-        [sub, path, collection] if sub == "count" => {
-            Ok(Command::Count(path.clone(), collection.clone(), "null".to_string()))
-        }
-        [sub, path, collection, filter] if sub == "count" => Ok(Command::Count(
-            path.clone(),
-            collection.clone(),
-            filter.clone(),
-        )),
-        // collections <file>
-        [sub, path] if sub == "collections" => Ok(Command::Collections(path.clone())),
-        // drop <file> <collection>
-        [sub, path, collection] if sub == "drop" => {
-            Ok(Command::Drop(path.clone(), collection.clone()))
-        }
-        // find <file> <collection> [filter] [--sort json] [--skip n] [--limit n]
-        [sub, path, collection, rest @ ..] if sub == "find" => {
-            parse_find(path, collection, rest)
-        }
-        [sub] => Err(format!("子命令 `{}` 需要一个 <file.nodb> 路径参数", sub)),
-        [unknown, ..] => Err(format!("未知子命令或参数过多: `{}`", unknown)),
-    }
-}
-
-/// 解析 find 子命令的可选参数。
-fn parse_find(path: &str, collection: &str, args: &[String]) -> Result<Command, String> {
-    let mut filter = String::new();
-    let mut sort: Option<String> = None;
-    let mut skip: usize = 0;
-    let mut limit: Option<usize> = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--sort" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("`--sort` 需要一个 JSON 对象参数".to_string());
-                }
-                sort = Some(args[i].clone());
-            }
-            "--skip" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("`--skip` 需要一个数字参数".to_string());
-                }
-                skip = args[i]
-                    .parse()
-                    .map_err(|_| format!("`--skip` 参数不是有效数字: {}", args[i]))?;
-            }
-            "--limit" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("`--limit` 需要一个数字参数".to_string());
-                }
-                let n: usize = args[i]
-                    .parse()
-                    .map_err(|_| format!("`--limit` 参数不是有效数字: {}", args[i]))?;
-                limit = Some(n);
-            }
-            // 非选项参数:filter(filter 省略则匹配全部)
-            flag if filter.is_empty() && !flag.starts_with("--") => filter = flag.to_string(),
-            flag => return Err(format!("find 未知参数: `{}`", flag)),
-        }
-        i += 1;
-    }
-
-    // filter 缺省视为空对象(null),匹配全部
-    if filter.is_empty() {
-        filter = "null".to_string();
-    }
-
-    Ok(Command::Find {
-        path: path.to_string(),
-        collection: collection.to_string(),
-        filter,
-        sort,
-        skip,
-        limit,
-    })
-}
-
-/// 执行解析出的子命令。
-fn execute(cmd: Command) -> ExitCode {
-    match cmd {
-        Command::Create(path) => {
-            let engine = RedbEngine::create(Path::new(&path));
-            report(&path, "创建", engine)
-        }
-        Command::Open(path) => {
-            let engine = RedbEngine::open(Path::new(&path));
-            report(&path, "打开", engine)
-        }
-        Command::Insert(path, collection, json) => run_insert(&path, &collection, &json),
-        Command::Find {
-            path,
-            collection,
-            filter,
-            sort,
-            skip,
-            limit,
-        } => run_find(&path, &collection, &filter, sort.as_deref(), skip, limit),
-        Command::Update(path, collection, filter, update) => {
-            run_update(&path, &collection, &filter, &update)
-        }
-        Command::Delete(path, collection, filter) => run_delete(&path, &collection, &filter),
-        Command::Count(path, collection, filter) => run_count(&path, &collection, &filter),
-        Command::Collections(path) => run_collections(&path),
-        Command::Drop(path, collection) => run_drop(&path, &collection),
-        Command::Shell(path) => run_shell(&path),
-        Command::Help => {
-            print_help();
-            ExitCode::SUCCESS
-        }
-    }
-}
-
-/// 打开数据库,失败时打印中文错误并返回 `None`。
-fn open_database(path: &str) -> Option<Database> {
+/// 打开数据库;文件不存在则自动创建(对齐 sqlite3"打开即建")。
+fn open_or_create(path: &str) -> Result<Database, String> {
+    // 先尝试打开;若文件不存在则创建空库
     match Database::open(Path::new(path)) {
-        Ok(db) => Some(db),
-        Err(e) => {
-            eprintln!("打开数据库失败: {}", e);
-            None
-        }
+        Ok(db) => Ok(db),
+        Err(_) => match Database::create(Path::new(path)) {
+            Ok(db) => Ok(db),
+            // 创建也失败(如后缀非法)→ 报告原始错误
+            Err(e) => Err(e.to_string()),
+        },
     }
 }
 
-/// 进入交互式 shell:打开数据库 → 循环读取 stdin 每行命令 → 分发执行。
-fn run_shell(path: &str) -> ExitCode {
-    let db = match open_database(path) {
-        Some(db) => db,
-        None => return ExitCode::FAILURE,
-    };
+/// 进入交互式 shell。
+///
+/// `initial` 为进入时已绑定的数据库(可为空)。shell 内可通过
+/// `open/create` 命令切换绑定;集合命令在未绑定数据库时给予中文提示。
+fn run_shell(initial: Option<Database>) -> ExitCode {
+    // 持有可变绑定状态(切换绑定前需 drop 旧句柄,满足 Windows redb 独占锁约束)
+    let mut current: Option<Database> = initial;
 
-    println!("已打开数据库: {}", path);
-    println!("输入 `help` 查看命令用法,输入 `quit`/`exit` 退出 shell。");
+    // 进入提示
+    match &current {
+        Some(db) => println!("已打开数据库: {}", db.path()),
+        None => println!("提示: 尚未绑定数据库,可输入 `open <file.nodb>` 或 `create <file.nodb>`。"),
+    }
+    println!("输入 `help` 查看命令用法,输入 `quit`/`exit` 退出。");
 
     // 逐行读取 stdin(交互式 TTY 或管道重定向均可)
     let stdin = std::io::stdin();
@@ -304,7 +141,7 @@ fn run_shell(path: &str) -> ExitCode {
             continue;
         }
 
-        // 整行按空白拆分得到单词列表(与单命令模式的 argv 对齐)
+        // 整行按空白拆分得到单词列表
         let parts: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
         match parse_shell(&parts) {
             Ok(ShellCommand::Quit) => {
@@ -313,7 +150,7 @@ fn run_shell(path: &str) -> ExitCode {
             }
             Ok(cmd) => {
                 // 命令执行错误打印后继续循环,不退出
-                let _ = exec_shell(&db, cmd);
+                let _ = exec_shell(&mut current, cmd);
             }
             Err(msg) => {
                 eprintln!("错误: {}", msg);
@@ -321,14 +158,14 @@ fn run_shell(path: &str) -> ExitCode {
         }
     }
 
-    // 释放数据库句柄(Windows 下 redb 独占锁,显式 drop 以便后续再开)
-    drop(db);
+    // 释放数据库句柄(Windows 下 redb 独占锁,显式 drop)
+    drop(current);
     ExitCode::SUCCESS
 }
 
 /// 解析一行 shell 命令(不带文件路径)。
 ///
-/// `args` 为按空白拆分后的单词列表(与单命令模式的 argv 对齐)。
+/// `args` 为按空白拆分后的单词列表。
 pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
     match args {
         [] => Err("请输入命令,输入 `help` 查看用法".to_string()),
@@ -336,6 +173,9 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
             Ok(ShellCommand::Quit)
         }
         [cmd] if cmd == "help" || cmd == ".help" || cmd == "?" => Ok(ShellCommand::Help),
+        [cmd, path] if cmd == "open" => Ok(ShellCommand::Open(path.clone())),
+        [cmd, path] if cmd == "create" => Ok(ShellCommand::Create(path.clone())),
+        [cmd] if cmd == "databases" || cmd == "db" => Ok(ShellCommand::Databases),
         [cmd, collection, json] if cmd == "insert" => {
             Ok(ShellCommand::Insert(collection.clone(), json.clone()))
         }
@@ -359,7 +199,7 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
         // find <collection> [filter] [--sort json] [--skip n] [--limit n]
         [cmd, collection, rest @ ..] if cmd == "find" => parse_shell_find(collection, rest),
         [cmd] if cmd == "insert" || cmd == "find" || cmd == "update" || cmd == "delete"
-            || cmd == "count" || cmd == "drop" =>
+            || cmd == "count" || cmd == "drop" || cmd == "open" || cmd == "create" =>
         {
             Err(format!("命令 `{}` 缺少参数,输入 `help` 查看用法", cmd))
         }
@@ -424,24 +264,35 @@ fn parse_shell_find(collection: &str, args: &[String]) -> Result<ShellCommand, S
     })
 }
 
-/// 分发执行一条 shell 命令(作用于已打开的数据库)。
-fn exec_shell(db: &Database, cmd: ShellCommand) -> ExitCode {
+/// 分发执行一条 shell 命令(可修改当前数据库绑定)。
+fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
     match cmd {
-        ShellCommand::Insert(collection, json) => exec_insert(db, &collection, &json),
+        ShellCommand::Open(path) => exec_open(current, &path),
+        ShellCommand::Create(path) => exec_create(current, &path),
+        ShellCommand::Databases => exec_databases(current),
+        ShellCommand::Insert(collection, json) => {
+            require_db(current, |db| exec_insert(db, &collection, &json))
+        }
         ShellCommand::Find {
             collection,
             filter,
             sort,
             skip,
             limit,
-        } => exec_find(db, &collection, &filter, sort.as_deref(), skip, limit),
+        } => require_db(current, |db| {
+            exec_find(db, &collection, &filter, sort.as_deref(), skip, limit)
+        }),
         ShellCommand::Update(collection, filter, update) => {
-            exec_update(db, &collection, &filter, &update)
+            require_db(current, |db| exec_update(db, &collection, &filter, &update))
         }
-        ShellCommand::Delete(collection, filter) => exec_delete(db, &collection, &filter),
-        ShellCommand::Count(collection, filter) => exec_count(db, &collection, &filter),
-        ShellCommand::Collections => exec_collections(db),
-        ShellCommand::Drop(collection) => exec_drop(db, &collection),
+        ShellCommand::Delete(collection, filter) => {
+            require_db(current, |db| exec_delete(db, &collection, &filter))
+        }
+        ShellCommand::Count(collection, filter) => {
+            require_db(current, |db| exec_count(db, &collection, &filter))
+        }
+        ShellCommand::Collections => require_db(current, exec_collections),
+        ShellCommand::Drop(collection) => require_db(current, |db| exec_drop(db, &collection)),
         ShellCommand::Help => {
             print_shell_help();
             ExitCode::SUCCESS
@@ -450,29 +301,84 @@ fn exec_shell(db: &Database, cmd: ShellCommand) -> ExitCode {
     }
 }
 
-/// 统一处理引擎操作结果:成功打印中文提示,失败打印错误。
-fn report(path: &str, action: &str, result: Result<RedbEngine, crate::engine::StorageError>) -> ExitCode {
-    match result {
-        Ok(engine) => {
-            // 输出成功信息(中文,符合项目规范)
-            println!("已{}数据库: {}", action, path);
-            println!("格式版本: 1,文件后缀: .nodb,单文件可直接复制粘贴迁移。");
-            let _ = engine.close();
+/// 执行 open:关闭当前绑定 → 打开(不存在则创建)指定数据库并绑定。
+fn exec_open(current: &mut Option<Database>, path: &str) -> ExitCode {
+    // 关闭当前绑定(Windows redb 独占锁,须先释放旧句柄)
+    drop(current.take());
+    match open_or_create(path) {
+        Ok(db) => {
+            println!("已打开数据库: {}", db.path());
+            *current = Some(db);
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("{}失败: {}", action, e);
+        Err(msg) => {
+            eprintln!("打开数据库失败: {}", msg);
             ExitCode::FAILURE
         }
     }
 }
 
-/// 执行 insert 子命令:打开数据库 → 插入。
-fn run_insert(path: &str, collection: &str, json: &str) -> ExitCode {
-    match open_database(path) {
-        Some(db) => exec_insert(&db, collection, json),
-        None => ExitCode::FAILURE,
+/// 执行 create:关闭当前绑定 → 创建新数据库并绑定(目标已存在则拒绝)。
+fn exec_create(current: &mut Option<Database>, path: &str) -> ExitCode {
+    drop(current.take());
+    // 先校验文件不存在,再尝试创建
+    match Path::new(path).exists() {
+        true => {
+            eprintln!("创建失败: 数据库文件已存在: {}", path);
+            ExitCode::FAILURE
+        }
+        false => match Database::create(Path::new(path)) {
+            Ok(db) => {
+                println!("已创建数据库: {}", db.path());
+                *current = Some(db);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("创建数据库失败: {}", e);
+                ExitCode::FAILURE
+            }
+        },
     }
+}
+
+/// 执行 databases:显示当前绑定的数据库文件路径。
+fn exec_databases(current: &mut Option<Database>) -> ExitCode {
+    match current {
+        Some(db) => println!("当前数据库: {}", db.path()),
+        None => println!("尚未绑定数据库。"),
+    }
+    ExitCode::SUCCESS
+}
+
+/// 未绑定数据库时的统一提示。
+fn no_database_prompt() -> ExitCode {
+    eprintln!("尚未打开数据库,请先执行 `open <file.nodb>` 或 `create <file.nodb>`。");
+    ExitCode::FAILURE
+}
+
+/// 集合命令执行前的门卫:有绑定数据库则执行闭包,否则给出中文提示。
+fn require_db<F>(current: &mut Option<Database>, f: F) -> ExitCode
+where
+    F: FnOnce(&Database) -> ExitCode,
+{
+    match current {
+        Some(db) => f(db),
+        None => no_database_prompt(),
+    }
+}
+
+/// 解析 filter 参数(null 或省略表示匹配全部)。
+fn parse_filter(json: &str) -> Result<Filter, String> {
+    let value: Value =
+        serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
+    Filter::from_value(&value).map_err(|e| e.to_string())
+}
+
+/// 解析 sort 参数。
+fn parse_sort(json: &str) -> Result<SortSpec, String> {
+    let value: Value =
+        serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
+    SortSpec::from_value(&value).map_err(|e| e.to_string())
 }
 
 /// 在已打开的数据库上执行 insert。
@@ -496,21 +402,6 @@ fn exec_insert(db: &Database, collection: &str, json: &str) -> ExitCode {
             eprintln!("插入失败: {}", e);
             ExitCode::FAILURE
         }
-    }
-}
-
-/// 执行 find 子命令:打开数据库 → 查询。
-fn run_find(
-    path: &str,
-    collection: &str,
-    filter_json: &str,
-    sort_json: Option<&str>,
-    skip: usize,
-    limit: Option<usize>,
-) -> ExitCode {
-    match open_database(path) {
-        Some(db) => exec_find(&db, collection, filter_json, sort_json, skip, limit),
-        None => ExitCode::FAILURE,
     }
 }
 
@@ -561,28 +452,6 @@ fn exec_find(
     }
 }
 
-/// 解析 filter 参数(null 或省略表示匹配全部)。
-fn parse_filter(json: &str) -> Result<Filter, String> {
-    let value: Value =
-        serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
-    Filter::from_value(&value).map_err(|e| e.to_string())
-}
-
-/// 解析 sort 参数。
-fn parse_sort(json: &str) -> Result<SortSpec, String> {
-    let value: Value =
-        serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
-    SortSpec::from_value(&value).map_err(|e| e.to_string())
-}
-
-/// 执行 update 子命令:打开数据库 → 更新。
-fn run_update(path: &str, collection: &str, filter_json: &str, update_json: &str) -> ExitCode {
-    match open_database(path) {
-        Some(db) => exec_update(&db, collection, filter_json, update_json),
-        None => ExitCode::FAILURE,
-    }
-}
-
 /// 在已打开的数据库上执行 update。
 fn exec_update(db: &Database, collection: &str, filter_json: &str, update_json: &str) -> ExitCode {
     // 解析 filter
@@ -610,7 +479,7 @@ fn exec_update(db: &Database, collection: &str, filter_json: &str, update_json: 
         }
     };
 
-    // 4. 执行更新
+    // 执行更新
     match db.update(collection, &filter, &update) {
         Ok(n) => {
             println!("更新成功: 集合 `{}` 共修改 {} 条文档", collection, n);
@@ -620,14 +489,6 @@ fn exec_update(db: &Database, collection: &str, filter_json: &str, update_json: 
             eprintln!("更新失败: {}", e);
             ExitCode::FAILURE
         }
-    }
-}
-
-/// 执行 delete 子命令:打开数据库 → 删除。
-fn run_delete(path: &str, collection: &str, filter_json: &str) -> ExitCode {
-    match open_database(path) {
-        Some(db) => exec_delete(&db, collection, filter_json),
-        None => ExitCode::FAILURE,
     }
 }
 
@@ -655,14 +516,6 @@ fn exec_delete(db: &Database, collection: &str, filter_json: &str) -> ExitCode {
     }
 }
 
-/// 执行 count 子命令:打开数据库 → 统计。
-fn run_count(path: &str, collection: &str, filter_json: &str) -> ExitCode {
-    match open_database(path) {
-        Some(db) => exec_count(&db, collection, filter_json),
-        None => ExitCode::FAILURE,
-    }
-}
-
 /// 在已打开的数据库上执行 count。
 fn exec_count(db: &Database, collection: &str, filter_json: &str) -> ExitCode {
     // 解析 filter
@@ -687,14 +540,6 @@ fn exec_count(db: &Database, collection: &str, filter_json: &str) -> ExitCode {
     }
 }
 
-/// 执行 collections 子命令:打开数据库 → 列出集合名。
-fn run_collections(path: &str) -> ExitCode {
-    match open_database(path) {
-        Some(db) => exec_collections(&db),
-        None => ExitCode::FAILURE,
-    }
-}
-
 /// 在已打开的数据库上执行 collections。
 fn exec_collections(db: &Database) -> ExitCode {
     match db.collections() {
@@ -716,14 +561,6 @@ fn exec_collections(db: &Database) -> ExitCode {
     }
 }
 
-/// 执行 drop 子命令:打开数据库 → 删除整个集合。
-fn run_drop(path: &str, collection: &str) -> ExitCode {
-    match open_database(path) {
-        Some(db) => exec_drop(&db, collection),
-        None => ExitCode::FAILURE,
-    }
-}
-
 /// 在已打开的数据库上执行 drop。
 fn exec_drop(db: &Database, collection: &str) -> ExitCode {
     match db.drop_collection(collection) {
@@ -740,8 +577,14 @@ fn exec_drop(db: &Database, collection: &str) -> ExitCode {
 
 /// 打印 shell 内命令用法。
 fn print_shell_help() {
-    println!("nosqlite shell 内命令(不带文件路径,作用于当前数据库):");
+    println!("nosqlite shell 内命令(不带文件路径):");
     println!();
+    println!("数据库管理:");
+    println!("  open <file.nodb>        打开数据库(不存在则自动创建)");
+    println!("  create <file.nodb>      创建新数据库(已存在则拒绝)");
+    println!("  databases               显示当前绑定的数据库文件");
+    println!();
+    println!("集合操作:");
     println!("  insert <collection> <json>            向集合插入一条文档");
     println!("  find <collection> [filter]            查询文档");
     println!("       [--sort <json>] [--skip <n>] [--limit <n>]");
@@ -750,45 +593,29 @@ fn print_shell_help() {
     println!("  count <collection> [filter]           统计匹配条数");
     println!("  collections                           列出全部集合");
     println!("  drop <collection>                     删除整个集合(不可恢复)");
+    println!();
+    println!("其他:");
     println!("  help / ?                              显示本帮助");
     println!("  quit / exit                           退出 shell");
     println!();
     println!("示例:");
+    println!("  create data.nodb");
     println!("  insert users '{{\"name\":\"张三\",\"age\":30}}'");
     println!("  find users '{{\"age\": {{\"$gte\": 18}}}}' --sort '{{\"age\": -1}}' --limit 10");
     println!("  update users '{{\"_id\":\"u1\"}}' '{{\"$set\":{{\"vip\":true}}}}'");
     println!("  delete users '{{\"age\": {{\"$lt\": 18}}}}'");
 }
 
-/// 打印帮助信息。
+/// 打印顶层用法。
 fn print_help() {
     println!("nosqlite —— 像 SQLite 一样小巧的单文件 NoSQL 数据库");
     println!();
     println!("用法:");
-    println!("  nosqlite create <file.nodb>                       创建新数据库");
-    println!("  nosqlite open   <file.nodb>                       打开并校验已有数据库");
-    println!("  nosqlite shell  <file.nodb>                       进入交互式 shell");
-    println!("  nosqlite insert <file.nodb> <collection> <json>   向集合插入一条文档");
-    println!("  nosqlite find   <file.nodb> <collection> [filter] 查询文档");
-    println!("                 [--sort <json>] [--skip <n>] [--limit <n>]");
-    println!("  nosqlite update <file.nodb> <collection> <filter> <update>  更新文档");
-    println!("  nosqlite delete <file.nodb> <collection> <filter>  删除文档");
-    println!("  nosqlite count  <file.nodb> <collection> [filter]  统计匹配条数");
-    println!("  nosqlite collections <file.nodb>                   列出全部集合");
-    println!("  nosqlite drop   <file.nodb> <collection>           删除整个集合");
-    println!("  nosqlite help                                     显示本帮助");
+    println!("  nosqlite                  直接进入交互式 shell(未绑定数据库)");
+    println!("  nosqlite <file.nodb>      打开数据库进入 shell,文件不存在则自动创建");
+    println!("  nosqlite -h|--help|help   显示本帮助");
     println!();
-    println!("示例:");
-    println!("  nosqlite shell  data.nodb");
-    println!("  nosqlite insert data.nodb users '{{\"name\":\"张三\",\"age\":30}}'");
-    println!("  nosqlite find   data.nodb users '{{\"age\": {{\"$gte\": 18}}}}'");
-    println!("  nosqlite find   data.nodb users '{{\"name\": {{\"$regex\": \"^张\"}}}}'");
-    println!("  nosqlite find   data.nodb users null --sort '{{\"age\": -1}}' --limit 10");
-    println!("  nosqlite update data.nodb users '{{\"age\": {{\"$gte\": 18}}}}' '{{\"$set\": {{\"vip\": true}}}}'");
-    println!("  nosqlite delete data.nodb users '{{\"age\": {{\"$lt\": 18}}}}'");
-    println!("  nosqlite count  data.nodb users '{{\"age\": {{\"$gte\": 18}}}}'");
-    println!("  nosqlite collections data.nodb");
-    println!("  nosqlite drop   data.nodb users");
+    println!("进入 shell 后,输入 `help` 查看 shell 内命令(提示符 `nosqlite> `)。");
     println!();
     println!("说明:");
     println!("  - 文件后缀必须为 .nodb,不支持其他后缀或无后缀");
