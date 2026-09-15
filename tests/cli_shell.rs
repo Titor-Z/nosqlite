@@ -12,45 +12,42 @@ fn parse_line(line: &str) -> Result<ShellCommand, String> {
     nosqlite::cli::parse_shell(&parts)
 }
 
-/// quit / exit / .quit / .exit 均退出 shell。
+/// .quit / .exit 退出 shell(严格点命令,无点别名报错)。
 #[test]
 fn shell_quit_forms() {
-    for cmd in ["quit", "exit", ".quit", ".exit"] {
+    for cmd in [".quit", ".exit"] {
         assert_eq!(parse_line(cmd).unwrap(), ShellCommand::Quit, "{} 应解析为退出", cmd);
     }
 }
 
 /// help / .help / ? 显示帮助。
 #[test]
+/// .help 显示帮助。
+#[test]
 fn shell_help_forms() {
-    for cmd in ["help", ".help", "?"] {
-        assert_eq!(parse_line(cmd).unwrap(), ShellCommand::Help, "{} 应解析为帮助", cmd);
-    }
+    assert_eq!(parse_line(".help").unwrap(), ShellCommand::Help, "应解析为帮助");
 }
 
-/// open <file.nodb>:加载数据库(不存在则创建)。
+/// .open <file.nodb>:打开数据库(不存在则自动创建);无参 = 关闭当前绑定。
 #[test]
 fn shell_parse_open() {
     assert_eq!(
-        parse_line("open data.nodb").unwrap(),
-        ShellCommand::Open("data.nodb".to_string())
+        parse_line(".open data.nodb").unwrap(),
+        ShellCommand::Open(Some("data.nodb".to_string()))
     );
+    assert_eq!(parse_line(".open").unwrap(), ShellCommand::Open(None));
 }
 
-/// create <file.nodb>:新建数据库。
-#[test]
-fn shell_parse_create() {
-    assert_eq!(
-        parse_line("create data.nodb").unwrap(),
-        ShellCommand::Create("data.nodb".to_string())
-    );
-}
-
-/// databases / db:显示当前绑定。
+/// .databases:显示当前绑定。
 #[test]
 fn shell_parse_databases() {
-    assert_eq!(parse_line("databases").unwrap(), ShellCommand::Databases);
-    assert_eq!(parse_line("db").unwrap(), ShellCommand::Databases);
+    assert_eq!(parse_line(".databases").unwrap(), ShellCommand::Databases);
+}
+
+/// .collect:列出全部集合。
+#[test]
+fn shell_parse_collect() {
+    assert_eq!(parse_line(".collect").unwrap(), ShellCommand::Collect);
 }
 
 /// open / create 缺路径参数应报错。
@@ -140,10 +137,12 @@ fn shell_parse_count() {
     );
 }
 
-/// collections(无参)。
+/// 无点管理别名一律报错(严格点命令)。
 #[test]
-fn shell_parse_collections() {
-    assert_eq!(parse_line("collections").unwrap(), ShellCommand::Collections);
+fn shell_reject_bare_management() {
+    for cmd in ["open data.nodb", "create data.nodb", "databases", "db", "collections", "help", "?", "quit", "exit"] {
+        assert!(parse_line(cmd).is_err(), "无点管理命令 `{}` 应报错", cmd);
+    }
 }
 
 /// drop <collection>。

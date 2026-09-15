@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.08.12: M8 完成 —— REPL 对齐 sqlite3 点命令:管理命令一律点号开头(`.open/.databases/.collect/.help/.quit/.exit`),CRUD 一律无点,移除全部无点管理别名,`.collect` 替代 `.tables` 语义。参见 [taolun #20](#20-20260812-m8-执行) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M7 完成 —— CLI 默认 TTY(对齐 sqlite3):`nosqlite`/`nosqlite <file>` 无参或带路径直接进 REPL,文件不存在自动创建;移除单命令模式;REPL 内 `open/create/databases` 管理绑定。参见 [taolun #17](#17-20260812-m7-设计cli-默认-tty对齐-sqlite3) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M6 完成 —— CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。参见 [taolun #15](#15-20260812-m6-设计cli-交互式-repl) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M5 完成 —— CLI 全命令(count/collections/drop)+ 单文件复制粘贴验证(tests/migration.rs 自动化回归)+ 测试补全(tests/manage.rs,112 例全绿)。参见 [taolun #13](#13-20260812-m5-设计) / [项目进度-已完成](#已完成)。
@@ -199,6 +200,34 @@
 - `tests/cli_shell.rs` 扩展 4 例(open/create/databases 解析 + open/create 缺路径报错),连同现有测试共 127 例全绿;`cargo build/clippy --all-targets` 零警告。
 - CLI 冒烟验证(单引号 here-string 注入 stdin):无参进入未绑定提示 + 未绑定执行 find 报错提示 + create/databases/insert/collections/count 正常;`nosqlite <不存在>.nodb` 自动创建后进入、再进入数据仍持久化;非法后缀 create 拒绝;`--help` 显示用法;参数过多报错。均正确。
 
+### 19. 2026.08.12 M8 设计:REPL 对齐 sqlite3 点命令
+
+- M7 打 tag `2026.08.12.583016c` 发布。
+- 认知修正:M7 的 shell 是"无点命令 + 集合操作"混排,亲和度不足;sqlite3 REPL 是「点命令(管理)+ 无点语句(CRUD)」二元结构,应严格对齐。
+- 设计(用户确认三点):
+  - **严格点命令**:数据库管理命令一律点号开头,CRUD 一律无点;
+  - **`.collect`** 列出全部集合(替代 sqlite3 `.tables` 语义,集合=collection);
+  - **集合隐式创建**:insert 到不存在的集合即自动创建,不引入显式 create collection(对齐 MongoDB,无需存储层改动)。
+- 命令映射:
+  - `.open <file>`:打开数据库,不存在则自动创建;无参 = 关闭当前回到未绑定(无内存库,即提示如何 .open);
+  - 移除 `create <file>`(冗余:`.open` 已存在就打开、不存在就建,天然防误覆盖);
+  - `.databases`:显示当前绑定;
+  - `.collect`:列出全部集合;
+  - `.help` / `.quit` / `.exit`:点命令;
+  - `insert/find/update/delete/count/drop <collection> ...`:保持无点(CRUD);
+  - **移除全部无点管理别名**(open/create/databases/db/collections/quit/exit/help/?);
+  - 提示符保持 `nosqlite> `。
+- 实现:`cli.rs` 的 `ShellCommand` 删除 `Create`,`.open` 无参分支关闭绑定;`parse_shell` 重写点命令/CRUD 二分解析;`exec_open` 支持无参;`print_shell_help` 改为 sqlite3 `.help` 风格两段式。
+- 测试:`tests/cli_shell.rs` 更新 `.open/.databases/.collect` 解析 + `.open` 无参 + 无点管理命令报错。
+- 说明:MVP 阶段 `.collect` 不支持 pattern 通配(先无参列出全部);后续按需扩展。
+
+### 20. 2026.08.12 M8 执行
+
+- `ShellCommand` 重构:`Open(Option<String>)`(无参 = 关闭当前回到未绑定),新增 `Collect`,删除 `Create`/`Collections` 与全部无点管理别名(`open/create/databases/db/collections/help/?/quit/exit` 均报「管理命令必须用点号」提示)。
+- `parse_shell` 重写为点命令/CRUD 二分解析;`exec_open` 支持无参;`print_shell_help` 改为 sqlite3 `.help` 风格;欢迎语同步为 `.help`/`.quit` 提示。
+- 测试:`tests/cli_shell.rs` 更新 `.open` 带/无参、`.databases`、`.collect` 解析,新增无点管理别名拒绝与 `.quit/.exit` 用例,共 127 例全绿;`cargo build/clippy --all-targets` 零警告。
+- 冒烟验证:无参进入未绑定提示、`.open` 打开/自动创建、无点 CRUD(insert/find/update/delete/count)与 `.collect/.databases` 全部正确;未绑定执行 find 提示先 `.open`;非法后缀拒绝;数据持久化(重新进入数据仍在)。修复:执行函数改名 `exec_collections` → `exec_collect`、欢迎语文案对齐点命令。
+
 ## Agents
 
 ### 规范
@@ -216,9 +245,10 @@
 - 后续:Server 模式(协议让 TS/Go 可访问)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- 无(当前 M7 已完成,待 Server 模式)。
+- 无(当前 M8 已完成,待 Server 模式)。
 
 #### 已完成
+- M8:REPL 对齐 sqlite3 点命令(管理一律点号、CRUD 无点、`.collect` 列集合)。
 - M7:CLI 默认 TTY(对齐 sqlite3,无参/带路径直接进 REPL + 自动创建,移除单命令模式)。
 - M6:CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。
 - M5:CLI 全命令(count/collections/drop)+ 单文件复制粘贴自动化验证 + 测试补全(112 例全绿)。

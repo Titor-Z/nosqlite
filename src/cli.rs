@@ -21,14 +21,16 @@ use crate::document::Document;
 use crate::query::{Filter, FindOptions, SortSpec, Update};
 
 /// shell 内的一条命令(不带文件路径参数)。
+///
+/// 管理命令一律点号开头(对齐 sqlite3 点命令),CRUD 一律无点。
 #[derive(Debug, PartialEq)]
 pub enum ShellCommand {
-    /// 打开数据库(关闭当前绑定,文件不存在则自动创建)。
-    Open(String),
-    /// 创建新数据库并绑定(目标文件必须不存在)。
-    Create(String),
+    /// 打开数据库:带路径则打开(不存在则自动创建),无路径则关闭当前回到未绑定。
+    Open(Option<String>),
     /// 显示当前绑定的数据库文件路径。
     Databases,
+    /// 列出数据库内全部集合名(替代 sqlite3 `.tables` 语义)。
+    Collect,
     /// 向集合插入一条文档(JSON 对象)。
     Insert(String, String),
     /// 查询集合内文档。
@@ -50,8 +52,6 @@ pub enum ShellCommand {
     Delete(String, String),
     /// 统计集合内满足 filter 的文档条数。
     Count(String, String),
-    /// 列出数据库内全部集合名。
-    Collections,
     /// 删除整个集合及其全部文档(不可恢复)。
     Drop(String),
     /// 显示 shell 命令用法。
@@ -106,7 +106,7 @@ fn open_or_create(path: &str) -> Result<Database, String> {
 /// 进入交互式 shell。
 ///
 /// `initial` 为进入时已绑定的数据库(可为空)。shell 内可通过
-/// `open/create` 命令切换绑定;集合命令在未绑定数据库时给予中文提示。
+/// `.open` 命令切换绑定;集合命令在未绑定数据库时给予中文提示。
 fn run_shell(initial: Option<Database>) -> ExitCode {
     // 持有可变绑定状态(切换绑定前需 drop 旧句柄,满足 Windows redb 独占锁约束)
     let mut current: Option<Database> = initial;
@@ -114,9 +114,9 @@ fn run_shell(initial: Option<Database>) -> ExitCode {
     // 进入提示
     match &current {
         Some(db) => println!("已打开数据库: {}", db.path()),
-        None => println!("提示: 尚未绑定数据库,可输入 `open <file.nodb>` 或 `create <file.nodb>`。"),
+        None => println!("提示: 尚未绑定数据库,可输入 `.open <file.nodb>` 打开或创建。"),
     }
-    println!("输入 `help` 查看命令用法,输入 `quit`/`exit` 退出。");
+    println!("输入 `.help` 查看命令用法,输入 `.quit` 退出。");
 
     // 逐行读取 stdin(交互式 TTY 或管道重定向均可)
     let stdin = std::io::stdin();
@@ -163,19 +163,25 @@ fn run_shell(initial: Option<Database>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// 解析一行 shell 命令(不带文件路径)。
+/// 解析一行 shell 命令。
 ///
-/// `args` 为按空白拆分后的单词列表。
+/// 对齐 sqlite3 二元结构:
+/// - **点命令**(管理):`.open`/`.databases`/`.collect`/`.help`/`.quit`/`.exit`;
+/// - **无点命令**(CRUD):`insert/find/update/delete/count/drop`;
+/// - 无点管理别名一律报错(严格点命令)。
 pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
+    // ──────────────── 点命令(管理) ────────────────
     match args {
-        [] => Err("请输入命令,输入 `help` 查看用法".to_string()),
-        [cmd] if cmd == "quit" || cmd == "exit" || cmd == ".quit" || cmd == ".exit" => {
-            Ok(ShellCommand::Quit)
-        }
-        [cmd] if cmd == "help" || cmd == ".help" || cmd == "?" => Ok(ShellCommand::Help),
-        [cmd, path] if cmd == "open" => Ok(ShellCommand::Open(path.clone())),
-        [cmd, path] if cmd == "create" => Ok(ShellCommand::Create(path.clone())),
-        [cmd] if cmd == "databases" || cmd == "db" => Ok(ShellCommand::Databases),
+        [] => Err("请输入命令,输入 `.help` 查看用法".to_string()),
+        [cmd] if cmd == ".quit" || cmd == ".exit" => Ok(ShellCommand::Quit),
+        [cmd] if cmd == ".help" => Ok(ShellCommand::Help),
+        [cmd] if cmd == ".databases" => Ok(ShellCommand::Databases),
+        [cmd] if cmd == ".collect" => Ok(ShellCommand::Collect),
+        // .open 无参 = 关闭当前回到未绑定
+        [cmd] if cmd == ".open" => Ok(ShellCommand::Open(None)),
+        // .open <file>
+        [cmd, path] if cmd == ".open" => Ok(ShellCommand::Open(Some(path.clone()))),
+        // ──────────────── 无点命令(CRUD) ────────────────
         [cmd, collection, json] if cmd == "insert" => {
             Ok(ShellCommand::Insert(collection.clone(), json.clone()))
         }
@@ -186,7 +192,6 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
         [cmd, collection, filter] if cmd == "count" => {
             Ok(ShellCommand::Count(collection.clone(), filter.clone()))
         }
-        [cmd] if cmd == "collections" => Ok(ShellCommand::Collections),
         [cmd, collection] if cmd == "drop" => Ok(ShellCommand::Drop(collection.clone())),
         [cmd, collection, filter] if cmd == "delete" => {
             Ok(ShellCommand::Delete(collection.clone(), filter.clone()))
@@ -199,9 +204,24 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
         // find <collection> [filter] [--sort json] [--skip n] [--limit n]
         [cmd, collection, rest @ ..] if cmd == "find" => parse_shell_find(collection, rest),
         [cmd] if cmd == "insert" || cmd == "find" || cmd == "update" || cmd == "delete"
-            || cmd == "count" || cmd == "drop" || cmd == "open" || cmd == "create" =>
+            || cmd == "count" || cmd == "drop" =>
         {
-            Err(format!("命令 `{}` 缺少参数,输入 `help` 查看用法", cmd))
+            Err(format!("命令 `{}` 缺少参数,输入 `.help` 查看用法", cmd))
+        }
+        // 无点管理别名一律报错(严格点命令)
+        [cmd, ..] if cmd == "open" || cmd == "create" || cmd == "collections"
+            || cmd == "databases" || cmd == "db" =>
+        {
+            Err(format!(
+                "管理命令必须用点号:`{}` 请写成 `.{}`",
+                cmd, cmd
+            ))
+        }
+        [cmd] if cmd == "quit" || cmd == "exit" || cmd == "help" || cmd == "?" => {
+            Err(format!(
+                "管理命令必须用点号:`{}` 请写成 `.{}`",
+                cmd, cmd
+            ))
         }
         [unknown, ..] => Err(format!("未知命令或参数过多: `{}`", unknown)),
     }
@@ -267,9 +287,9 @@ fn parse_shell_find(collection: &str, args: &[String]) -> Result<ShellCommand, S
 /// 分发执行一条 shell 命令(可修改当前数据库绑定)。
 fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
     match cmd {
-        ShellCommand::Open(path) => exec_open(current, &path),
-        ShellCommand::Create(path) => exec_create(current, &path),
+        ShellCommand::Open(path) => exec_open(current, path.as_deref()),
         ShellCommand::Databases => exec_databases(current),
+        ShellCommand::Collect => require_db(current, exec_collect),
         ShellCommand::Insert(collection, json) => {
             require_db(current, |db| exec_insert(db, &collection, &json))
         }
@@ -291,7 +311,6 @@ fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
         ShellCommand::Count(collection, filter) => {
             require_db(current, |db| exec_count(db, &collection, &filter))
         }
-        ShellCommand::Collections => require_db(current, exec_collections),
         ShellCommand::Drop(collection) => require_db(current, |db| exec_drop(db, &collection)),
         ShellCommand::Help => {
             print_shell_help();
@@ -301,47 +320,35 @@ fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
     }
 }
 
-/// 执行 open:关闭当前绑定 → 打开(不存在则创建)指定数据库并绑定。
-fn exec_open(current: &mut Option<Database>, path: &str) -> ExitCode {
-    // 关闭当前绑定(Windows redb 独占锁,须先释放旧句柄)
-    drop(current.take());
-    match open_or_create(path) {
-        Ok(db) => {
-            println!("已打开数据库: {}", db.path());
-            *current = Some(db);
+/// 执行 `.open`:无参 = 关闭当前回到未绑定;带路径 = 关闭当前 → 打开(不存在则创建)并绑定。
+fn exec_open(current: &mut Option<Database>, path: Option<&str>) -> ExitCode {
+    match path {
+        // 无参:关闭当前绑定,回到未绑定状态
+        None => {
+            drop(current.take());
+            println!("已关闭数据库。提示:输入 `.open <file.nodb>` 重新打开或创建数据库。");
             ExitCode::SUCCESS
         }
-        Err(msg) => {
-            eprintln!("打开数据库失败: {}", msg);
-            ExitCode::FAILURE
+        // 带路径:打开(不存在则创建)并绑定
+        Some(path) => {
+            // 关闭当前绑定(Windows redb 独占锁,须先释放旧句柄)
+            drop(current.take());
+            match open_or_create(path) {
+                Ok(db) => {
+                    println!("已打开数据库: {}", db.path());
+                    *current = Some(db);
+                    ExitCode::SUCCESS
+                }
+                Err(msg) => {
+                    eprintln!("打开数据库失败: {}", msg);
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
 }
 
-/// 执行 create:关闭当前绑定 → 创建新数据库并绑定(目标已存在则拒绝)。
-fn exec_create(current: &mut Option<Database>, path: &str) -> ExitCode {
-    drop(current.take());
-    // 先校验文件不存在,再尝试创建
-    match Path::new(path).exists() {
-        true => {
-            eprintln!("创建失败: 数据库文件已存在: {}", path);
-            ExitCode::FAILURE
-        }
-        false => match Database::create(Path::new(path)) {
-            Ok(db) => {
-                println!("已创建数据库: {}", db.path());
-                *current = Some(db);
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("创建数据库失败: {}", e);
-                ExitCode::FAILURE
-            }
-        },
-    }
-}
-
-/// 执行 databases:显示当前绑定的数据库文件路径。
+/// 执行 `.databases`:显示当前绑定的数据库文件路径。
 fn exec_databases(current: &mut Option<Database>) -> ExitCode {
     match current {
         Some(db) => println!("当前数据库: {}", db.path()),
@@ -540,8 +547,8 @@ fn exec_count(db: &Database, collection: &str, filter_json: &str) -> ExitCode {
     }
 }
 
-/// 在已打开的数据库上执行 collections。
-fn exec_collections(db: &Database) -> ExitCode {
+/// 在已打开的数据库上执行 .collect(列出全部集合)。
+fn exec_collect(db: &Database) -> ExitCode {
     match db.collections() {
         Ok(names) => {
             if names.is_empty() {
