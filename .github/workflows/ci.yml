@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: 检查与测试（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不影响另一个平台的结论
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: 缓存构建产物
+        uses: Swatinem/rust-cache@v2
+
+      # clippy 零警告是项目硬性规范（见 AGENTS.md「规范」）
+      - name: cargo clippy（零警告）
+        run: cargo clippy --all-targets -- -D warnings
+
+      # 含 examples 与全部集成测试
+      - name: cargo test
+        run: cargo test --all-targets
+
+      # 显式验证 release 构建（基准与发布都用 release）
+      - name: cargo build --release
+        run: cargo build --release --all-targets

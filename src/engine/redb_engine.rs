@@ -242,7 +242,16 @@ impl Storage for RedbEngine {
             .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))
     }
 
-    fn scan(&self, collection: &str) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
+    /// **流式**遍历集合内全部文档:逐条产出并交由回调处理,不物化整个集合。
+    ///
+    /// 实现:在单个读事务内用 redb `range(prefix..)` 迭代器按序遍历,
+    /// 回调返回 `false` 时提前结束(后续文档不再读取)。
+    fn for_each(
+        &self,
+        collection: &str,
+        visit: &mut dyn FnMut(&str, &[u8]) -> bool,
+    ) -> Result<(), StorageError>
+    {
         // 1. 校验集合名
         validate_collection(collection)?;
 
@@ -257,28 +266,95 @@ impl Storage for RedbEngine {
         let table = match read_tx.open_table(DOCS_TABLE) {
             Ok(table) => table,
             // 文档表尚不存在(从未插入过文档)→ 该集合为空
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
             Err(e) => return Err(StorageError::Other(format!("打开文档表失败: {}", e))),
         };
 
         // 4. 从前缀处开始迭代,B+树按 key 有序,集合内 doc_id 即按序返回
-        let mut results = Vec::new();
         let range = table
             .range(prefix.as_slice()..)
             .map_err(|e| StorageError::Other(format!("遍历文档表失败: {}", e)))?;
         for entry in range {
-            let (key, value) = entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
+            let (key, value) =
+                entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
             let key_bytes = key.value();
             // 不再是该集合前缀 → 该集合文档已遍历完毕
             if !key_bytes.starts_with(&prefix) {
                 break;
             }
             // key = 前缀 + doc_id
-            let doc_id_bytes = &key_bytes[prefix.len()..];
-            let doc_id = String::from_utf8_lossy(doc_id_bytes).into_owned();
-            results.push((doc_id, value.value().to_vec()));
+            let doc_id = String::from_utf8_lossy(&key_bytes[prefix.len()..]).into_owned();
+            // 回调返回 false → 提前终止(后续文档不再读取)
+            if !visit(&doc_id, value.value()) {
+                break;
+            }
         }
-        Ok(results)
+        Ok(())
+    }
+
+    /// 按主键读取单条文档:直接用 redb 主键 `get`,O(log n),不经全表扫描。
+    fn get(&self, collection: &str, doc_id: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 读取事务 + 打开文档表
+        let read_tx = self
+            .db
+            .begin_read()
+            .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
+        let table = match read_tx.open_table(DOCS_TABLE) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(StorageError::Other(format!("打开文档表失败: {}", e))),
+        };
+
+        // 3. 主键直接定位
+        let key = build_doc_key(collection, doc_id);
+        let value = table
+            .get(&key[..])
+            .map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
+        Ok(value.map(|guard| guard.value().to_vec()))
+    }
+
+    /// 单事务批量插入:所有文档在同一写事务内写入并一次性提交。
+    ///
+    /// 这是写入吞吐的关键:逐条插入每条都要经历一次「开启事务 + 提交 + fsync」,
+    /// 而批量把 N 条的风险成本合并为一次提交。任一主键冲突则整个批次回滚。
+    fn insert_many(&self, collection: &str, docs: &[(String, Vec<u8>)]) -> Result<(), StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 空批次直接成功(避免无意义地开事务)
+        if docs.is_empty() {
+            return Ok(());
+        }
+
+        // 3. 单写事务内写入全部文档,一次性提交
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        {
+            let mut table = write_tx
+                .open_table(DOCS_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            for (doc_id, bytes) in docs {
+                let key = build_doc_key(collection, doc_id);
+                let existing = table
+                    .insert(&key[..], &bytes[..])
+                    .map_err(|e| StorageError::Other(format!("写入文档失败: {}", e)))?;
+                // 主键冲突 → 整批失败(事务随 drop/错误路径回滚)
+                if existing.is_some() {
+                    return Err(StorageError::DuplicateKey {
+                        collection: collection.to_string(),
+                        id: doc_id.clone(),
+                    });
+                }
+            }
+        }
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))
     }
 
     fn update(

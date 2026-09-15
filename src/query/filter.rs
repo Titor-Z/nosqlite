@@ -94,6 +94,27 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// 若本 filter 恰好是「`_id` 等值」单一条件,返回该主键值。
+    ///
+    /// 用于门面层的**主键直接寻址快速路径**(M11):`{"_id":"xxx"}` 可直接
+    /// 走 B+树主键定位,不经全表扫描(50 万档下单条 update/delete 从 2.6 s 降到毫秒级)。
+    /// 其余形态(多字段、逻辑组合、非等值)均返回 `None`。
+    pub(crate) fn single_id_eq(&self) -> Option<&Value> {
+        match &self.root {
+            Condition::Field(field)
+                if field.path.len() == 1
+                    && field.path[0] == "_id"
+                    && field.ops.len() == 1 =>
+            {
+                match &field.ops[0] {
+                    Operator::Eq(v) => Some(v),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// 从 JSON 值解析 filter。
     ///
     /// 顶层必须为对象或空(`Null` 视作匹配全部);省略时由调用方传入 `Filter::match_all()`。

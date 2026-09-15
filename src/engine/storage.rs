@@ -96,9 +96,44 @@ pub trait Storage {
 
     /// 扫描指定集合内的全部文档,返回 `(doc_id, doc_bytes)` 列表。
     ///
-    /// 结果按 doc_id 有序(利用 B+树主键索引的顺序性)。M3 阶段不做索引下推,
-    /// 由上层(门面层)反序列化后做过滤/排序/分页。
-    fn scan(&self, collection: &str) -> Result<Vec<(String, Vec<u8>)>, StorageError>;
+    /// 结果按 doc_id 有序(利用 B+树主键索引的顺序性)。
+    ///
+    /// ⚠️ **此方法会把整个集合一次性载入内存**,仅适用于小集合或一次性工具。
+    /// M11 起引擎内部查询已改用 [`Storage::for_each`] 流式遍历,集合越大内存峰值越高。
+    /// 默认实现基于 [`Storage::for_each`](Self::for_each) 收集,子类可覆写。
+    fn scan(&self, collection: &str) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
+        let mut out = Vec::new();
+        self.for_each(collection, &mut |doc_id, bytes| {
+            out.push((doc_id.to_string(), bytes.to_vec()));
+            true
+        })?;
+        Ok(out)
+    }
+
+    /// **流式**遍历指定集合内的全部文档(M11 新增,内存 O(1))。
+    ///
+    /// 结果按 doc_id 有序(B+树主键索引顺序)。对每条文档调用 `visit(doc_id, doc_bytes)`,
+    /// **回调返回 `false` 即提前终止**(不再读取后续文档)。
+    ///
+    /// 这是消除「全量物化」内存峰值的关键:调用方在回调内完成过滤/聚合,
+    /// 只保留命中项,其余文档立即释放,内存不再随集合大小线性增长。
+    fn for_each(
+        &self,
+        collection: &str,
+        visit: &mut dyn FnMut(&str, &[u8]) -> bool,
+    ) -> Result<(), StorageError>;
+
+    /// 单事务批量插入(M11 新增,一次提交摊薄 fsync 成本)。
+    ///
+    /// 所有文档在**同一个写事务**内写入并一次性提交,写入吞吐可提升 1–2 个数量级。
+    /// 任一主键冲突则整个批次失败(报 [`StorageError::DuplicateKey`]),已写入的内容随事务一并回滚。
+    fn insert_many(&self, collection: &str, docs: &[(String, Vec<u8>)])
+        -> Result<(), StorageError>;
+
+    /// 按主键读取单条文档(M11 新增,O(log n),不经全表扫描)。
+    ///
+    /// 返回 `None` 表示该主键不存在。仅返回文档字节,由上层负责反序列化。
+    fn get(&self, collection: &str, doc_id: &str) -> Result<Option<Vec<u8>>, StorageError>;
 
     /// 覆盖更新指定主键的文档(主键不变,仅替换内容)。
     ///

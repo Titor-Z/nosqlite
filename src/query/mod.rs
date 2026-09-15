@@ -6,7 +6,7 @@
 //!   支持点号路径与顶层 `$and/$or/$nor/$not` 逻辑组合)。
 //! - [`SortSpec`]:排序规格(`{"age": 1, "name": -1}`,1 升序 / -1 降序,多字段 + 点号路径)。
 //! - [`FindOptions`](options::FindOptions):查询选项(排序、跳过、限制)。
-//! - [`Update`]:更新操作(`$set` 字段点号路径赋值,嵌套自动创建/覆盖)。
+//! - [`Update`]:更新操作(`$set` 字段点号路径赋值,嵌套自动创建/覆盖;路径段可为数组下标)。
 
 mod compare;
 mod filter;

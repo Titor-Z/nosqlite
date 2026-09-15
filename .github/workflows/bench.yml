@@ -1,0 +1,91 @@
+name: Bench
+
+# 基准只在手动触发或打 tag 时运行：
+# - 共享 runner 噪声大，挂在每次 push 上既慢又不可比；
+# - 打 tag（发版）时自动留一份当次基线记录，便于跨版本对照。
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: 文档条数
+        required: false
+        default: "10000"
+      repeat:
+        description: 每组重复次数（建议 >= 3）
+        required: false
+        default: "3"
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: 基准（Linux）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存构建产物
+        uses: Swatinem/rust-cache@v2
+
+      # 设置默认值（tag 触发时 inputs 为空）
+      - name: 解析参数
+        id: args
+        run: |
+          echo "n=${{ inputs.n || '10000' }}" >> "$GITHUB_OUTPUT"
+          echo "repeat=${{ inputs.repeat || '3' }}" >> "$GITHUB_OUTPUT"
+
+      - name: 写路径对照基准
+        run: |
+          cargo run --release --example bench_write -- \
+            ${{ steps.args.outputs.n }} ${{ steps.args.outputs.repeat }} \
+            | tee bench_write.log
+
+      - name: 读路径压测
+        run: |
+          cargo run --release --example bench -- \
+            10000 100000 --repeat=${{ steps.args.outputs.repeat }} \
+            | tee bench.log
+
+      - name: 并发写入压测
+        run: |
+          cargo run --release --example bench_concurrency -- 160 8 \
+            | tee bench_concurrency.log
+
+      - name: 汇总到 Step Summary
+        run: |
+          {
+            echo "## nosqlite 基准（Linux / GitHub runner）"
+            echo ""
+            echo "> ⚠️ 共享 runner + 云盘：数值为**指示性参考**，不是精确基线。"
+            echo "> 关键用途是与 macOS 对照，确认平台同步语义差异（见 \`AGENTS.md\`「认知修正」）。"
+            echo ""
+            echo "### 写路径对照（含 POSIX fsync vs Rust sync_all）"
+            echo '```'
+            cat bench_write.log
+            echo '```'
+            echo ""
+            echo "### 读路径"
+            echo '```'
+            cat bench.log
+            echo '```'
+            echo ""
+            echo "### 并发写入"
+            echo '```'
+            cat bench_concurrency.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传原始日志
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-logs
+          path: |
+            bench_write.log
+            bench.log
+            bench_concurrency.log

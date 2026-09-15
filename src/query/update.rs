@@ -1,6 +1,12 @@
 //! 更新操作模块(M4)。
 //!
-//! 仿 MongoDB 的更新操作符。当前支持 `$set`(字段点号路径赋值,嵌套自动创建/覆盖),
+//! 仿 MongoDB 的更新操作符。当前支持 `$set`(字段点号路径赋值,嵌套自动创建/覆盖)。
+//!
+//! 点号路径的每一段既可以是对象字段名,也可以是**数组下标**(M9 修复):
+//! - 路径中间是对象 → 按字段名下钻;字段不存在时自动创建对象;
+//! - 路径中间是数组 → 当前段必须是合法且未越界的下标,否则报错;
+//! - 路径中间是标量 → 报错,不会静默覆盖数组/标量(M9 前会用对象覆盖数组,属数据破坏缺陷)。
+//!
 //! 后续里程碑可扩展 `$unset/$inc/$push` 等。
 
 use serde_json::{Map, Value};
@@ -12,6 +18,20 @@ pub enum UpdateError {
     InvalidUpdate(String),
     /// `$set` 的值必须是 JSON 对象。
     SetNotObject,
+    /// 数组下标非法(该路径段不是纯数字)。
+    InvalidArrayIndex(String),
+    /// 数组下标越界。
+    ArrayIndexOutOfBounds {
+        /// 请求访问的下标。
+        index: usize,
+        /// 数组实际长度。
+        len: usize,
+    },
+    /// 路径中间段是标量值(非对象也非数组),无法继续下钻创建字段。
+    ScalarIntermediate {
+        /// 出错的剩余路径(点号分隔)。
+        path: String,
+    },
 }
 
 impl std::fmt::Display for UpdateError {
@@ -19,6 +39,17 @@ impl std::fmt::Display for UpdateError {
         match self {
             UpdateError::InvalidUpdate(msg) => write!(f, "更新操作使用错误: {}", msg),
             UpdateError::SetNotObject => write!(f, "$set 的值必须是 JSON 对象"),
+            UpdateError::InvalidArrayIndex(seg) => {
+                write!(f, "数组下标非法: 路径段 `{}` 必须是数字", seg)
+            }
+            UpdateError::ArrayIndexOutOfBounds { index, len } => {
+                write!(f, "数组下标越界: 索引 {} 超出数组长度 {}", index, len)
+            }
+            UpdateError::ScalarIntermediate { path } => write!(
+                f,
+                "无法在标量值上创建字段: 路径 `{}` 的中间段不是对象或数组",
+                path
+            ),
         }
     }
 }
@@ -38,10 +69,19 @@ impl Update {
     /// 从 JSON 值解析更新操作。
     ///
     /// 示例:`{"$set": {"name": "李四", "addr.city": "上海"}}`。
+    ///
+    /// 空更新(`{}` 或无操作符的 `{"$set": {}}`)一律报错,不静默当作无操作。
     pub fn from_value(value: &Value) -> Result<Self, UpdateError> {
         let map = value
             .as_object()
             .ok_or_else(|| UpdateError::InvalidUpdate("update 顶层必须是 JSON 对象".to_string()))?;
+
+        // 空对象:没有任何可执行的更新操作
+        if map.is_empty() {
+            return Err(UpdateError::InvalidUpdate(
+                "update 不能为空对象,至少需要包含一个操作符".to_string(),
+            ));
+        }
 
         // 只允许已知操作符:$set
         for key in map.keys() {
@@ -56,18 +96,31 @@ impl Update {
         let set_map = match map.get("$set") {
             Some(Value::Object(set_map)) => set_map,
             Some(_) => return Err(UpdateError::SetNotObject),
-            // 无 $set:空操作(结果不影响任何文档)
             None => {
-                return Ok(Update {
-                    set_fields: Vec::new(),
-                })
+                return Err(UpdateError::InvalidUpdate(
+                    "update 缺少可用的更新操作符".to_string(),
+                ))
             }
         };
+
+        // `$set` 为空对象:同样没有任何实际更新
+        if set_map.is_empty() {
+            return Err(UpdateError::InvalidUpdate(
+                "$set 不能为空对象,至少需要指定一个字段".to_string(),
+            ));
+        }
 
         // 解析 $set 的每个字段(支持点号路径)
         let mut set_fields = Vec::new();
         for (key, value) in set_map {
             let path = key.split('.').map(|s| s.to_string()).collect::<Vec<_>>();
+            // 空字段名或空路径段(`""`、`"a..b"`、`".a"`)无意义,直接拒绝
+            if path.iter().any(|seg| seg.is_empty()) {
+                return Err(UpdateError::InvalidUpdate(format!(
+                    "字段路径非法: `{}` 含空的路径段",
+                    key
+                )));
+            }
             set_fields.push((path, value.clone()));
         }
 
@@ -86,37 +139,86 @@ impl Update {
                     "不允许修改主键 _id".to_string(),
                 ));
             }
-            set_by_path(doc, path, value);
+            set_in_map(doc, path, value)?;
         }
         Ok(())
     }
 }
 
-/// 按点号路径赋值(嵌套对象不存在则自动创建)。
-fn set_by_path(doc: &mut Map<String, Value>, path: &[String], value: &Value) {
+/// 在顶层对象上按点号路径赋值。
+///
+/// 单段路径直接写入顶层;多段路径取出/创建子容器后交给 [`set_in_value`]。
+fn set_in_map(doc: &mut Map<String, Value>, path: &[String], value: &Value) -> Result<(), UpdateError> {
     // 空路径:忽略
-    let Some(first) = path.first() else {
-        return;
+    let Some((first, rest)) = path.split_first() else {
+        return Ok(());
     };
 
-    // 单段路径:直接赋值
-    if path.len() == 1 {
+    // 末段路径:直接赋值
+    if rest.is_empty() {
         doc.insert(first.clone(), value.clone());
-        return;
+        return Ok(());
     }
 
-    // 多段路径:递归下钻(中间缺失的对象自动创建)
-    let next: &[String] = &path[1..];
+    // 非末段:取出或创建子容器(已存在的值原样保留,不做覆盖),
+    // 真正的类型区分(对象/数组/标量)交给 set_in_value 处理。
     let child = doc
         .entry(first.clone())
         .or_insert_with(|| Value::Object(Map::new()));
-    match child {
-        Value::Object(map) => set_by_path(map, next, value),
-        // 中间路径碰到非对象值:用对象覆盖(与 MongoDB $set 语义一致)
-        _ => {
-            let mut new_map = Map::new();
-            set_by_path(&mut new_map, next, value);
-            *child = Value::Object(new_map);
+    set_in_value(child, rest, value)
+}
+
+/// 在任意 JSON 值上按点号路径赋值,明确区分对象与数组。
+///
+/// - `Value::Object`:按字段名下钻,缺失时自动创建对象;
+/// - `Value::Array`:当前路径段必须是纯数字下标且不越界,按下标寻址;
+/// - 其他(标量):报 [`UpdateError::ScalarIntermediate`],**绝不覆盖原值**。
+fn set_in_value(root: &mut Value, path: &[String], value: &Value) -> Result<(), UpdateError> {
+    // 空路径:忽略
+    let Some((first, rest)) = path.split_first() else {
+        return Ok(());
+    };
+
+    match root {
+        Value::Object(map) => {
+            if rest.is_empty() {
+                map.insert(first.clone(), value.clone());
+                Ok(())
+            } else {
+                let child = map
+                    .entry(first.clone())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                set_in_value(child, rest, value)
+            }
         }
+        Value::Array(arr) => {
+            // 数组必须按下标寻址:非数字段、越界段一律报错
+            let index = parse_array_index(first)?;
+            if index >= arr.len() {
+                return Err(UpdateError::ArrayIndexOutOfBounds {
+                    index,
+                    len: arr.len(),
+                });
+            }
+            if rest.is_empty() {
+                arr[index] = value.clone();
+                Ok(())
+            } else {
+                set_in_value(&mut arr[index], rest, value)
+            }
+        }
+        // 标量中间值:不下钻也不覆盖,明确报错(避免静默破坏既有数据)
+        _ => Err(UpdateError::ScalarIntermediate {
+            path: path.join("."),
+        }),
     }
+}
+
+/// 解析数组下标:必须是纯数字(不含符号/空格/小数)。
+fn parse_array_index(seg: &str) -> Result<usize, UpdateError> {
+    if seg.is_empty() || !seg.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(UpdateError::InvalidArrayIndex(seg.to_string()));
+    }
+    seg.parse::<usize>()
+        .map_err(|_| UpdateError::InvalidArrayIndex(seg.to_string()))
 }

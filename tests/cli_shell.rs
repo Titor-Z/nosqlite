@@ -20,8 +20,6 @@ fn shell_quit_forms() {
     }
 }
 
-/// help / .help / ? 显示帮助。
-#[test]
 /// .help 显示帮助。
 #[test]
 fn shell_help_forms() {

@@ -69,6 +69,36 @@ impl SortSpec {
         docs.sort_by(|a, b| self.compare_docs(a, b));
     }
 
+    /// 提取一条文档的排序键(M11 新增,供 `find_page` 两遍法使用)。
+    ///
+    /// 按字段声明顺序逐个取点号路径值,缺失字段为 `None`。
+    /// 返回的向量长度恒等于字段数,便于两遍法中只保存小体量的排序键而非整份文档。
+    pub fn extract_sort_key(&self, doc: &Map<String, Value>) -> Vec<Option<Value>> {
+        self.fields
+            .iter()
+            .map(|field| resolve_path(doc, &field.path).cloned())
+            .collect()
+    }
+
+    /// 比较两个排序键(M11 新增,方向由本规格决定)。
+    ///
+    /// 两者长度应均为字段数;若不等,按较短者逐位比较后由较长者胜出(不应发生)。
+    pub fn compare_sort_keys(&self, a: &[Option<Value>], b: &[Option<Value>]) -> Ordering {
+        for (i, field) in self.fields.iter().enumerate() {
+            let va = a.get(i).and_then(|v| v.as_ref());
+            let vb = b.get(i).and_then(|v| v.as_ref());
+            let ord = compare_values(va, vb);
+            let ord = match field.direction {
+                Direction::Asc => ord,
+                Direction::Desc => ord.reverse(),
+            };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    }
+
     /// 比较两个文档。
     fn compare_docs(&self, a: &Map<String, Value>, b: &Map<String, Value>) -> Ordering {
         for field in &self.fields {
