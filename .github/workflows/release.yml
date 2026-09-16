@@ -1,0 +1,65 @@
+name: Release
+
+# 推送 v* tag 时:构建三大平台 CLI 二进制并附到 GitHub Release。
+# crates.io 的库发布由维护者本地执行(cargo publish,见 README「发布」)。
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建(${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: nosqlite-cli-linux-x86_64.tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: nosqlite-cli-macos-aarch64.tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: nosqlite-cli-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存构建产物
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建(release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: 打包(Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.archive }} nosqlite
+          cd ../../..
+          shasum -a 256 ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+
+      - name: 打包(Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/nosqlite.exe `
+            -DestinationPath ${{ matrix.archive }}
+          (Get-FileHash ${{ matrix.archive }} -Algorithm SHA256).Hash | `
+            Out-File -Encoding ascii ${{ matrix.archive }}.sha256
+
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
