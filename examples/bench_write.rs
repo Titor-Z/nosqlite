@@ -491,7 +491,7 @@ fn doc_json(i: usize) -> String {
         "email": format!("user{}@example.com", i % 1000),
         "tags": ["alpha", "beta"],
         "addr": { "city": "北京", "zip": "100000" },
-        "active": i.is_multiple_of(2),
+        "active": i % 2 == 0,
     })
     .to_string()
 }
