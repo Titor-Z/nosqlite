@@ -389,15 +389,62 @@ fn parse_sort(json: &str) -> Result<SortSpec, String> {
 }
 
 /// 在已打开的数据库上执行 insert。
+///
+/// JSON 为对象时单条插入;为数组时走 `insert_many` 单事务批量插入
+/// (任一主键冲突则整批失败,无部分写入)。
 fn exec_insert(db: &Database, collection: &str, json: &str) -> ExitCode {
-    // 解析 JSON 为文档
-    let mut doc = match Document::from_json(json) {
+    let value: Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("文档格式错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 数组 → 单事务批量插入
+    if let Value::Array(items) = value {
+        let docs = items
+            .into_iter()
+            .map(|v| Document::from_json(&serde_json::to_string(&v).unwrap_or_default()))
+            .collect::<Result<Vec<_>, _>>();
+        let docs = match docs {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("文档格式错误: {}", e);
+                return ExitCode::FAILURE;
+            }
+        };
+        if docs.is_empty() {
+            eprintln!("插入失败: 批量插入至少需要一条文档");
+            return ExitCode::FAILURE;
+        }
+        let mut docs = docs;
+        return match db.insert_many(collection, &mut docs) {
+            Ok(ids) => {
+                println!(
+                    "批量插入成功: 集合 `{}`,共 {} 条,_id = [{}]",
+                    collection,
+                    ids.len(),
+                    ids.join(", ")
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("插入失败(整批已回滚): {}", e);
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    // 对象 → 单条插入
+    let doc = match Document::from_json(&serde_json::to_string(&value).unwrap_or_default()) {
         Ok(doc) => doc,
         Err(e) => {
             eprintln!("文档格式错误: {}", e);
             return ExitCode::FAILURE;
         }
     };
+    let mut doc = doc;
 
     // 插入文档
     match db.insert(collection, &mut doc) {
@@ -443,12 +490,27 @@ fn exec_find(
     };
 
     // 组装查询选项并执行
-    let options = FindOptions { sort, skip, limit };
-    match db.find_with_options(collection, &filter, &options) {
+    // 带排序时改走 find_page 两遍法(M11):只收集排序键排序,再按主键回取,
+    // 内存 O(n × 排序键大小) 而非 O(命中数 × 文档大小);无排序保持流式过滤。
+    let result = match &sort {
+        Some(spec) => db.find_page(collection, &filter, Some(spec), skip, limit),
+        None => db
+            .find_with_options(
+                collection,
+                &filter,
+                &FindOptions {
+                    sort: None,
+                    skip,
+                    limit,
+                },
+            )
+            .map(|docs| docs.to_vec()),
+    };
+    match result {
         Ok(docs) => {
             println!("找到 {} 条文档(集合 `{}`):", docs.len(), collection);
-            for doc in docs {
-                println!("  {}", serde_json::to_string_pretty(&doc).unwrap_or_default());
+            for doc in &docs {
+                println!("  {}", serde_json::to_string_pretty(doc).unwrap_or_default());
             }
             ExitCode::SUCCESS
         }
@@ -592,11 +654,11 @@ fn print_shell_help() {
     println!("  databases               显示当前绑定的数据库文件");
     println!();
     println!("集合操作:");
-    println!("  insert <collection> <json>            向集合插入一条文档");
-    println!("  find <collection> [filter]            查询文档");
+    println!("  insert <collection> <json>            插入文档(json 为对象单条;为数组则单事务批量)");
+    println!("  find <collection> [filter]            查询文档(带 --sort 时走分页,内存友好)");
     println!("       [--sort <json>] [--skip <n>] [--limit <n>]");
-    println!("  update <collection> <filter> <update> 更新匹配文档");
-    println!("  delete <collection> <filter>          删除匹配文档");
+    println!("  update <collection> <filter> <update> 更新匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)");
+    println!("  delete <collection> <filter>          删除匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)");
     println!("  count <collection> [filter]           统计匹配条数");
     println!("  collections                           列出全部集合");
     println!("  drop <collection>                     删除整个集合(不可恢复)");
@@ -608,6 +670,7 @@ fn print_shell_help() {
     println!("示例:");
     println!("  create data.nodb");
     println!("  insert users '{{\"name\":\"张三\",\"age\":30}}'");
+    println!("  insert users '[{{\"name\":\"张三\"}},{{\"name\":\"李四\"}}]'   批量插入(单事务)");
     println!("  find users '{{\"age\": {{\"$gte\": 18}}}}' --sort '{{\"age\": -1}}' --limit 10");
     println!("  update users '{{\"_id\":\"u1\"}}' '{{\"$set\":{{\"vip\":true}}}}'");
     println!("  delete users '{{\"age\": {{\"$lt\": 18}}}}'");

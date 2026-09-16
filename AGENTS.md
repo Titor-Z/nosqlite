@@ -399,6 +399,7 @@
 - 并发写入（160 条 8 线程）：加速比 0.49x —— 单写事务模型下写入被串行化，符合预期；并发对读有意义、对写无意义。
 - CI：新增 `.github/workflows/ci.yml`（ubuntu + macos：clippy `-D warnings` + test + release 构建，已通过）与 `.github/workflows/bench.yml`（手动/tag 触发，Linux 基准写 Step Summary）。
 - 决策：**暂不加 `cargo fmt --check` 到 CI** —— 全仓（含既有文件）从未 rustfmt 化，一次性格式化会产生覆盖全仓的巨型 diff，留作独立 housekeeping 提交。
+- 决策：**不公开 `Durability` 持久化选项**。现状核实：`Durability` 仅在基准示例中使用，公开 API 全部走 redb 默认 `commit()`（Immediate）。Linux fsync 便宜（0.38 ms）收益小；macOS 上的正解是 `insert_many` 批量摊薄（已达标）而非让用户选「丢数据换速度」；避免 API 表面积与误用风险（误设 None 会静默丢写入）。
 
 ## Agents
 
