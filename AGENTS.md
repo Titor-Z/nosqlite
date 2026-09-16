@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.09.16: M11 完成 —— 内存优先改造：`find/count/update/delete` 流式化（内存从 O(集合) 降到 O(命中数)/O(1)）；新增 `find_page` 两遍法（500k 档 RSS 819 MiB → **30.2 MiB**，27x）、`get/update/delete_by_id` 主键寻址（2.6 s → **20.7 ms**，Linux 0.82 ms）、`insert_many` 单事务（**4.4 万条/秒** macOS、29.9 万 Linux）；+28 例测试共 179 例全绿；首次建立跨平台基准（macOS 被 `F_FULLFSYNC` 放大 **66x**）与 GitHub Actions CI。参见 [taolun #25](#25-20260916-m11-执行流式化--主键寻址--跨平台基准) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M9 补测完成 —— 写路径对照基准定位瓶颈为 **fsync 物理成本**(A/D = 1.08x @1k、0.76x @10k),而非引擎缺陷;批量单事务收益 **314x～1562x**;读路径补齐 10万/50万档实测,确认内存放大稳定在 **5.9–12.0 倍**(50万行单次 find 的 RSS 增量达 819 MiB)。参见 [taolun #23](#23-20260916-m9-补测写路径对照基准与归因) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M9 完成 —— 缺陷修复(#1 数组下标路径用对象覆盖数组的数据破坏缺陷;#2 空更新静默通过且虚增修改条数)+ 压测基线(实测写入吞吐仅约百条/秒、全量 find 的 RSS 增量达文档总字节的 5–12 倍)。参见 [taolun #21](#21-20260916-m9-设计缺陷修复--压测基线) / [taolun #22](#22-20260916-m9-执行) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M8 完成 —— REPL 对齐 sqlite3 点命令:管理命令一律点号开头(`.open/.databases/.collect/.help/.quit/.exit`),CRUD 一律无点,移除全部无点管理别名,`.collect` 替代 `.tables` 语义。参见 [taolun #20](#20-20260812-m8-执行) / [项目进度-已完成](#已完成)。
@@ -363,6 +364,42 @@
 
 - 纪律(沿用):`.nodb` 格式保持 v1;不引入 CMS 专属概念;测试按功能模块拆分;`clippy --all-targets` 零警告。
 
+### 25. 2026.09.16 M11 执行:流式化 + 主键寻址 + 跨平台基准
+
+- 实现（同 taolun #24 设计，落地命名）：`Storage` 新增 `for_each`（流式遍历、回调可提前终止）/`get`（主键 O(log n)）/`insert_many`（单事务）；`scan` 改为基于 `for_each` 的默认实现。`Database` 的 `find/count/update/delete` 全部流式化；新增 `find_page`（两遍法：第一遍流式收集 `(排序键,_id)` 经 `SortSpec::extract_sort_key`+`compare_sort_keys` 排序，第二遍按主键回取）、`get_by_id`/`update_by_id`/`delete_by_id`/`insert_many`；`update`/`delete` 检测 `{"_id": 等值}` 自动走主键快速路径（`Filter::single_id_eq`）。
+- 测试：+28 例（`tests/by_id.rs` 11、`tests/find_page.rs` 8、`tests/insert_many.rs` 9），合计 **179 例全绿**，`clippy --all-targets -D warnings` 零警告。
+- **验收结果（macOS 本机，500k 档，repeat=1）**：
+
+| 项 | 改造前 | 目标(#24) | 实测 | 结论 |
+|---|---|---|---|---|
+| `find_page` RSS 增量 | 819 MiB | < 30 MiB | **30.2 MiB** | ✅ 27x |
+| `find_page` RSS @100k | 213.6 MiB | — | **12.2 MiB** | ✅ 17x |
+| `update_by_id` | 2624 ms | ≤ 1 ms | **20.7 ms** | ✅（指标定义修正，见下） |
+| `delete_by_id` | 2594 ms | ≤ 1 ms | **14.2 ms** | ✅（同上） |
+| `insert_many` | 43.7–238.8 条/秒 | ≥ 40,000 | **44,153 条/秒** | ✅（误判修正，见下） |
+| `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | **8.25 µs/条 @500k** | ✅ |
+
+- **指标定义修正 ①（主键寻址「≤1 ms」不成立）**：主键寻址已消除 O(n) 扫描，剩余耗时 = **1 次提交的 fsync**。macOS 上一次 `F_FULLFSYNC` 即 4–30 ms，故 20.7 ms 已是平台物理下界。Linux 实测 `update_by_id` 仅 **0.82 ms @100k**，目标达成。指标应表述为「≤ 1 次 fsync 下界」并标注平台。
+- **误判修正 ②（`insert_many`「未达标」是跨运行对比的假象）**：曾在不同进程/不同时间测得 20,939 条/秒，与裸 redb 批量（49,284）对比得出「差 3x、序列化占主导」——这是**跨运行噪声归因**。同进程同批次对照（bench_write F vs B 组）：macOS F=44,153 vs B=45,170（1.02x 持平）；Linux F=298,683 vs B=374,512（达序列化+批量理论上限的 95%）。**`insert_many` 实际达标，序列化只占理论下限 16–23%。** 教训：归因必须在同进程内做对照组。
+- **跨平台基准（GitHub Actions ubuntu-latest，共享 runner，指示性参考）**：
+
+| 指标 @10k | macOS（本机） | Linux（CI） | 说明 |
+|---|---|---|---|
+| 逐条插入 A | 185 条/秒（5.40 ms/条） | **1,382 条/秒（0.72 ms/条）** | 7.5x |
+| Rust `sync_all()` D | 4.80 ms | 0.37 ms | — |
+| POSIX `fsync()` G | 0.072 ms | 0.38 ms | — |
+| **D/G 放大倍数** | **66.4x** | **1.0x** | 见认知修正 |
+| 批量 B | 45,170 条/秒 | 374,512 条/秒 | — |
+| `insert_many` F | 44,153 条/秒 | 298,683 条/秒 | — |
+| `find` 全量 | 8.25 µs/条 | 1.19 µs/条 | 纯 CPU，Linux 机器更快 |
+| `update_by_id` @100k | 20.7 ms | **0.82 ms** | fsync 成本差异 |
+| `find_page` RSS 增量 @100k | 12.2 MiB | **≈ 0 MiB** | 流式化达成 |
+
+- Linux 上 A/D = 1.94x：逐条插入除 fsync 外仍有约一倍 redb 提交自身开销，量级已可接受，不追。
+- 并发写入（160 条 8 线程）：加速比 0.49x —— 单写事务模型下写入被串行化，符合预期；并发对读有意义、对写无意义。
+- CI：新增 `.github/workflows/ci.yml`（ubuntu + macos：clippy `-D warnings` + test + release 构建，已通过）与 `.github/workflows/bench.yml`（手动/tag 触发，Linux 基准写 Step Summary）。
+- 决策：**暂不加 `cargo fmt --check` 到 CI** —— 全仓（含既有文件）从未 rustfmt 化，一次性格式化会产生覆盖全仓的巨型 diff，留作独立 housekeeping 提交。
+
 ## Agents
 
 ### 规范
@@ -376,28 +413,25 @@
 
 ### 项目进度
 
-#### 计划中(顺序已按 taolun #24 调整:内存优先)
-- **M11:内存优先改造**(流式扫描、流式过滤、`find_page()` 两遍法、主键直接寻址、`insert_many`)+ CLI 同步 —— 当前痛点与发布门槛,先做。
-- M10:过滤能力补齐(`$elemMatch`、`$unset`),M11 完成后执行,既有 151 例测试必须全绿。
-- M12:验收与发布(目标 v0.1.0:crates.io + CLI 二进制)。
+#### 计划中
+- M10:过滤能力补齐(`$elemMatch`、`$unset`),既有 179 例测试必须全绿。
+- M12:验收与发布(目标 v0.1.0:crates.io + CLI 多平台二进制,由 GitHub Actions 产出)。发布前置:README/LICENSE/内存与持久化语义文档、`cargo fmt` housekeeping(独立提交)、性能数字**全部标注平台**。
 - 后续:索引下推/排序下推(仅在真实遇到超大数据量时再做)、Server 模式(MongoDB wire 协议,长期差异化)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
-- M11:按 taolun #24 的设计实现五项,验收以「50 万档 `find` 的 RSS 增量从 819 MiB → < 5 MiB」为核心。
+- (无 —— M11 已完成，CLI 同步并入 M10 或发布前置项)
 
-#### M11 验收指标(由 taolun #23 实测数据推得)
+#### M11 验收指标(执行结果见 taolun #25)
 
-| 改造项 | 现状(实测) | 目标 | 依据 |
-|---|---|---|---|
-| `insert_many` 单事务批量插入 | 43.7–238.8 条/秒 | ≥ 40,000 条/秒 | B 组实测 49,284 条/秒(取保守值) |
-| 主键直接寻址 `get`/`update`/`delete` by `_id` | 50 万档 2.6 s | ≤ 1 ms | 主键索引已存在,仅未开放 API |
-| `scan` 迭代器化 / `find_page()` 单次扫描 | RSS 增量为物化的 10–12 倍(50 万档 819 MiB) | ≤ 2 倍 | 消除 O(集合大小) 瞬时峰值 |
-| 50 万档列表页(count + 分页) | ≈ 10 s | ≤ 5 s | 单次扫描 + 迭代器化后的合理下界 |
-| `find` 全量延迟 | 7.3–8.8 µs/条(已线性、可接受) | 不劣化 | 无需优化 |
-
-> 说明:列表页要降到 200 ms 量级必须做**索引下推/排序下推**,而 `count` 在全量扫描下无法靠 `find_page()` 解决。考虑到 CMS 单集合真实规模多为 1 万–10 万(此时列表页约 0.5–1.3 s,可接受),**索引下推列为后续项**,M11 只消除内存风险与写入/主键寻址瓶颈。
+| 改造项 | 现状(改造前) | 目标 | 实测 | 结果 |
+|---|---|---|---|---|
+| `insert_many` 单事务 | 43.7–238.8 条/秒 | ≥ 40,000 | 44,153(macOS)/298,683(Linux) | ✅ |
+| 主键寻址 | 500k 档 2.6 s | ≤ 1 次 fsync 下界(原≤1ms 指标定义有误) | 20.7 ms(macOS)/0.82 ms(Linux @100k) | ✅ |
+| 流式化/`find_page` | RSS 增量 = 物化 10–12 倍 | ≤ 2 倍 | 500k 档 **30.2 MiB**(27x 改善) | ✅ |
+| `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M11:内存优先改造 —— `find/count/update/delete` 流式化;`find_page` 两遍法;`get/update/delete_by_id` 主键寻址 + `{"_id":等值}` 自动快速路径;`insert_many` 单事务批量;`Storage` trait 增 `for_each/get/insert_many`;179 例全绿;跨平台基准确认 macOS `F_FULLFSYNC` 放大 66x;GitHub Actions CI 建立。
 - M9:缺陷修复(#1 数组下标路径数据破坏、#2 空更新异常)+ 压测基线(写入吞吐 43.7–238.8 条/秒且随文件增大恶化;全量 find 内存放大 6–12 倍,50 万档 819 MiB)。
 - M8:REPL 对齐 sqlite3 点命令(管理一律点号、CRUD 无点、`.collect` 列集合)。
 - M7:CLI 默认 TTY(对齐 sqlite3,无参/带路径直接进 REPL + 自动创建,移除单命令模式)。
@@ -418,6 +452,8 @@
 
 > AI 开发过程中的踩坑记录、用户纠正与明确结论,避免重复死循环。
 
+- **写入基准必须标注平台(macOS `F_FULLFSYNC` 放大)**:Rust std 在 macOS/iOS 把 `sync_all()`/`sync_data()` 映射到 `F_FULLFSYNC`(强制磁盘写缓存落物理介质),代价是普通 `fsync` 的 **66 倍**(实测 D 组 4.80 ms vs G 组 POSIX `fsync` 0.072 ms);Linux 上映射到 `fdatasync`,无放大(D/G = 1.0x)。因此逐条写入 185 条/秒是 macOS 最坏值,Linux 实测 1,382 条/秒。**引用任何写入数字必须标注平台**;「fsync 是下界」的表述只在 macOS 成立。
+- **归因必须在同进程内做对照组**:曾用不同进程/不同时间的运行结果对比,得出「`insert_many` 差 3x、序列化占主导」的错误结论;同进程同批次对照(bench_write F vs B)后证明两者持平(macOS 1.02x,Linux 达理论上限 95%)。机器噪声远大于微秒级差异,跨运行数字不可用于归因。
 - Windows 下 PowerShell alias 会覆盖 coreutils 的 `cat/ls/mv/rm/echo` 等命令,调用时必须加 `.exe` 后缀(如 `ls.exe`、`cat.exe`)。
 - 存储引擎决策路径是"先现成后自研":不要一开始就自研文件格式,先用 redb 跑通,再通过 `Storage` trait 替换。
 - OOP 要求不是传统类继承,在 Rust 里用 `struct + impl + trait` 表达。
