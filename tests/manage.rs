@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nosqlite::{Database, Document};
 use nosqlite::query::Filter;
+use nosqlite::{Database, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -74,12 +74,14 @@ fn count_with_filter() {
     let db = setup(&path);
 
     assert_eq!(
-        db.count("users", &filter(r#"{"age":{"$gte":18}}"#)).unwrap(),
+        db.count("users", &filter(r#"{"age":{"$gte":18}}"#))
+            .unwrap(),
         2,
         "age>=18 的应为 2 条"
     );
     assert_eq!(
-        db.count("users", &filter(r#"{"name":{"$regex":"^张"}}"#)).unwrap(),
+        db.count("users", &filter(r#"{"name":{"$regex":"^张"}}"#))
+            .unwrap(),
         1,
         "姓张的应为 1 条"
     );
@@ -139,7 +141,11 @@ fn collections_lists_names() {
     let db = setup(&path);
 
     let names = db.collections().expect("列出集合应成功");
-    assert_eq!(names, vec!["orders".to_string(), "users".to_string()], "应按集合名有序且去重");
+    assert_eq!(
+        names,
+        vec!["orders".to_string(), "users".to_string()],
+        "应按集合名有序且去重"
+    );
 
     db.close().expect("关闭应成功");
     drop(db);
@@ -249,7 +255,11 @@ fn drop_persists_across_reopen() {
 
     let db = Database::open(&path).expect("重新打开应成功");
     let names = db.collections().expect("列出集合应成功");
-    assert_eq!(names, vec!["orders".to_string()], "重新打开后 drop 应仍生效");
+    assert_eq!(
+        names,
+        vec!["orders".to_string()],
+        "重新打开后 drop 应仍生效"
+    );
     assert_eq!(db.count("users", &filter("null")).unwrap(), 0);
 
     db.close().expect("关闭应成功");

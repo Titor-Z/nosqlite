@@ -2,8 +2,8 @@
 //!
 //! 覆盖 `Document` 的创建/解析/序列化、`_id` 主键规则,以及 ObjectId 生成。
 
-use nosqlite::document::ObjectId;
 use nosqlite::Document;
+use nosqlite::document::ObjectId;
 
 /// 空文档创建后为空 JSON 对象。
 #[test]
@@ -15,7 +15,8 @@ fn new_document_is_empty_object() {
 /// 从合法 JSON 对象创建文档。
 #[test]
 fn from_json_valid_object() {
-    let doc = Document::from_json(r#"{"name":"张三","age":30,"tags":["a","b"]}"#).expect("解析应成功");
+    let doc =
+        Document::from_json(r#"{"name":"张三","age":30,"tags":["a","b"]}"#).expect("解析应成功");
     assert_eq!(doc.get("name").unwrap().as_str(), Some("张三"));
     assert_eq!(doc.get("age").unwrap().as_i64(), Some(30));
     assert!(doc.get("tags").unwrap().is_array());

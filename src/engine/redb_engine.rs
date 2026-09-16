@@ -40,7 +40,9 @@ const KEY_SEPARATOR: u8 = 0x00;
 /// 校验集合名:非空,且不包含分隔符 `\0`。
 fn validate_collection(collection: &str) -> Result<(), StorageError> {
     if collection.is_empty() {
-        return Err(StorageError::InvalidCollection("集合名不能为空".to_string()));
+        return Err(StorageError::InvalidCollection(
+            "集合名不能为空".to_string(),
+        ));
     }
     if collection.as_bytes().contains(&KEY_SEPARATOR) {
         return Err(StorageError::InvalidCollection(format!(
@@ -124,7 +126,7 @@ impl RedbEngine {
             _ => {
                 return Err(StorageError::InvalidFormat(
                     "文件魔数不匹配,不是 nosqlite 创建的数据库".to_string(),
-                ))
+                ));
             }
         }
 
@@ -205,12 +207,7 @@ impl Storage for RedbEngine {
         Ok(())
     }
 
-    fn insert(
-        &self,
-        collection: &str,
-        doc_id: &str,
-        doc_bytes: &[u8],
-    ) -> Result<(), StorageError> {
+    fn insert(&self, collection: &str, doc_id: &str, doc_bytes: &[u8]) -> Result<(), StorageError> {
         // 1. 校验集合名(非空、不含分隔符)
         validate_collection(collection)?;
 
@@ -250,8 +247,7 @@ impl Storage for RedbEngine {
         &self,
         collection: &str,
         visit: &mut dyn FnMut(&str, &[u8]) -> bool,
-    ) -> Result<(), StorageError>
-    {
+    ) -> Result<(), StorageError> {
         // 1. 校验集合名
         validate_collection(collection)?;
 
@@ -320,7 +316,11 @@ impl Storage for RedbEngine {
     ///
     /// 这是写入吞吐的关键:逐条插入每条都要经历一次「开启事务 + 提交 + fsync」,
     /// 而批量把 N 条的风险成本合并为一次提交。任一主键冲突则整个批次回滚。
-    fn insert_many(&self, collection: &str, docs: &[(String, Vec<u8>)]) -> Result<(), StorageError> {
+    fn insert_many(
+        &self,
+        collection: &str,
+        docs: &[(String, Vec<u8>)],
+    ) -> Result<(), StorageError> {
         // 1. 校验集合名
         validate_collection(collection)?;
 
@@ -436,7 +436,8 @@ impl Storage for RedbEngine {
             .iter()
             .map_err(|e| StorageError::Other(format!("遍历文档表失败: {}", e)))?;
         for entry in range {
-            let (key, _value) = entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
+            let (key, _value) =
+                entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
             let key_bytes = key.value();
             // 找到分隔符 0x00,其前部分即为集合名
             let sep_pos = match key_bytes.iter().position(|b| *b == KEY_SEPARATOR) {

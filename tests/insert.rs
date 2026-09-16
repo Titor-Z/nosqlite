@@ -131,7 +131,9 @@ fn insert_persists_across_reopen() {
 
     let db = Database::open(&path).expect("重新打开应成功");
     let mut dup = Document::from_json(r#"{"_id":"p1","v":2}"#).unwrap();
-    let err = db.insert("users", &mut dup).expect_err("重新打开后重复主键应仍冲突");
+    let err = db
+        .insert("users", &mut dup)
+        .expect_err("重新打开后重复主键应仍冲突");
     assert!(
         matches!(
             err,

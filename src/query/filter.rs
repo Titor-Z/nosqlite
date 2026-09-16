@@ -115,9 +115,7 @@ impl Filter {
     pub(crate) fn single_id_eq(&self) -> Option<&Value> {
         match &self.root {
             Condition::Field(field)
-                if field.path.len() == 1
-                    && field.path[0] == "_id"
-                    && field.ops.len() == 1 =>
+                if field.path.len() == 1 && field.path[0] == "_id" && field.ops.len() == 1 =>
             {
                 match &field.ops[0] {
                     Operator::Eq(v) => Some(v),
@@ -246,9 +244,9 @@ fn parse_condition_object(map: &Map<String, Value>) -> Result<Condition, FilterE
     for (key, value) in map {
         match key.as_str() {
             "$and" => {
-                let arr = value.as_array().ok_or_else(|| {
-                    FilterError::InvalidOperator("$and 需要一个数组".to_string())
-                })?;
+                let arr = value
+                    .as_array()
+                    .ok_or_else(|| FilterError::InvalidOperator("$and 需要一个数组".to_string()))?;
                 for item in arr {
                     let obj = item.as_object().ok_or_else(|| {
                         FilterError::InvalidOperator("$and 数组元素必须是对象".to_string())
@@ -257,9 +255,9 @@ fn parse_condition_object(map: &Map<String, Value>) -> Result<Condition, FilterE
                 }
             }
             "$or" => {
-                let arr = value.as_array().ok_or_else(|| {
-                    FilterError::InvalidOperator("$or 需要一个数组".to_string())
-                })?;
+                let arr = value
+                    .as_array()
+                    .ok_or_else(|| FilterError::InvalidOperator("$or 需要一个数组".to_string()))?;
                 for item in arr {
                     let obj = item.as_object().ok_or_else(|| {
                         FilterError::InvalidOperator("$or 数组元素必须是对象".to_string())
@@ -268,9 +266,9 @@ fn parse_condition_object(map: &Map<String, Value>) -> Result<Condition, FilterE
                 }
             }
             "$nor" => {
-                let arr = value.as_array().ok_or_else(|| {
-                    FilterError::InvalidOperator("$nor 需要一个数组".to_string())
-                })?;
+                let arr = value
+                    .as_array()
+                    .ok_or_else(|| FilterError::InvalidOperator("$nor 需要一个数组".to_string()))?;
                 for item in arr {
                     let obj = item.as_object().ok_or_else(|| {
                         FilterError::InvalidOperator("$nor 数组元素必须是对象".to_string())
@@ -279,9 +277,9 @@ fn parse_condition_object(map: &Map<String, Value>) -> Result<Condition, FilterE
                 }
             }
             "$not" => {
-                let obj = value.as_object().ok_or_else(|| {
-                    FilterError::InvalidOperator("$not 需要一个对象".to_string())
-                })?;
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| FilterError::InvalidOperator("$not 需要一个对象".to_string()))?;
                 not = Some(Box::new(parse_condition_object(obj)?));
             }
             // 普通字段:解析字段条件
@@ -357,9 +355,7 @@ fn parse_field_condition(path: &str, value: &Value) -> Result<Condition, FilterE
 
     // 若值是对象且含 $ 前缀键 → 操作符对象
     let ops = match value {
-        Value::Object(map) if map.keys().any(|k| k.starts_with('$')) => {
-            parse_operator_object(map)?
-        }
+        Value::Object(map) if map.keys().any(|k| k.starts_with('$')) => parse_operator_object(map)?,
         // 否则隐式 $eq
         other => vec![Operator::Eq(other.clone())],
     };
@@ -379,15 +375,15 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
             "$lt" => Operator::Lt(value.clone()),
             "$lte" => Operator::Lte(value.clone()),
             "$in" => {
-                let arr = value.as_array().ok_or_else(|| {
-                    FilterError::InvalidOperator("$in 需要一个数组".to_string())
-                })?;
+                let arr = value
+                    .as_array()
+                    .ok_or_else(|| FilterError::InvalidOperator("$in 需要一个数组".to_string()))?;
                 Operator::In(arr.clone())
             }
             "$nin" => {
-                let arr = value.as_array().ok_or_else(|| {
-                    FilterError::InvalidOperator("$nin 需要一个数组".to_string())
-                })?;
+                let arr = value
+                    .as_array()
+                    .ok_or_else(|| FilterError::InvalidOperator("$nin 需要一个数组".to_string()))?;
                 Operator::Nin(arr.clone())
             }
             "$regex" => {
@@ -404,7 +400,9 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
                 })?;
                 // 对象含逻辑操作符 → 文档条件形态;含字段操作符 → 操作符形态;
                 // 纯字段名 → 文档条件形态(隐式 $eq)
-                let spec = if obj.keys().any(|k| matches!(k.as_str(), "$and" | "$or" | "$nor" | "$not"))
+                let spec = if obj
+                    .keys()
+                    .any(|k| matches!(k.as_str(), "$and" | "$or" | "$nor" | "$not"))
                 {
                     ElemMatchSpec::Doc(Box::new(parse_condition_object(obj)?))
                 } else if obj.keys().any(|k| k.starts_with('$')) {
@@ -418,7 +416,7 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
                 return Err(FilterError::InvalidOperator(format!(
                     "不支持的字段操作符: {}",
                     unknown
-                )))
+                )));
             }
         };
         ops.push(op);

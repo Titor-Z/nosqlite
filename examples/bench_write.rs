@@ -59,7 +59,10 @@ fn main() {
         .unwrap_or(3);
 
     println!("nosqlite 写路径对照基准(M9)");
-    println!("条数 {} 条,每组重复 {} 次取中位数;文档结构与值完全一致", n, repeat);
+    println!(
+        "条数 {} 条,每组重复 {} 次取中位数;文档结构与值完全一致",
+        n, repeat
+    );
     println!();
 
     // 预生成文档文本,保证四组写入的是同一批数据
@@ -450,7 +453,9 @@ fn print_conclusion(n: usize, a: &Stats, b: &Stats, c: &Stats, d: &Stats) {
         ratio
     );
     if (0.7..=1.4).contains(&ratio) {
-        println!("结论:A 的单条耗时与一次 fsync 同量级 → 写入瓶颈就是 fsync 的物理成本,不是引擎实现缺陷");
+        println!(
+            "结论:A 的单条耗时与一次 fsync 同量级 → 写入瓶颈就是 fsync 的物理成本,不是引擎实现缺陷"
+        );
     } else if ratio > 1.4 {
         println!(
             "结论:A 的单条耗时显著高于一次 fsync({:.2}x)→ 除 fsync 外还存在额外开销,需进一步定位",
@@ -516,7 +521,13 @@ fn temp_path(tag: &str, ext: &str) -> PathBuf {
     static SEQ: AtomicU32 = AtomicU32::new(0);
     let seq = SEQ.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir();
-    let name = format!("nosqlite_bench_write_{}_{}_{}.{}", tag, std::process::id(), seq, ext);
+    let name = format!(
+        "nosqlite_bench_write_{}_{}_{}.{}",
+        tag,
+        std::process::id(),
+        seq,
+        ext
+    );
     clean(&dir.join(&name));
     dir.join(name)
 }

@@ -54,16 +54,15 @@ fn insert_many_explicit_ids() {
     let path = temp_nodb("many_explicit");
     let db = Database::create(&path).expect("创建数据库应成功");
 
-    let mut docs: Vec<Document> = (0..100).map(|i| doc_with_id(&format!("k{i:03}"), i)).collect();
+    let mut docs: Vec<Document> = (0..100)
+        .map(|i| doc_with_id(&format!("k{i:03}"), i))
+        .collect();
     let ids = db.insert_many("items", &mut docs).expect("批量插入应成功");
 
     assert_eq!(ids.len(), 100, "应返回 100 个主键");
     assert_eq!(ids[0], "k000", "主键顺序应与入参一致");
     assert_eq!(ids[99], "k099");
-    assert_eq!(
-        db.count("items", &filter("{}")).expect("计数应成功"),
-        100
-    );
+    assert_eq!(db.count("items", &filter("{}")).expect("计数应成功"), 100);
 
     // 抽查内容
     let doc = db.get_by_id("items", "k042").unwrap().unwrap();
@@ -158,7 +157,10 @@ fn insert_many_duplicate_with_existing_is_atomic() {
         .insert_many("items", &mut docs)
         .expect_err("与已有文档冲突应失败");
     assert!(
-        matches!(err, DatabaseError::Storage(StorageError::DuplicateKey { .. })),
+        matches!(
+            err,
+            DatabaseError::Storage(StorageError::DuplicateKey { .. })
+        ),
         "应报主键冲突,实际: {:?}",
         err
     );
@@ -185,10 +187,7 @@ fn insert_many_empty_batch() {
     let mut docs: Vec<Document> = Vec::new();
     let ids = db.insert_many("items", &mut docs).expect("空批次应成功");
     assert!(ids.is_empty());
-    assert_eq!(
-        db.count("items", &filter("{}")).expect("计数应成功"),
-        0
-    );
+    assert_eq!(db.count("items", &filter("{}")).expect("计数应成功"), 0);
 
     db.close().expect("关闭应成功");
     drop(db);
@@ -228,10 +227,7 @@ fn insert_many_large_batch_persists() {
         .map(|i| doc_with_id(&format!("big{i:04}"), i))
         .collect();
     db.insert_many("items", &mut docs).expect("大批次应成功");
-    assert_eq!(
-        db.count("items", &filter("{}")).expect("计数应成功"),
-        1_000
-    );
+    assert_eq!(db.count("items", &filter("{}")).expect("计数应成功"), 1_000);
 
     db.close().expect("关闭应成功");
     drop(db); // redb 独占锁,必须先释放句柄
@@ -280,7 +276,9 @@ fn insert_many_then_query_and_update() {
     let path = temp_nodb("many_then_use");
     let db = Database::create(&path).expect("创建数据库应成功");
 
-    let mut docs: Vec<Document> = (0..50).map(|i| doc_with_id(&format!("q{i:02}"), i)).collect();
+    let mut docs: Vec<Document> = (0..50)
+        .map(|i| doc_with_id(&format!("q{i:02}"), i))
+        .collect();
     db.insert_many("items", &mut docs).expect("批量插入应成功");
 
     // 分页
@@ -293,7 +291,8 @@ fn insert_many_then_query_and_update() {
     let update = nosqlite::query::Update::from_value(&serde_json::json!({"$set": {"done": true}}))
         .expect("更新应合法");
     assert!(
-        db.update_by_id("items", "q25", &update).expect("更新应成功"),
+        db.update_by_id("items", "q25", &update)
+            .expect("更新应成功"),
         "按主键更新应生效"
     );
     assert_eq!(db.get_by_id("items", "q25").unwrap().unwrap()["done"], true);

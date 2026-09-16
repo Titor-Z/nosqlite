@@ -55,7 +55,9 @@ fn setup_with(path: &Path, json: &str) -> Database {
 
 /// 辅助:取回唯一文档。
 fn get_one(db: &Database) -> serde_json::Map<String, serde_json::Value> {
-    let docs = db.find("items", &filter(r#"{"_id":"i1"}"#)).expect("查询应成功");
+    let docs = db
+        .find("items", &filter(r#"{"_id":"i1"}"#))
+        .expect("查询应成功");
     assert_eq!(docs.len(), 1, "应恰好有一条文档");
     docs.into_iter().next().unwrap()
 }
@@ -67,7 +69,11 @@ fn set_array_element_by_index() {
     let db = setup_with(&path, r#"{"_id":"i1","tags":["a","b","c"]}"#);
 
     let n = db
-        .update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"tags.1":"X"}}"#))
+        .update(
+            "items",
+            &filter(r#"{"_id":"i1"}"#),
+            &update(r#"{"$set":{"tags.1":"X"}}"#),
+        )
         .expect("数组下标赋值应成功");
     assert_eq!(n, 1, "应修改 1 条文档");
 
@@ -126,13 +132,14 @@ fn set_nested_field_in_array_element() {
 #[test]
 fn set_multi_digit_array_index() {
     let path = temp_nodb("arr_multidigit");
-    let db = setup_with(
-        &path,
-        r#"{"_id":"i1","list":[0,1,2,3,4,5,6,7,8,9,10,11]}"#,
-    );
+    let db = setup_with(&path, r#"{"_id":"i1","list":[0,1,2,3,4,5,6,7,8,9,10,11]}"#);
 
-    db.update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"list.10":99}}"#))
-        .expect("两位下标赋值应成功");
+    db.update(
+        "items",
+        &filter(r#"{"_id":"i1"}"#),
+        &update(r#"{"$set":{"list.10":99}}"#),
+    )
+    .expect("两位下标赋值应成功");
 
     let doc = get_one(&db);
     let list = doc["list"].as_array().expect("list 必须仍是数组");
@@ -151,18 +158,19 @@ fn set_new_field_in_array_element() {
     let path = temp_nodb("arr_newfield");
     let db = setup_with(&path, r#"{"_id":"i1","rows":[{"a":1},{"a":2}]}"#);
 
-    db.update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"rows.1.b":true}}"#))
-        .expect("数组元素新增字段应成功");
+    db.update(
+        "items",
+        &filter(r#"{"_id":"i1"}"#),
+        &update(r#"{"$set":{"rows.1.b":true}}"#),
+    )
+    .expect("数组元素新增字段应成功");
 
     let doc = get_one(&db);
     let rows = doc["rows"].as_array().expect("rows 必须仍是数组");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[1]["a"], 2, "既有字段应保留");
     assert_eq!(rows[1]["b"], true, "新字段应被创建");
-    assert!(
-        rows[0].get("b").is_none(),
-        "下标 0 的元素不应被添加字段"
-    );
+    assert!(rows[0].get("b").is_none(), "下标 0 的元素不应被添加字段");
 
     db.close().expect("关闭应成功");
     drop(db);
@@ -186,9 +194,7 @@ fn set_deep_mixed_path() {
     .expect("多级混合路径赋值应成功");
 
     let doc = get_one(&db);
-    let c = doc["a"]["b"][0]["c"]
-        .as_array()
-        .expect("c 必须仍是数组");
+    let c = doc["a"]["b"][0]["c"].as_array().expect("c 必须仍是数组");
     assert_eq!(
         c,
         &vec![serde_json::json!("x"), serde_json::json!("Y")],
@@ -212,7 +218,11 @@ fn set_array_index_out_of_bounds() {
     let db = setup_with(&path, r#"{"_id":"i1","tags":["a","b","c"]}"#);
 
     let err = db
-        .update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"tags.5":"X"}}"#))
+        .update(
+            "items",
+            &filter(r#"{"_id":"i1"}"#),
+            &update(r#"{"$set":{"tags.5":"X"}}"#),
+        )
         .expect_err("越界下标应失败");
     assert!(
         matches!(
@@ -242,7 +252,11 @@ fn set_array_index_equal_to_len_is_out_of_bounds() {
     let db = setup_with(&path, r#"{"_id":"i1","tags":["a"]}"#);
 
     let err = db
-        .update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"tags.1":"X"}}"#))
+        .update(
+            "items",
+            &filter(r#"{"_id":"i1"}"#),
+            &update(r#"{"$set":{"tags.1":"X"}}"#),
+        )
         .expect_err("下标等于长度应失败");
     assert!(
         matches!(
@@ -265,7 +279,11 @@ fn set_array_index_invalid() {
     let db = setup_with(&path, r#"{"_id":"i1","tags":["a","b"]}"#);
 
     let err = db
-        .update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"tags.x":"X"}}"#))
+        .update(
+            "items",
+            &filter(r#"{"_id":"i1"}"#),
+            &update(r#"{"$set":{"tags.x":"X"}}"#),
+        )
         .expect_err("非数字下标应失败");
     assert!(
         matches!(
@@ -295,10 +313,17 @@ fn set_scalar_intermediate_rejected() {
     let db = setup_with(&path, r#"{"_id":"i1","a":5}"#);
 
     let err = db
-        .update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"a.b":1}}"#))
+        .update(
+            "items",
+            &filter(r#"{"_id":"i1"}"#),
+            &update(r#"{"$set":{"a.b":1}}"#),
+        )
         .expect_err("标量中间值应失败");
     assert!(
-        matches!(err, DatabaseError::Update(UpdateError::ScalarIntermediate { .. })),
+        matches!(
+            err,
+            DatabaseError::Update(UpdateError::ScalarIntermediate { .. })
+        ),
         "应报标量中间值错误,实际: {:?}",
         err
     );
@@ -316,8 +341,12 @@ fn set_scalar_intermediate_rejected() {
 fn array_update_persists_across_reopen() {
     let path = temp_nodb("arr_persist");
     let db = setup_with(&path, r#"{"_id":"i1","tags":["a","b"]}"#);
-    db.update("items", &filter(r#"{"_id":"i1"}"#), &update(r#"{"$set":{"tags.0":"A"}}"#))
-        .expect("更新应成功");
+    db.update(
+        "items",
+        &filter(r#"{"_id":"i1"}"#),
+        &update(r#"{"$set":{"tags.0":"A"}}"#),
+    )
+    .expect("更新应成功");
     db.close().expect("关闭应成功");
     drop(db); // redb 独占锁,必须先释放句柄
 

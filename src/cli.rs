@@ -185,10 +185,9 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
         [cmd, collection, json] if cmd == "insert" => {
             Ok(ShellCommand::Insert(collection.clone(), json.clone()))
         }
-        [cmd, collection] if cmd == "count" => Ok(ShellCommand::Count(
-            collection.clone(),
-            "null".to_string(),
-        )),
+        [cmd, collection] if cmd == "count" => {
+            Ok(ShellCommand::Count(collection.clone(), "null".to_string()))
+        }
         [cmd, collection, filter] if cmd == "count" => {
             Ok(ShellCommand::Count(collection.clone(), filter.clone()))
         }
@@ -203,25 +202,28 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
         )),
         // find <collection> [filter] [--sort json] [--skip n] [--limit n]
         [cmd, collection, rest @ ..] if cmd == "find" => parse_shell_find(collection, rest),
-        [cmd] if cmd == "insert" || cmd == "find" || cmd == "update" || cmd == "delete"
-            || cmd == "count" || cmd == "drop" =>
+        [cmd]
+            if cmd == "insert"
+                || cmd == "find"
+                || cmd == "update"
+                || cmd == "delete"
+                || cmd == "count"
+                || cmd == "drop" =>
         {
             Err(format!("命令 `{}` 缺少参数,输入 `.help` 查看用法", cmd))
         }
         // 无点管理别名一律报错(严格点命令)
-        [cmd, ..] if cmd == "open" || cmd == "create" || cmd == "collections"
-            || cmd == "databases" || cmd == "db" =>
+        [cmd, ..]
+            if cmd == "open"
+                || cmd == "create"
+                || cmd == "collections"
+                || cmd == "databases"
+                || cmd == "db" =>
         {
-            Err(format!(
-                "管理命令必须用点号:`{}` 请写成 `.{}`",
-                cmd, cmd
-            ))
+            Err(format!("管理命令必须用点号:`{}` 请写成 `.{}`", cmd, cmd))
         }
         [cmd] if cmd == "quit" || cmd == "exit" || cmd == "help" || cmd == "?" => {
-            Err(format!(
-                "管理命令必须用点号:`{}` 请写成 `.{}`",
-                cmd, cmd
-            ))
+            Err(format!("管理命令必须用点号:`{}` 请写成 `.{}`", cmd, cmd))
         }
         [unknown, ..] => Err(format!("未知命令或参数过多: `{}`", unknown)),
     }
@@ -376,15 +378,13 @@ where
 
 /// 解析 filter 参数(null 或省略表示匹配全部)。
 fn parse_filter(json: &str) -> Result<Filter, String> {
-    let value: Value =
-        serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
     Filter::from_value(&value).map_err(|e| e.to_string())
 }
 
 /// 解析 sort 参数。
 fn parse_sort(json: &str) -> Result<SortSpec, String> {
-    let value: Value =
-        serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
     SortSpec::from_value(&value).map_err(|e| e.to_string())
 }
 
@@ -510,7 +510,10 @@ fn exec_find(
         Ok(docs) => {
             println!("找到 {} 条文档(集合 `{}`):", docs.len(), collection);
             for doc in &docs {
-                println!("  {}", serde_json::to_string_pretty(doc).unwrap_or_default());
+                println!(
+                    "  {}",
+                    serde_json::to_string_pretty(doc).unwrap_or_default()
+                );
             }
             ExitCode::SUCCESS
         }
@@ -634,7 +637,10 @@ fn exec_collect(db: &Database) -> ExitCode {
 fn exec_drop(db: &Database, collection: &str) -> ExitCode {
     match db.drop_collection(collection) {
         Ok(n) => {
-            println!("已删除集合 `{}` 及其全部 {} 条文档(不可恢复)", collection, n);
+            println!(
+                "已删除集合 `{}` 及其全部 {} 条文档(不可恢复)",
+                collection, n
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -654,11 +660,17 @@ fn print_shell_help() {
     println!("  databases               显示当前绑定的数据库文件");
     println!();
     println!("集合操作:");
-    println!("  insert <collection> <json>            插入文档(json 为对象单条;为数组则单事务批量)");
+    println!(
+        "  insert <collection> <json>            插入文档(json 为对象单条;为数组则单事务批量)"
+    );
     println!("  find <collection> [filter]            查询文档(带 --sort 时走分页,内存友好)");
     println!("       [--sort <json>] [--skip <n>] [--limit <n>]");
-    println!("  update <collection> <filter> <update> 更新匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)");
-    println!("  delete <collection> <filter>          删除匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)");
+    println!(
+        "  update <collection> <filter> <update> 更新匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)"
+    );
+    println!(
+        "  delete <collection> <filter>          删除匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)"
+    );
     println!("  count <collection> [filter]           统计匹配条数");
     println!("  collections                           列出全部集合");
     println!("  drop <collection>                     删除整个集合(不可恢复)");
@@ -692,7 +704,11 @@ fn print_help() {
     println!("  - 数据库为单文件,可直接复制粘贴迁移");
     println!("  - 文档顶层必须是 JSON 对象;_id 缺省时自动生成");
     println!("  - filter 操作符:$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch");
-    println!("    $elemMatch:数组字段至少一个元素满足条件,如 {{\"tags\": {{\"$elemMatch\": {{\"$gte\": 10}}}}}}");
+    println!(
+        "    $elemMatch:数组字段至少一个元素满足条件,如 {{\"tags\": {{\"$elemMatch\": {{\"$gte\": 10}}}}}}"
+    );
     println!("  - 顶层逻辑:$and/$or/$nor/$not;字段支持点号路径(a.b.c)");
-    println!("  - update 操作符:$set(点号路径赋值)/$unset(点号路径删除,数组元素置 null);主键 _id 不可修改或删除");
+    println!(
+        "  - update 操作符:$set(点号路径赋值)/$unset(点号路径删除,数组元素置 null);主键 _id 不可修改或删除"
+    );
 }

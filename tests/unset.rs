@@ -21,7 +21,10 @@ fn apply(doc: serde_json::Value, update: serde_json::Value) -> serde_json::Value
 /// 顶层字段删除。
 #[test]
 fn unset_top_level_field() {
-    let doc = apply(json!({"name": "张三", "age": 30}), json!({"$unset": {"age": ""}}));
+    let doc = apply(
+        json!({"name": "张三", "age": 30}),
+        json!({"$unset": {"age": ""}}),
+    );
     assert_eq!(doc, json!({"name": "张三"}));
 }
 
@@ -108,7 +111,9 @@ fn end_to_end_via_database() {
     let changed = db.update("users", &filter, &update).unwrap();
     assert_eq!(changed, 1, "应更新 1 条");
 
-    let doc = db.find("users", &nosqlite::query::Filter::match_all()).unwrap();
+    let doc = db
+        .find("users", &nosqlite::query::Filter::match_all())
+        .unwrap();
     assert_eq!(doc.len(), 1);
     let map = &doc[0];
     assert!(map.get("tmp").is_none(), "tmp 字段应已被删除");

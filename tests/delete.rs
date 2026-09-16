@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nosqlite::{Database, Document};
 use nosqlite::query::{Filter, Update};
+use nosqlite::{Database, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -49,7 +49,10 @@ fn filter(json: &str) -> Filter {
 /// 辅助:查询全部文档并返回 _id 列表(已排序)。
 fn ids(db: &Database) -> Vec<String> {
     let mut docs = db
-        .find("users", &Filter::from_value(&serde_json::Value::Null).unwrap())
+        .find(
+            "users",
+            &Filter::from_value(&serde_json::Value::Null).unwrap(),
+        )
         .expect("查询应成功");
     docs.sort_by(|a, b| a["_id"].as_str().cmp(&b["_id"].as_str()));
     docs.into_iter()
@@ -63,7 +66,9 @@ fn delete_by_id() {
     let path = temp_nodb("del_id");
     let db = setup(&path);
 
-    let n = db.delete("users", &filter(r#"{"_id":"u2"}"#)).expect("删除应成功");
+    let n = db
+        .delete("users", &filter(r#"{"_id":"u2"}"#))
+        .expect("删除应成功");
     assert_eq!(n, 1, "应删除 1 条");
     assert_eq!(ids(&db), vec!["u1".to_string(), "u3".to_string()]);
 
@@ -129,9 +134,12 @@ fn delete_then_reinsert_same_id() {
     let path = temp_nodb("del_reinsert");
     let db = setup(&path);
 
-    db.delete("users", &filter(r#"{"_id":"u1"}"#)).expect("删除应成功");
+    db.delete("users", &filter(r#"{"_id":"u1"}"#))
+        .expect("删除应成功");
     let mut new_doc = Document::from_json(r#"{"_id":"u1","name":"新用户"}"#).unwrap();
-    let id = db.insert("users", &mut new_doc).expect("同主键再插入应成功");
+    let id = db
+        .insert("users", &mut new_doc)
+        .expect("同主键再插入应成功");
     assert_eq!(id, "u1");
 
     db.close().expect("关闭应成功");
@@ -149,9 +157,12 @@ fn delete_collection_isolation() {
     db.insert("users", &mut a).expect("users 插入应成功");
     db.insert("orders", &mut b).expect("orders 插入应成功");
 
-    db.delete("users", &filter(r#"{"_id":"x"}"#)).expect("删除应成功");
+    db.delete("users", &filter(r#"{"_id":"x"}"#))
+        .expect("删除应成功");
 
-    let orders = db.find("orders", &filter(r#"{"_id":"x"}"#)).expect("查询应成功");
+    let orders = db
+        .find("orders", &filter(r#"{"_id":"x"}"#))
+        .expect("查询应成功");
     assert_eq!(orders.len(), 1, "orders 集合不应受影响");
 
     db.close().expect("关闭应成功");
@@ -165,7 +176,9 @@ fn delete_from_empty_collection() {
     let path = temp_nodb("del_empty");
     let db = Database::create(&path).expect("创建数据库应成功");
 
-    let n = db.delete("empty", &filter(r#"{"_id":"x"}"#)).expect("空集合删除应成功");
+    let n = db
+        .delete("empty", &filter(r#"{"_id":"x"}"#))
+        .expect("空集合删除应成功");
     assert_eq!(n, 0);
 
     db.close().expect("关闭应成功");
@@ -178,12 +191,17 @@ fn delete_from_empty_collection() {
 fn delete_persists_across_reopen() {
     let path = temp_nodb("del_persist");
     let db = setup(&path);
-    db.delete("users", &filter(r#"{"_id":"u2"}"#)).expect("删除应成功");
+    db.delete("users", &filter(r#"{"_id":"u2"}"#))
+        .expect("删除应成功");
     db.close().expect("关闭应成功");
     drop(db); // Windows 下 redb 持有独占锁,必须先释放句柄
 
     let db = Database::open(&path).expect("重新打开应成功");
-    assert_eq!(ids(&db), vec!["u1".to_string(), "u3".to_string()], "重新打开后删除应仍生效");
+    assert_eq!(
+        ids(&db),
+        vec!["u1".to_string(), "u3".to_string()],
+        "重新打开后删除应仍生效"
+    );
 
     db.close().expect("关闭应成功");
     drop(db);
@@ -199,7 +217,8 @@ fn delete_after_update_flow() {
     // 先把 u3 的 age 从 10 更新为 15
     let up = serde_json::from_str::<serde_json::Value>(r#"{"$set":{"age":15}}"#).unwrap();
     let upd = Update::from_value(&up).unwrap();
-    db.update("users", &filter(r#"{"_id":"u3"}"#), &upd).expect("更新应成功");
+    db.update("users", &filter(r#"{"_id":"u3"}"#), &upd)
+        .expect("更新应成功");
 
     // 再删除 age < 18 的文档
     let n = db

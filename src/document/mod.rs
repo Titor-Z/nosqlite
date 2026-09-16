@@ -27,9 +27,7 @@ pub struct Document {
 impl Document {
     /// 创建一条空文档(内部为空的 JSON 对象)。
     pub fn new() -> Self {
-        Document {
-            inner: Map::new(),
-        }
+        Document { inner: Map::new() }
     }
 
     /// 从 JSON 字符串创建文档。
@@ -84,7 +82,8 @@ impl Document {
             Some(id) => Ok(id),
             None => {
                 let id = ObjectId::generate();
-                self.inner.insert("_id".to_string(), Value::String(id.clone()));
+                self.inner
+                    .insert("_id".to_string(), Value::String(id.clone()));
                 Ok(id)
             }
         }

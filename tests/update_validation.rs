@@ -102,8 +102,7 @@ fn empty_path_segment_rejected() {
         r#"{"$set":{".a":1}}"#,
         r#"{"$set":{"a.":1}}"#,
     ] {
-        let err = try_update(json)
-            .expect_err(&format!("路径字面量 `{}` 应解析失败", json));
+        let err = try_update(json).expect_err(&format!("路径字面量 `{}` 应解析失败", json));
         assert!(
             matches!(err, UpdateError::InvalidUpdate(_)),
             "路径 `{}` 应报 InvalidUpdate,实际: {:?}",
@@ -130,7 +129,9 @@ fn noop_same_value_not_counted() {
         .expect("更新应成功");
     assert_eq!(n, 0, "写入相同值不应计为修改");
 
-    let docs = db.find("users", &filter(r#"{"_id":"u1"}"#)).expect("查询应成功");
+    let docs = db
+        .find("users", &filter(r#"{"_id":"u1"}"#))
+        .expect("查询应成功");
     assert_eq!(docs[0]["vip"], true, "文档内容应保持原样");
     assert_eq!(docs[0]["age"], 20, "文档内容应保持原样");
 
@@ -161,10 +162,7 @@ fn only_changed_documents_counted() {
 
     let docs = db.find("users", &filter(r#"{}"#)).expect("查询应成功");
     assert_eq!(docs.len(), 2);
-    assert!(
-        docs.iter().all(|d| d["vip"] == true),
-        "两条都应为 vip:true"
-    );
+    assert!(docs.iter().all(|d| d["vip"] == true), "两条都应为 vip:true");
 
     db.close().expect("关闭应成功");
     drop(db);

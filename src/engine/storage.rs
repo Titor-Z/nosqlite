@@ -54,11 +54,9 @@ impl fmt::Display for StorageError {
                 }
             }
             StorageError::InvalidCollection(msg) => write!(f, "{}", msg),
-            StorageError::DuplicateKey { collection, id } => write!(
-                f,
-                "主键冲突:集合 `{}` 中已存在 _id = `{}`",
-                collection, id
-            ),
+            StorageError::DuplicateKey { collection, id } => {
+                write!(f, "主键冲突:集合 `{}` 中已存在 _id = `{}`", collection, id)
+            }
             StorageError::Other(msg) => write!(f, "{}", msg),
         }
     }
@@ -91,8 +89,7 @@ pub trait Storage {
     ///
     /// 文档以序列化后的字节形式传入,主键 `doc_id` 由调用方决定(可为自动生成的
     /// ObjectId)。返回 [`StorageError::DuplicateKey`] 表示主键冲突。
-    fn insert(&self, collection: &str, doc_id: &str, doc_bytes: &[u8])
-        -> Result<(), StorageError>;
+    fn insert(&self, collection: &str, doc_id: &str, doc_bytes: &[u8]) -> Result<(), StorageError>;
 
     /// 扫描指定集合内的全部文档,返回 `(doc_id, doc_bytes)` 列表。
     ///
@@ -128,7 +125,7 @@ pub trait Storage {
     /// 所有文档在**同一个写事务**内写入并一次性提交,写入吞吐可提升 1–2 个数量级。
     /// 任一主键冲突则整个批次失败(报 [`StorageError::DuplicateKey`]),已写入的内容随事务一并回滚。
     fn insert_many(&self, collection: &str, docs: &[(String, Vec<u8>)])
-        -> Result<(), StorageError>;
+    -> Result<(), StorageError>;
 
     /// 按主键读取单条文档(M11 新增,O(log n),不经全表扫描)。
     ///

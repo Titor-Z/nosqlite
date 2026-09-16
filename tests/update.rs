@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nosqlite::{Database, DatabaseError, Document};
 use nosqlite::query::{Filter, Update};
+use nosqlite::{Database, DatabaseError, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -53,7 +53,10 @@ fn update(json: &str) -> Update {
 /// 辅助:查询全部文档并按 _id 排序返回。
 fn find_all(db: &Database) -> Vec<serde_json::Map<String, serde_json::Value>> {
     let mut docs = db
-        .find("users", &Filter::from_value(&serde_json::Value::Null).unwrap())
+        .find(
+            "users",
+            &Filter::from_value(&serde_json::Value::Null).unwrap(),
+        )
         .expect("查询应成功");
     docs.sort_by(|a, b| a["_id"].as_str().cmp(&b["_id"].as_str()));
     docs
@@ -67,7 +70,11 @@ fn set_single_field() {
 
     // 把 age 从 20 改成 21
     let n = db
-        .update("users", &filter(r#"{"_id":"u1"}"#), &update(r#"{"$set":{"age":21}}"#))
+        .update(
+            "users",
+            &filter(r#"{"_id":"u1"}"#),
+            &update(r#"{"$set":{"age":21}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 1, "应修改 1 条文档");
 
@@ -88,7 +95,11 @@ fn set_multiple_matches() {
 
     // 所有 age >= 20 的用户打上 vip 标记
     let n = db
-        .update("users", &filter(r#"{"age":{"$gte":20}}"#), &update(r#"{"$set":{"vip":true}}"#))
+        .update(
+            "users",
+            &filter(r#"{"age":{"$gte":20}}"#),
+            &update(r#"{"$set":{"vip":true}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 2, "两条文档都应被修改");
 
@@ -108,7 +119,11 @@ fn set_no_match() {
     let db = setup(&path);
 
     let n = db
-        .update("users", &filter(r#"{"_id":"nobody"}"#), &update(r#"{"$set":{"vip":true}}"#))
+        .update(
+            "users",
+            &filter(r#"{"_id":"nobody"}"#),
+            &update(r#"{"$set":{"vip":true}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 0, "无匹配文档应返回 0");
 
@@ -129,11 +144,17 @@ fn set_dot_path() {
     db.insert("orders", &mut doc).expect("插入应成功");
 
     let n = db
-        .update("orders", &filter(r#"{"_id":"o1"}"#), &update(r#"{"$set":{"addr.city":"上海"}}"#))
+        .update(
+            "orders",
+            &filter(r#"{"_id":"o1"}"#),
+            &update(r#"{"$set":{"addr.city":"上海"}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 1);
 
-    let docs = db.find("orders", &filter(r#"{"_id":"o1"}"#)).expect("查询应成功");
+    let docs = db
+        .find("orders", &filter(r#"{"_id":"o1"}"#))
+        .expect("查询应成功");
     assert_eq!(docs[0]["addr"]["city"], "上海", "嵌套字段应被更新");
     assert_eq!(docs[0]["addr"]["code"], 100, "兄弟字段不应被影响");
 
@@ -151,11 +172,17 @@ fn set_dot_path_auto_create() {
     db.insert("orders", &mut doc).expect("插入应成功");
 
     let n = db
-        .update("orders", &filter(r#"{"_id":"o1"}"#), &update(r#"{"$set":{"profile.nick":"小张"}}"#))
+        .update(
+            "orders",
+            &filter(r#"{"_id":"o1"}"#),
+            &update(r#"{"$set":{"profile.nick":"小张"}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 1);
 
-    let docs = db.find("orders", &filter(r#"{"_id":"o1"}"#)).expect("查询应成功");
+    let docs = db
+        .find("orders", &filter(r#"{"_id":"o1"}"#))
+        .expect("查询应成功");
     assert_eq!(docs[0]["profile"]["nick"], "小张", "中间对象应自动创建");
 
     db.close().expect("关闭应成功");
@@ -195,7 +222,11 @@ fn set_id_rejected() {
     let db = setup(&path);
 
     let err = db
-        .update("users", &filter(r#"{"_id":"u1"}"#), &update(r#"{"$set":{"_id":"u9"}}"#))
+        .update(
+            "users",
+            &filter(r#"{"_id":"u1"}"#),
+            &update(r#"{"$set":{"_id":"u9"}}"#),
+        )
         .expect_err("修改 _id 应失败");
     assert!(
         matches!(err, DatabaseError::Update(_)),
@@ -233,13 +264,19 @@ fn set_with_logic_filter() {
 fn update_persists_across_reopen() {
     let path = temp_nodb("update_persist");
     let db = setup(&path);
-    db.update("users", &filter(r#"{"_id":"u1"}"#), &update(r#"{"$set":{"age":21}}"#))
-        .expect("更新应成功");
+    db.update(
+        "users",
+        &filter(r#"{"_id":"u1"}"#),
+        &update(r#"{"$set":{"age":21}}"#),
+    )
+    .expect("更新应成功");
     db.close().expect("关闭应成功");
     drop(db); // Windows 下 redb 持有独占锁,必须先释放句柄
 
     let db = Database::open(&path).expect("重新打开应成功");
-    let docs = db.find("users", &filter(r#"{"_id":"u1"}"#)).expect("查询应成功");
+    let docs = db
+        .find("users", &filter(r#"{"_id":"u1"}"#))
+        .expect("查询应成功");
     assert_eq!(docs[0]["age"], 21, "重新打开后应仍保留更新结果");
 
     db.close().expect("关闭应成功");

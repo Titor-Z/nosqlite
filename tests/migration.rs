@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nosqlite::{Database, Document};
 use nosqlite::query::Filter;
+use nosqlite::{Database, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -38,9 +38,7 @@ fn filter(json: &str) -> Filter {
 
 /// 辅助:查询集合全部文档并返回按 _id 排序的 (id, json) 列表。
 fn dump(db: &Database, collection: &str) -> Vec<(String, String)> {
-    let mut docs = db
-        .find(collection, &filter("null"))
-        .expect("查询应成功");
+    let mut docs = db.find(collection, &filter("null")).expect("查询应成功");
     docs.sort_by(|a, b| a["_id"].as_str().cmp(&b["_id"].as_str()));
     docs.into_iter()
         .map(|d| {
@@ -63,7 +61,10 @@ fn copy_paste_preserves_all_data() {
 
         let mut u1 = Document::from_json(r#"{"_id":"user_001","name":"张三","age":30}"#).unwrap();
         let mut u2 = Document::from_json(r#"{"name":"李四","age":25}"#).unwrap();
-        let mut u3 = Document::from_json(r#"{"_id":"user_003","name":"王五","age":18,"addr":{"city":"上海"}}"#).unwrap();
+        let mut u3 = Document::from_json(
+            r#"{"_id":"user_003","name":"王五","age":18,"addr":{"city":"上海"}}"#,
+        )
+        .unwrap();
         db.insert("users", &mut u1).expect("插入 u1 应成功");
         db.insert("users", &mut u2).expect("插入 u2 应成功");
         db.insert("users", &mut u3).expect("插入 u3 应成功");
@@ -116,25 +117,39 @@ fn copy_paste_copy_is_fully_usable() {
         let db2 = Database::open(&dst).expect("打开副本应成功");
 
         // count 正常
-        assert_eq!(db2.count("t", &filter("null")).unwrap(), 2, "副本 count 应正常");
+        assert_eq!(
+            db2.count("t", &filter("null")).unwrap(),
+            2,
+            "副本 count 应正常"
+        );
 
         // 更新副本上的文档,不影响原库
         let upd = serde_json::from_str::<serde_json::Value>(r#"{"$set":{"v":99}}"#).unwrap();
         let up = nosqlite::query::Update::from_value(&upd).unwrap();
-        db2.update("t", &filter(r#"{"_id":"a"}"#), &up).expect("副本更新应成功");
+        db2.update("t", &filter(r#"{"_id":"a"}"#), &up)
+            .expect("副本更新应成功");
         let docs = db2.find("t", &filter(r#"{"_id":"a"}"#)).unwrap();
         assert_eq!(docs[0]["v"], 99, "副本更新应生效");
 
         // 删除副本上的文档,不影响原库
-        db2.delete("t", &filter(r#"{"_id":"b"}"#)).expect("副本删除应成功");
-        assert_eq!(db2.count("t", &filter("null")).unwrap(), 1, "副本删除应生效");
+        db2.delete("t", &filter(r#"{"_id":"b"}"#))
+            .expect("副本删除应成功");
+        assert_eq!(
+            db2.count("t", &filter("null")).unwrap(),
+            1,
+            "副本删除应生效"
+        );
 
         db2.close().expect("关闭应成功");
         drop(db2);
 
         // 原库仍保持 2 条,未被副本操作影响(副本是独立数据库)
         let db3 = Database::open(&src).expect("重新打开原库应成功");
-        assert_eq!(db3.count("t", &filter("null")).unwrap(), 2, "原库不应受影响");
+        assert_eq!(
+            db3.count("t", &filter("null")).unwrap(),
+            2,
+            "原库不应受影响"
+        );
         db3.close().expect("关闭应成功");
         drop(db3);
     }

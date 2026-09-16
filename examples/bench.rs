@@ -161,7 +161,9 @@ fn run_round(docs: &[(String, Vec<u8>)]) -> Round {
     assert!(changed, "按主键更新应生效");
 
     let start = Instant::now();
-    let removed = db.delete_by_id(COLLECTION, "doc0000000").expect("删除应成功");
+    let removed = db
+        .delete_by_id(COLLECTION, "doc0000000")
+        .expect("删除应成功");
     let delete_by_id = start.elapsed();
     assert!(removed, "按主键删除应生效");
 
@@ -195,7 +197,11 @@ fn print_report(n: usize, payload_bytes: usize, rounds: &[Round]) {
     let rss_first = rounds.first().map(|r| r.rss_delta_kb).unwrap_or(0);
     let rss_max = rounds.iter().map(|r| r.rss_delta_kb).max().unwrap_or(0);
     let rss_page_first = rounds.first().map(|r| r.rss_page_delta_kb).unwrap_or(0);
-    let rss_page_max = rounds.iter().map(|r| r.rss_page_delta_kb).max().unwrap_or(0);
+    let rss_page_max = rounds
+        .iter()
+        .map(|r| r.rss_page_delta_kb)
+        .max()
+        .unwrap_or(0);
 
     println!("===== 规模 {} 条(中位数,{} 轮)=====", n, rounds.len());
     println!(
@@ -221,10 +227,7 @@ fn print_report(n: usize, payload_bytes: usize, rounds: &[Round]) {
         ratio(rss_max, payload_bytes)
     );
     println!("  count 全量(流式)   : {}  [内存 O(1)]", fmt(count_all));
-    println!(
-        "  find_page 排序+分页 : {}  ← 分页验收项",
-        fmt(page)
-    );
+    println!("  find_page 排序+分页 : {}  ← 分页验收项", fmt(page));
     println!(
         "    └ RSS 增量        : 首轮 {:.1} MiB / 最大 {:.1} MiB  (两遍法)",
         mib(rss_page_first.max(0) as u64 * 1024),

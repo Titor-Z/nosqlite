@@ -70,7 +70,9 @@ fn get_by_id_and_missing() {
     assert_eq!(doc["age"], 30);
 
     assert!(
-        db.get_by_id("users", "nobody").expect("读取应成功").is_none(),
+        db.get_by_id("users", "nobody")
+            .expect("读取应成功")
+            .is_none(),
         "不存在的主键应返回 None"
     );
     // 不存在的集合也不应报错
@@ -138,8 +140,12 @@ fn update_by_id_noop_returns_false() {
     let db = setup(&path);
 
     assert!(
-        !db.update_by_id("users", "u1", &update(r#"{"$set":{"name":"张三","age":20}}"#))
-            .expect("更新应成功"),
+        !db.update_by_id(
+            "users",
+            "u1",
+            &update(r#"{"$set":{"name":"张三","age":20}}"#)
+        )
+        .expect("更新应成功"),
         "写入相同值应返回 false"
     );
 
@@ -205,7 +211,11 @@ fn update_fast_path_matches_by_id() {
 
     // 命中:返回 1
     let n = db
-        .update("users", &filter(r#"{"_id":"u1"}"#), &update(r#"{"$set":{"age":21}}"#))
+        .update(
+            "users",
+            &filter(r#"{"_id":"u1"}"#),
+            &update(r#"{"$set":{"age":21}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 1, "命中应计 1 条");
     assert_eq!(
@@ -216,13 +226,21 @@ fn update_fast_path_matches_by_id() {
 
     // 无变化:返回 0(与 update_by_id 的 false 语义一致)
     let n = db
-        .update("users", &filter(r#"{"_id":"u1"}"#), &update(r#"{"$set":{"age":21}}"#))
+        .update(
+            "users",
+            &filter(r#"{"_id":"u1"}"#),
+            &update(r#"{"$set":{"age":21}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 0, "无变化不应计数");
 
     // 未命中:返回 0
     let n = db
-        .update("users", &filter(r#"{"_id":"nobody"}"#), &update(r#"{"$set":{"age":1}}"#))
+        .update(
+            "users",
+            &filter(r#"{"_id":"nobody"}"#),
+            &update(r#"{"$set":{"age":1}}"#),
+        )
         .expect("更新应成功");
     assert_eq!(n, 0, "未命中应返回 0");
 
@@ -249,10 +267,7 @@ fn delete_fast_path_matches_by_id() {
         0,
         "重复删除应返回 0"
     );
-    assert_eq!(
-        db.count("users", &filter("{}")).expect("计数应成功"),
-        2
-    );
+    assert_eq!(db.count("users", &filter("{}")).expect("计数应成功"), 2);
 
     db.close().expect("关闭应成功");
     drop(db);
@@ -324,7 +339,11 @@ fn non_string_id_filter_is_safe() {
     let db = setup(&path);
 
     let n = db
-        .update("users", &filter(r#"{"_id":123}"#), &update(r#"{"$set":{"x":1}}"#))
+        .update(
+            "users",
+            &filter(r#"{"_id":123}"#),
+            &update(r#"{"$set":{"x":1}}"#),
+        )
         .expect("非字符串 _id 不应崩溃");
     assert_eq!(n, 0, "不应命中任何文档");
 

@@ -86,9 +86,7 @@ fn concurrent_inserts_same_collection() {
         h.join().expect("线程不应 panic");
     }
 
-    let total = db
-        .count("items", &all_filter())
-        .expect("计数应成功");
+    let total = db.count("items", &all_filter()).expect("计数应成功");
     assert_eq!(total, THREADS * PER_THREAD, "并发插入不得丢数据");
 
     // 抽查每个线程的首尾文档确实存在

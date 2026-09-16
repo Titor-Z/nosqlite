@@ -115,7 +115,11 @@ impl Database {
     /// - 文档顶层必须是 JSON 对象;
     /// - `_id` 缺省时自动生成 24 字符 ObjectId,并回填到文档中;
     /// - `_id` 重复时返回 [`DatabaseError::Storage`](`StorageError::DuplicateKey`) 主键冲突。
-    pub fn insert(&self, collection: &str, document: &mut Document) -> Result<String, DatabaseError> {
+    pub fn insert(
+        &self,
+        collection: &str,
+        document: &mut Document,
+    ) -> Result<String, DatabaseError> {
         // 1. 确保主键:缺省则自动生成并写入文档
         let doc_id = document.ensure_id()?;
         // 2. 序列化文档为 JSON 字节
@@ -136,7 +140,11 @@ impl Database {
     /// - `filter` 为空(null/省略)时匹配全部文档;
     /// - 结果按 B+树主键顺序返回,不做排序与分页;
     /// - 若要排序/分页,请使用 [`Database::find_with_options`]。
-    pub fn find(&self, collection: &str, filter: &Filter) -> Result<Vec<Map<String, Value>>, DatabaseError> {
+    pub fn find(
+        &self,
+        collection: &str,
+        filter: &Filter,
+    ) -> Result<Vec<Map<String, Value>>, DatabaseError> {
         self.find_with_options(collection, filter, &FindOptions::default())
     }
 
@@ -210,10 +218,7 @@ impl Database {
         filter: &Filter,
         update: &Update,
     ) -> Result<usize, DatabaseError> {
-        if let Some(id) = filter
-            .single_id_eq()
-            .and_then(|v| v.as_str())
-        {
+        if let Some(id) = filter.single_id_eq().and_then(|v| v.as_str()) {
             return Ok(self.update_by_id(collection, id, update)? as usize);
         }
         // 1. 流式遍历 + 过滤 + 应用更新 + 写回(内存 O(1),不再物化整个集合)
@@ -276,10 +281,7 @@ impl Database {
     /// 流水线:**流式遍历** → 过滤 → 逐个删除(内存 O(1))。
     /// 若 filter 为 `{"_id": "xxx"}`,自动走主键直接寻址快速路径(不经全表扫描)。
     pub fn delete(&self, collection: &str, filter: &Filter) -> Result<usize, DatabaseError> {
-        if let Some(id) = filter
-            .single_id_eq()
-            .and_then(|v| v.as_str())
-        {
+        if let Some(id) = filter.single_id_eq().and_then(|v| v.as_str()) {
             return Ok(self.delete_by_id(collection, id)? as usize);
         }
         // 流式遍历 + 过滤 + 删除
@@ -496,11 +498,23 @@ impl Database {
                 // 有排序:只保留排序键 + 主键(小体量)
                 Some(spec) => {
                     let key = spec.extract_sort_key(map);
-                    index.push((key, map.get("_id").and_then(|v| v.as_str()).unwrap_or("").to_string()));
+                    index.push((
+                        key,
+                        map.get("_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    ));
                 }
                 // 无排序:主键即天然有序,直接记主键
                 None => {
-                    index.push((Vec::new(), map.get("_id").and_then(|v| v.as_str()).unwrap_or("").to_string()));
+                    index.push((
+                        Vec::new(),
+                        map.get("_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    ));
                 }
             }
             true

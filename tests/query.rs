@@ -25,7 +25,10 @@ fn matches(json: &str, filter_json: &str) -> bool {
 #[test]
 fn implicit_eq() {
     assert!(matches(r#"{"name":"张三","age":30}"#, r#"{"name":"张三"}"#));
-    assert!(!matches(r#"{"name":"张三","age":30}"#, r#"{"name":"李四"}"#));
+    assert!(!matches(
+        r#"{"name":"张三","age":30}"#,
+        r#"{"name":"李四"}"#
+    ));
 }
 
 /// 数字 int/float 可互比相等。
@@ -103,9 +106,18 @@ fn nin_operator() {
 /// $regex:匹配字符串字段(正则语义)。
 #[test]
 fn regex_matches_string() {
-    assert!(matches(r#"{"name":"张三丰"}"#, r#"{"name":{"$regex":"张三"}}"#));
-    assert!(matches(r#"{"name":"张三丰"}"#, r#"{"name":{"$regex":"^张"}}"#));
-    assert!(!matches(r#"{"name":"李四"}"#, r#"{"name":{"$regex":"^张"}}"#));
+    assert!(matches(
+        r#"{"name":"张三丰"}"#,
+        r#"{"name":{"$regex":"张三"}}"#
+    ));
+    assert!(matches(
+        r#"{"name":"张三丰"}"#,
+        r#"{"name":{"$regex":"^张"}}"#
+    ));
+    assert!(!matches(
+        r#"{"name":"李四"}"#,
+        r#"{"name":{"$regex":"^张"}}"#
+    ));
 }
 
 /// $regex:非字符串字段不匹配。
@@ -202,14 +214,8 @@ fn top_level_nor() {
 /// 顶层 $not。
 #[test]
 fn top_level_not() {
-    assert!(matches(
-        r#"{"age":30}"#,
-        r#"{"$not":{"age":{"$gt":60}}}"#
-    ));
-    assert!(!matches(
-        r#"{"age":30}"#,
-        r#"{"$not":{"age":{"$gt":25}}}"#
-    ));
+    assert!(matches(r#"{"age":30}"#, r#"{"$not":{"age":{"$gt":60}}}"#));
+    assert!(!matches(r#"{"age":30}"#, r#"{"$not":{"age":{"$gt":25}}}"#));
 }
 
 // ──────────────── 空 filter ────────────────

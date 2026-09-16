@@ -153,9 +153,7 @@ impl Update {
             }
             // 主键不可被删除
             if path.first().map(|s| s.as_str()) == Some("_id") {
-                return Err(UpdateError::InvalidUpdate(
-                    "不允许删除主键 _id".to_string(),
-                ));
+                return Err(UpdateError::InvalidUpdate("不允许删除主键 _id".to_string()));
             }
             unset_fields.push(path);
         }
@@ -175,9 +173,7 @@ impl Update {
         for (path, value) in &self.set_fields {
             // 主键不可修改
             if path.first().map(|s| s.as_str()) == Some("_id") {
-                return Err(UpdateError::InvalidUpdate(
-                    "不允许修改主键 _id".to_string(),
-                ));
+                return Err(UpdateError::InvalidUpdate("不允许修改主键 _id".to_string()));
             }
             set_in_map(doc, path, value)?;
         }
@@ -243,7 +239,11 @@ fn unset_in_value(root: &mut Value, path: &[String]) -> Result<(), UpdateError> 
 /// 在顶层对象上按点号路径赋值。
 ///
 /// 单段路径直接写入顶层;多段路径取出/创建子容器后交给 [`set_in_value`]。
-fn set_in_map(doc: &mut Map<String, Value>, path: &[String], value: &Value) -> Result<(), UpdateError> {
+fn set_in_map(
+    doc: &mut Map<String, Value>,
+    path: &[String],
+    value: &Value,
+) -> Result<(), UpdateError> {
     // 空路径:忽略
     let Some((first, rest)) = path.split_first() else {
         return Ok(());

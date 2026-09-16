@@ -143,11 +143,9 @@ impl std::fmt::Display for SortError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SortError::NotObject => write!(f, "sort 顶层必须是 JSON 对象"),
-            SortError::InvalidDirection(field) => write!(
-                f,
-                "排序方向必须为 1(升序)或 -1(降序),字段: {}",
-                field
-            ),
+            SortError::InvalidDirection(field) => {
+                write!(f, "排序方向必须为 1(升序)或 -1(降序),字段: {}", field)
+            }
             SortError::Empty => write!(f, "排序字段不能为空"),
         }
     }
@@ -226,10 +224,7 @@ mod tests {
         ];
         spec.sort(&mut docs);
         // age 相同(20)时按 name 降序:b > a
-        let names: Vec<&str> = docs
-            .iter()
-            .map(|d| d["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = docs.iter().map(|d| d["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["b", "a", "c"]);
     }
 

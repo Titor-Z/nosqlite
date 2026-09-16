@@ -276,8 +276,12 @@ fn find_page_reflects_updates() {
     assert_eq!(first[0]["_id"], "d004", "降序首条应是 age 最大者");
 
     // 把 d000 的 age 提到最大
-    db.update_by_id("users", "d000", &Update::from_value(&serde_json::json!({"$set": {"age": 100}})).unwrap())
-        .expect("更新应成功");
+    db.update_by_id(
+        "users",
+        "d000",
+        &Update::from_value(&serde_json::json!({"$set": {"age": 100}})).unwrap(),
+    )
+    .expect("更新应成功");
 
     let second = db
         .find_page("users", &filter("{}"), Some(&spec), 0, Some(1))

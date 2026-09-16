@@ -34,7 +34,10 @@ fn main() {
         .unwrap_or(8);
 
     println!("nosqlite 并发写入排队压测(M9)");
-    println!("总量 {} 条,线程数 {};每条插入均为独立写事务", total, threads);
+    println!(
+        "总量 {} 条,线程数 {};每条插入均为独立写事务",
+        total, threads
+    );
     println!();
 
     let single = run_single(total);

@@ -45,10 +45,26 @@ fn insert(db: &Database, collection: &str, json: &str) {
 /// 构造一个含三条用户的测试库。
 fn setup_users(path: &Path) {
     let db = Database::create(path).expect("创建数据库应成功");
-    insert(&db, "users", r#"{"_id":"u1","name":"张三","age":30,"city":"北京"}"#);
-    insert(&db, "users", r#"{"_id":"u2","name":"李四","age":18,"city":"上海"}"#);
-    insert(&db, "users", r#"{"_id":"u3","name":"王五","age":45,"city":"北京"}"#);
-    insert(&db, "users", r#"{"_id":"u4","name":"赵六","age":22,"city":"广州"}"#);
+    insert(
+        &db,
+        "users",
+        r#"{"_id":"u1","name":"张三","age":30,"city":"北京"}"#,
+    );
+    insert(
+        &db,
+        "users",
+        r#"{"_id":"u2","name":"李四","age":18,"city":"上海"}"#,
+    );
+    insert(
+        &db,
+        "users",
+        r#"{"_id":"u3","name":"王五","age":45,"city":"北京"}"#,
+    );
+    insert(
+        &db,
+        "users",
+        r#"{"_id":"u4","name":"赵六","age":22,"city":"广州"}"#,
+    );
     db.close().expect("关闭应成功");
     drop(db);
 }
@@ -163,7 +179,9 @@ fn find_dot_path() {
     insert(&db, "users", r#"{"_id":"a","addr":{"city":"北京"}}"#);
     insert(&db, "users", r#"{"_id":"b","addr":{"city":"上海"}}"#);
 
-    let docs = db.find("users", &filter(r#"{"addr.city":"北京"}"#)).unwrap();
+    let docs = db
+        .find("users", &filter(r#"{"addr.city":"北京"}"#))
+        .unwrap();
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0]["_id"], "a");
 
@@ -185,7 +203,9 @@ fn find_sort_desc() {
         skip: 0,
         limit: None,
     };
-    let docs = db.find_with_options("users", &Filter::match_all(), &options).unwrap();
+    let docs = db
+        .find_with_options("users", &Filter::match_all(), &options)
+        .unwrap();
     let ages: Vec<i64> = docs.iter().map(|d| d["age"].as_i64().unwrap()).collect();
     assert_eq!(ages, vec![45, 30, 22, 18], "age 降序");
 
@@ -207,7 +227,9 @@ fn find_limit() {
         skip: 0,
         limit: Some(2),
     };
-    let docs = db.find_with_options("users", &Filter::match_all(), &options).unwrap();
+    let docs = db
+        .find_with_options("users", &Filter::match_all(), &options)
+        .unwrap();
     assert_eq!(docs.len(), 2, "limit 2 应只返回 2 条");
     assert_eq!(docs[0]["age"].as_i64(), Some(45));
     assert_eq!(docs[1]["age"].as_i64(), Some(30));
@@ -230,7 +252,9 @@ fn find_skip_limit() {
         skip: 2,
         limit: Some(1),
     };
-    let docs = db.find_with_options("users", &Filter::match_all(), &options).unwrap();
+    let docs = db
+        .find_with_options("users", &Filter::match_all(), &options)
+        .unwrap();
     assert_eq!(docs.len(), 1, "跳过2取1 应只有 1 条");
     assert_eq!(docs[0]["age"].as_i64(), Some(22), "降序第3条 age=22");
 
@@ -255,7 +279,10 @@ fn find_filter_sort_limit() {
     };
     let docs = db.find_with_options("users", &f, &options).unwrap();
     assert_eq!(docs.len(), 1);
-    assert_eq!(docs[0]["name"], "王五", "北京用户按年龄降序第一个是王五(45)");
+    assert_eq!(
+        docs[0]["name"], "王五",
+        "北京用户按年龄降序第一个是王五(45)"
+    );
 
     db.close().unwrap();
     drop(db);

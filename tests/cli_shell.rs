@@ -16,14 +16,23 @@ fn parse_line(line: &str) -> Result<ShellCommand, String> {
 #[test]
 fn shell_quit_forms() {
     for cmd in [".quit", ".exit"] {
-        assert_eq!(parse_line(cmd).unwrap(), ShellCommand::Quit, "{} 应解析为退出", cmd);
+        assert_eq!(
+            parse_line(cmd).unwrap(),
+            ShellCommand::Quit,
+            "{} 应解析为退出",
+            cmd
+        );
     }
 }
 
 /// .help 显示帮助。
 #[test]
 fn shell_help_forms() {
-    assert_eq!(parse_line(".help").unwrap(), ShellCommand::Help, "应解析为帮助");
+    assert_eq!(
+        parse_line(".help").unwrap(),
+        ShellCommand::Help,
+        "应解析为帮助"
+    );
 }
 
 /// .open <file.nodb>:打开数据库(不存在则自动创建);无参 = 关闭当前绑定。
@@ -61,7 +70,10 @@ fn shell_parse_insert() {
     let cmd = parse_line(r#"insert users {"name":"张三","age":30}"#).unwrap();
     assert_eq!(
         cmd,
-        ShellCommand::Insert("users".to_string(), r#"{"name":"张三","age":30}"#.to_string())
+        ShellCommand::Insert(
+            "users".to_string(),
+            r#"{"name":"张三","age":30}"#.to_string()
+        )
     );
 }
 
@@ -138,7 +150,17 @@ fn shell_parse_count() {
 /// 无点管理别名一律报错(严格点命令)。
 #[test]
 fn shell_reject_bare_management() {
-    for cmd in ["open data.nodb", "create data.nodb", "databases", "db", "collections", "help", "?", "quit", "exit"] {
+    for cmd in [
+        "open data.nodb",
+        "create data.nodb",
+        "databases",
+        "db",
+        "collections",
+        "help",
+        "?",
+        "quit",
+        "exit",
+    ] {
         assert!(parse_line(cmd).is_err(), "无点管理命令 `{}` 应报错", cmd);
     }
 }
@@ -146,7 +168,10 @@ fn shell_reject_bare_management() {
 /// drop <collection>。
 #[test]
 fn shell_parse_drop() {
-    assert_eq!(parse_line("drop users").unwrap(), ShellCommand::Drop("users".to_string()));
+    assert_eq!(
+        parse_line("drop users").unwrap(),
+        ShellCommand::Drop("users".to_string())
+    );
 }
 
 /// 空行 / 缺参 / 未知命令:解析报错而非 panic。
@@ -157,19 +182,21 @@ fn shell_parse_errors() {
 
     // 缺集合名参数
     for cmd in ["insert", "find", "update", "delete", "count", "drop"] {
-        assert!(
-            parse_line(cmd).is_err(),
-            "{} 缺少参数应报错",
-            cmd
-        );
+        assert!(parse_line(cmd).is_err(), "{} 缺少参数应报错", cmd);
     }
 
     // 未知命令
     assert!(parse_line("foo bar").is_err(), "未知命令应报错");
 
     // find 未知参数
-    assert!(parse_line("find users --bogus x").is_err(), "find 未知选项应报错");
+    assert!(
+        parse_line("find users --bogus x").is_err(),
+        "find 未知选项应报错"
+    );
 
     // --skip 非数字
-    assert!(parse_line("find users --skip abc").is_err(), "--skip 非数字应报错");
+    assert!(
+        parse_line("find users --skip abc").is_err(),
+        "--skip 非数字应报错"
+    );
 }
