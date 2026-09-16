@@ -6,6 +6,8 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
+
 - 2026.09.16: M10 完成 —— `$elemMatch`(操作符/文档双形态)+ `$unset`(对象删除/数组置 null/路径缺失无操作);+15 例测试共 **194 例全绿**;顺带在 CLI 暴露 M11 能力(find --sort 走 find_page、insert 数组批量)。参见 [taolun #26](#26-20260916-m10-执行elemmatch--unset) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M11 完成 —— 内存优先改造：`find/count/update/delete` 流式化（内存从 O(集合) 降到 O(命中数)/O(1)）；新增 `find_page` 两遍法（500k 档 RSS 819 MiB → **30.2 MiB**，27x）、`get/update/delete_by_id` 主键寻址（2.6 s → **20.7 ms**，Linux 0.82 ms）、`insert_many` 单事务（**4.4 万条/秒** macOS、29.9 万 Linux）；+28 例测试共 179 例全绿；首次建立跨平台基准（macOS 被 `F_FULLFSYNC` 放大 **66x**）与 GitHub Actions CI。参见 [taolun #25](#25-20260916-m11-执行流式化--主键寻址--跨平台基准) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M9 补测完成 —— 写路径对照基准定位瓶颈为 **fsync 物理成本**(A/D = 1.08x @1k、0.76x @10k),而非引擎缺陷;批量单事务收益 **314x～1562x**;读路径补齐 10万/50万档实测,确认内存放大稳定在 **5.9–12.0 倍**(50万行单次 find 的 RSS 增量达 819 MiB)。参见 [taolun #23](#23-20260916-m9-补测写路径对照基准与归因) / [项目进度-已完成](#已完成)。
