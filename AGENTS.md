@@ -431,8 +431,10 @@
 ### 项目进度
 
 #### 计划中
-- M12:验收与发布(目标 v0.1.0:crates.io + CLI 多平台二进制,由 GitHub Actions 产出)。发布前置:README/LICENSE/内存与持久化语义文档、`cargo fmt` housekeeping(独立提交)、性能数字**全部标注平台**、顶层 $or 语义写明。
-- 后续:索引下推/排序下推(仅在真实遇到超大数据量时再做)、Server 模式(MongoDB wire 协议,长期差异化)、聚合管道、完整 MongoDB 兼容。
+- crates.io 发布:干跑已通过,**按用户决定暂缓**(GitHub Release v0.1.0 已发);待需要 crates.io 分发时 `cargo login` 后 `cargo publish` 即可。
+- CMS 项目启动后进入维护模式:真实场景验收(CMS 作为第一个真实用户)优先于新功能。
+- 后续(按需触发):索引下推/排序下推(单集合超大数据量时)、Server 模式(触发条件:出现「多个独立服务共享同一库」的真实需求;实现顺序:HTTP/axum 包一层 → C ABI/FFI → MongoDB wire 协议)、聚合管道。
+- **跨语言访问路线(已定)**:HTTP(axum/CMS)→ C ABI/FFI(`nosqlite-ffi`,cbindgen 生成头文件)→ wire 协议;`.nodb` 文件永远由进程独占,客户端只走网络访问 —— Node/Go 等 MongoDB 驱动在 wire 协议落地前无法直连。
 
 #### 代办
 - (无 —— M11 已完成，CLI 同步并入 M10 或发布前置项)
