@@ -691,7 +691,8 @@ fn print_help() {
     println!("  - 文件后缀必须为 .nodb,不支持其他后缀或无后缀");
     println!("  - 数据库为单文件,可直接复制粘贴迁移");
     println!("  - 文档顶层必须是 JSON 对象;_id 缺省时自动生成");
-    println!("  - filter 操作符:$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex");
+    println!("  - filter 操作符:$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch");
+    println!("    $elemMatch:数组字段至少一个元素满足条件,如 {{\"tags\": {{\"$elemMatch\": {{\"$gte\": 10}}}}}}");
     println!("  - 顶层逻辑:$and/$or/$nor/$not;字段支持点号路径(a.b.c)");
-    println!("  - update 操作符:$set(点号路径赋值,嵌套自动创建;主键 _id 不可修改)");
+    println!("  - update 操作符:$set(点号路径赋值)/$unset(点号路径删除,数组元素置 null);主键 _id 不可修改或删除");
 }

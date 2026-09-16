@@ -1,13 +1,17 @@
 //! 更新操作模块(M4)。
 //!
-//! 仿 MongoDB 的更新操作符。当前支持 `$set`(字段点号路径赋值,嵌套自动创建/覆盖)。
+//! 仿 MongoDB 的更新操作符。当前支持 `$set`/`$unset`(M10):
+//!
+//! - `$set`:字段点号路径赋值,嵌套自动创建/覆盖;
+//! - `$unset`:字段点号路径删除 —— 对象字段直接移除;数组元素按 MongoDB 语义置为
+//!   `null`(占位保留);路径不存在时静默无操作(对齐 MongoDB);
 //!
 //! 点号路径的每一段既可以是对象字段名,也可以是**数组下标**(M9 修复):
 //! - 路径中间是对象 → 按字段名下钻;字段不存在时自动创建对象;
 //! - 路径中间是数组 → 当前段必须是合法且未越界的下标,否则报错;
 //! - 路径中间是标量 → 报错,不会静默覆盖数组/标量(M9 前会用对象覆盖数组,属数据破坏缺陷)。
 //!
-//! 后续里程碑可扩展 `$unset/$inc/$push` 等。
+//! 后续里程碑可扩展 `$inc/$push` 等。
 
 use serde_json::{Map, Value};
 
@@ -18,6 +22,8 @@ pub enum UpdateError {
     InvalidUpdate(String),
     /// `$set` 的值必须是 JSON 对象。
     SetNotObject,
+    /// `$unset` 的值必须是 JSON 对象。
+    UnsetNotObject,
     /// 数组下标非法(该路径段不是纯数字)。
     InvalidArrayIndex(String),
     /// 数组下标越界。
@@ -39,6 +45,7 @@ impl std::fmt::Display for UpdateError {
         match self {
             UpdateError::InvalidUpdate(msg) => write!(f, "更新操作使用错误: {}", msg),
             UpdateError::SetNotObject => write!(f, "$set 的值必须是 JSON 对象"),
+            UpdateError::UnsetNotObject => write!(f, "$unset 的值必须是 JSON 对象"),
             UpdateError::InvalidArrayIndex(seg) => {
                 write!(f, "数组下标非法: 路径段 `{}` 必须是数字", seg)
             }
@@ -58,11 +65,13 @@ impl std::error::Error for UpdateError {}
 
 /// 一组更新操作。
 ///
-/// 当前仅支持 `$set`:将指定字段(点号路径)设置为新值。
+/// 支持 `$set`(字段点号路径赋值)与 `$unset`(字段点号路径删除,M10)。
 #[derive(Debug)]
 pub struct Update {
     /// `$set` 的字段赋值列表(字段路径 → 新值)。
     set_fields: Vec<(Vec<String>, Value)>,
+    /// `$unset` 的字段路径列表(按声明顺序依次删除)。
+    unset_fields: Vec<Vec<String>>,
 }
 
 impl Update {
@@ -83,9 +92,9 @@ impl Update {
             ));
         }
 
-        // 只允许已知操作符:$set
+        // 只允许已知操作符:$set / $unset(M10)
         for key in map.keys() {
-            if !["$set"].contains(&key.as_str()) {
+            if !["$set", "$unset"].contains(&key.as_str()) {
                 return Err(UpdateError::InvalidUpdate(format!(
                     "暂不支持的更新操作符: {}",
                     key
@@ -94,25 +103,33 @@ impl Update {
         }
 
         let set_map = match map.get("$set") {
-            Some(Value::Object(set_map)) => set_map,
+            Some(Value::Object(set_map)) => Some(set_map),
             Some(_) => return Err(UpdateError::SetNotObject),
-            None => {
-                return Err(UpdateError::InvalidUpdate(
-                    "update 缺少可用的更新操作符".to_string(),
-                ))
-            }
+            None => None,
+        };
+        let unset_map = match map.get("$unset") {
+            Some(Value::Object(unset_map)) => Some(unset_map),
+            Some(_) => return Err(UpdateError::UnsetNotObject),
+            None => None,
         };
 
-        // `$set` 为空对象:同样没有任何实际更新
-        if set_map.is_empty() {
+        // 两个操作符都缺席或均为空:没有任何实际更新
+        let set_empty = set_map.map(|m| m.is_empty()).unwrap_or(true);
+        let unset_empty = unset_map.map(|m| m.is_empty()).unwrap_or(true);
+        if set_map.is_none() && unset_map.is_none() {
             return Err(UpdateError::InvalidUpdate(
-                "$set 不能为空对象,至少需要指定一个字段".to_string(),
+                "update 缺少可用的更新操作符".to_string(),
+            ));
+        }
+        if set_empty && unset_empty {
+            return Err(UpdateError::InvalidUpdate(
+                "更新操作不能为空对象,至少需要指定一个字段".to_string(),
             ));
         }
 
         // 解析 $set 的每个字段(支持点号路径)
         let mut set_fields = Vec::new();
-        for (key, value) in set_map {
+        for (key, value) in set_map.into_iter().flatten() {
             let path = key.split('.').map(|s| s.to_string()).collect::<Vec<_>>();
             // 空字段名或空路径段(`""`、`"a..b"`、`".a"`)无意义,直接拒绝
             if path.iter().any(|seg| seg.is_empty()) {
@@ -124,7 +141,29 @@ impl Update {
             set_fields.push((path, value.clone()));
         }
 
-        Ok(Update { set_fields })
+        // 解析 $unset 的每个字段(支持点号路径;值被忽略,对齐 MongoDB)
+        let mut unset_fields = Vec::new();
+        for key in unset_map.into_iter().flatten().map(|(k, _)| k) {
+            let path = key.split('.').map(|s| s.to_string()).collect::<Vec<_>>();
+            if path.iter().any(|seg| seg.is_empty()) {
+                return Err(UpdateError::InvalidUpdate(format!(
+                    "字段路径非法: `{}` 含空的路径段",
+                    key
+                )));
+            }
+            // 主键不可被删除
+            if path.first().map(|s| s.as_str()) == Some("_id") {
+                return Err(UpdateError::InvalidUpdate(
+                    "不允许删除主键 _id".to_string(),
+                ));
+            }
+            unset_fields.push(path);
+        }
+
+        Ok(Update {
+            set_fields,
+            unset_fields,
+        })
     }
 
     /// 将更新操作应用到文档(原地修改)。
@@ -132,6 +171,7 @@ impl Update {
     /// - 点号路径嵌套赋值,路径上的中间对象若不存在则自动创建;
     /// - `_id` 字段不允许被修改(主键不可变)。
     pub fn apply(&self, doc: &mut Map<String, Value>) -> Result<(), UpdateError> {
+        // 先赋值后删除(同一路径同时出现在 $set/$unset 时,以 $unset 生效)
         for (path, value) in &self.set_fields {
             // 主键不可修改
             if path.first().map(|s| s.as_str()) == Some("_id") {
@@ -141,8 +181,63 @@ impl Update {
             }
             set_in_map(doc, path, value)?;
         }
+        for path in &self.unset_fields {
+            unset_in_map(doc, path)?;
+        }
         Ok(())
     }
+}
+
+/// 在顶层对象上按点号路径删除字段($unset)。
+///
+/// 语义(对齐 MongoDB):
+/// - 目标字段不存在 → 静默无操作;
+/// - 中间路径是标量或不存在 → 无操作(不报错);
+/// - 目标是数组元素 → 置为 `null`(占位保留)。
+fn unset_in_map(doc: &mut Map<String, Value>, path: &[String]) -> Result<(), UpdateError> {
+    let Some((first, rest)) = path.split_first() else {
+        return Ok(());
+    };
+    if rest.is_empty() {
+        doc.remove(first);
+        return Ok(());
+    }
+    if let Some(child) = doc.get_mut(first) {
+        unset_in_value(child, rest)?;
+    }
+    Ok(())
+}
+
+/// 在任意 JSON 值上按点号路径删除字段,明确区分对象与数组。
+fn unset_in_value(root: &mut Value, path: &[String]) -> Result<(), UpdateError> {
+    let Some((first, rest)) = path.split_first() else {
+        return Ok(());
+    };
+    match root {
+        Value::Object(map) => {
+            if rest.is_empty() {
+                map.remove(first);
+            } else if let Some(child) = map.get_mut(first) {
+                unset_in_value(child, rest)?;
+            }
+        }
+        Value::Array(arr) => {
+            // 下标格式非法:与 $set 同样报错(防拼写错误静默无操作)
+            let index = parse_array_index(first)?;
+            if index < arr.len() {
+                if rest.is_empty() {
+                    // MongoDB 语义:数组元素 unset 后置 null,占位保留
+                    arr[index] = Value::Null;
+                } else {
+                    unset_in_value(&mut arr[index], rest)?;
+                }
+            }
+            // 越界:目标不存在,无操作
+        }
+        // 标量中间值:目标不存在,无操作
+        _ => {}
+    }
+    Ok(())
 }
 
 /// 在顶层对象上按点号路径赋值。

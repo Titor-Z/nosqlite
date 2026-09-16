@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.09.16: M10 完成 —— `$elemMatch`(操作符/文档双形态)+ `$unset`(对象删除/数组置 null/路径缺失无操作);+15 例测试共 **194 例全绿**;顺带在 CLI 暴露 M11 能力(find --sort 走 find_page、insert 数组批量)。参见 [taolun #26](#26-20260916-m10-执行elemmatch--unset) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M11 完成 —— 内存优先改造：`find/count/update/delete` 流式化（内存从 O(集合) 降到 O(命中数)/O(1)）；新增 `find_page` 两遍法（500k 档 RSS 819 MiB → **30.2 MiB**，27x）、`get/update/delete_by_id` 主键寻址（2.6 s → **20.7 ms**，Linux 0.82 ms）、`insert_many` 单事务（**4.4 万条/秒** macOS、29.9 万 Linux）；+28 例测试共 179 例全绿；首次建立跨平台基准（macOS 被 `F_FULLFSYNC` 放大 **66x**）与 GitHub Actions CI。参见 [taolun #25](#25-20260916-m11-执行流式化--主键寻址--跨平台基准) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M9 补测完成 —— 写路径对照基准定位瓶颈为 **fsync 物理成本**(A/D = 1.08x @1k、0.76x @10k),而非引擎缺陷;批量单事务收益 **314x～1562x**;读路径补齐 10万/50万档实测,确认内存放大稳定在 **5.9–12.0 倍**(50万行单次 find 的 RSS 增量达 819 MiB)。参见 [taolun #23](#23-20260916-m9-补测写路径对照基准与归因) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M9 完成 —— 缺陷修复(#1 数组下标路径用对象覆盖数组的数据破坏缺陷;#2 空更新静默通过且虚增修改条数)+ 压测基线(实测写入吞吐仅约百条/秒、全量 find 的 RSS 增量达文档总字节的 5–12 倍)。参见 [taolun #21](#21-20260916-m9-设计缺陷修复--压测基线) / [taolun #22](#22-20260916-m9-执行) / [项目进度-已完成](#已完成)。
@@ -401,6 +402,19 @@
 - 决策：**暂不加 `cargo fmt --check` 到 CI** —— 全仓（含既有文件）从未 rustfmt 化，一次性格式化会产生覆盖全仓的巨型 diff，留作独立 housekeeping 提交。
 - 决策：**不公开 `Durability` 持久化选项**。现状核实：`Durability` 仅在基准示例中使用，公开 API 全部走 redb 默认 `commit()`（Immediate）。Linux fsync 便宜（0.38 ms）收益小；macOS 上的正解是 `insert_many` 批量摊薄（已达标）而非让用户选「丢数据换速度」；避免 API 表面积与误用风险（误设 None 会静默丢写入）。
 
+### 26. 2026.09.16 M10 执行:$elemMatch + $unset
+
+- **`$elemMatch`**(filter.rs):新增 `Operator::ElemMatch(Box<ElemMatchSpec>)`,两种形态 ——
+  - **操作符形态**(`{"tags": {"$elemMatch": {"$gte": 10, "$lt": 20}}}`):对每个元素直接应用操作符,适用于标量数组;同一元素须同时满足全部子条件(AND);
+  - **文档形态**(`{"items": {"$elemMatch": {"name": "x", "qty": {"$gt": 5}}}}`):元素必须是对象,对元素文档应用完整条件(支持点号路径与逻辑组合);
+  - 形态判定:含逻辑键(`$and/$or/$nor/$not`)→ 文档形态;含其它 `$` 键 → 操作符形态;纯字段名 → 文档形态;
+  - 字段缺失/非数组/空数组 → 不匹配;
+  - **已知限制**:引擎的 `compare_values` 对 object/array 一律返回 `Equal`(仅保证排序稳定),故操作符形态对对象元素做深度 `$eq` 不可靠;深度匹配应使用文档形态。
+- **`$unset`**(update.rs):`Update` 增 `unset_fields`;语义对齐 MongoDB —— 对象字段直接移除;数组元素置 `null`(占位保留);路径不存在/中间为标量 → 静默无操作;下标格式非法 → 报错(与 `$set` 一致,防拼写错误静默生效);`_id` 不可删除;`$set`/`$unset` 同时出现先赋值后删除(同一路径以删除生效);两者均空/缺失时报错(不静默当作无操作)。
+- 测试:+15 例(`tests/elem_match.rs` 8、`tests/unset.rs` 7),合计 **194 例全绿**,clippy 零警告。
+- CLI:`.help`/`help` 补充两个操作符的说明与示例。
+- **发现既有语义细节**(非缺陷,已文档化):同层的字段条件与 `$or` 分支是 **OR 关系**(`combine_conditions`:字段条件 AND 层整体与 `$or` 各项做 OR)。要表达「字段 AND $or」须显式 `$and`。这与 MongoDB 顶层语义不同,发布文档需写明。
+
 ## Agents
 
 ### 规范
@@ -415,8 +429,7 @@
 ### 项目进度
 
 #### 计划中
-- M10:过滤能力补齐(`$elemMatch`、`$unset`),既有 179 例测试必须全绿。
-- M12:验收与发布(目标 v0.1.0:crates.io + CLI 多平台二进制,由 GitHub Actions 产出)。发布前置:README/LICENSE/内存与持久化语义文档、`cargo fmt` housekeeping(独立提交)、性能数字**全部标注平台**。
+- M12:验收与发布(目标 v0.1.0:crates.io + CLI 多平台二进制,由 GitHub Actions 产出)。发布前置:README/LICENSE/内存与持久化语义文档、`cargo fmt` housekeeping(独立提交)、性能数字**全部标注平台**、顶层 $or 语义写明。
 - 后续:索引下推/排序下推(仅在真实遇到超大数据量时再做)、Server 模式(MongoDB wire 协议,长期差异化)、聚合管道、完整 MongoDB 兼容。
 
 #### 代办
@@ -432,6 +445,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M10:`$elemMatch`(操作符/文档双形态)+ `$unset`(对齐 MongoDB,数组置 null),+15 例共 194 例全绿;CLI 同步 M11 能力(`find --sort` → `find_page`、`insert` 数组 → `insert_many`)。
 - M11:内存优先改造 —— `find/count/update/delete` 流式化;`find_page` 两遍法;`get/update/delete_by_id` 主键寻址 + `{"_id":等值}` 自动快速路径;`insert_many` 单事务批量;`Storage` trait 增 `for_each/get/insert_many`;179 例全绿;跨平台基准确认 macOS `F_FULLFSYNC` 放大 66x;GitHub Actions CI 建立。
 - M9:缺陷修复(#1 数组下标路径数据破坏、#2 空更新异常)+ 压测基线(写入吞吐 43.7–238.8 条/秒且随文件增大恶化;全量 find 内存放大 6–12 倍,50 万档 819 MiB)。
 - M8:REPL 对齐 sqlite3 点命令(管理一律点号、CRUD 无点、`.collect` 列集合)。

@@ -4,7 +4,7 @@
 //!
 //! - 顶层为 JSON 对象;每个字段的值若是普通 Value 则视为隐式 `$eq`;
 //! - 值若是对象且键以 `$` 开头,则视为操作符对象,同一字段多个操作符按 AND 组合;
-//! - 操作符子集:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex`;
+//! - 操作符子集:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex`(M10 新增 `$elemMatch`);
 //! - 支持点号路径(如 `a.b.c`);
 //! - 顶层支持 `$and/$or/$nor/$not` 逻辑组合。
 
@@ -84,6 +84,19 @@ pub enum Operator {
     Nin(Vec<Value>),
     /// 正则匹配字符串字段。
     Regex(regex::Regex),
+    /// `$elemMatch`:字段为数组且至少一个元素满足内部条件(M10 新增)。
+    ElemMatch(Box<ElemMatchSpec>),
+}
+
+/// `$elemMatch` 的两种内部条件形态。
+#[derive(Debug)]
+pub enum ElemMatchSpec {
+    /// 操作符形态(如 `{"$gte": 10, "$lt": 20}`):对每个元素直接应用操作符,
+    /// 适用于标量数组,也可用于对象数组的整体比较(如 `$eq` 整个对象)。
+    Ops(Vec<Operator>),
+    /// 文档形态(如 `{"name": "x", "qty": {"$gt": 5}}`):元素必须是对象,
+    /// 对元素文档应用完整条件(支持点号路径与逻辑组合)。
+    Doc(Box<Condition>),
 }
 
 /// 顶层查询条件。
@@ -202,6 +215,19 @@ impl Operator {
             // $regex:仅匹配字符串字段
             Operator::Regex(re) => match value {
                 Some(Value::String(s)) => re.is_match(s),
+                _ => false,
+            },
+            // $elemMatch:字段必须是数组,且至少一个元素满足内部条件
+            Operator::ElemMatch(spec) => match value {
+                Some(Value::Array(arr)) => arr.iter().any(|el| match spec.as_ref() {
+                    // 操作符形态:对元素本身应用操作符(标量数组)
+                    ElemMatchSpec::Ops(ops) => ops.iter().all(|op| op.matches(Some(el))),
+                    // 文档形态:元素必须是对象,对元素文档应用条件
+                    ElemMatchSpec::Doc(cond) => match el {
+                        Value::Object(map) => cond.matches(map),
+                        _ => false,
+                    },
+                }),
                 _ => false,
             },
         }
@@ -371,6 +397,22 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
                 let re = regex::Regex::new(pattern)
                     .map_err(|e| FilterError::InvalidRegex(e.to_string()))?;
                 Operator::Regex(re)
+            }
+            "$elemMatch" => {
+                let obj = value.as_object().ok_or_else(|| {
+                    FilterError::InvalidOperator("$elemMatch 需要一个对象".to_string())
+                })?;
+                // 对象含逻辑操作符 → 文档条件形态;含字段操作符 → 操作符形态;
+                // 纯字段名 → 文档条件形态(隐式 $eq)
+                let spec = if obj.keys().any(|k| matches!(k.as_str(), "$and" | "$or" | "$nor" | "$not"))
+                {
+                    ElemMatchSpec::Doc(Box::new(parse_condition_object(obj)?))
+                } else if obj.keys().any(|k| k.starts_with('$')) {
+                    ElemMatchSpec::Ops(parse_operator_object(obj)?)
+                } else {
+                    ElemMatchSpec::Doc(Box::new(parse_condition_object(obj)?))
+                };
+                Operator::ElemMatch(Box::new(spec))
             }
             unknown => {
                 return Err(FilterError::InvalidOperator(format!(
