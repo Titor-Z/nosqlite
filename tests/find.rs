@@ -200,6 +200,7 @@ fn find_sort_desc() {
     let sort = SortSpec::from_value(&json!({"age": -1})).unwrap();
     let options = FindOptions {
         sort: Some(sort),
+        projection: None,
         skip: 0,
         limit: None,
     };
@@ -224,6 +225,7 @@ fn find_limit() {
     let sort = SortSpec::from_value(&json!({"age": -1})).unwrap();
     let options = FindOptions {
         sort: Some(sort),
+        projection: None,
         skip: 0,
         limit: Some(2),
     };
@@ -249,6 +251,7 @@ fn find_skip_limit() {
     let sort = SortSpec::from_value(&json!({"age": -1})).unwrap();
     let options = FindOptions {
         sort: Some(sort),
+        projection: None,
         skip: 2,
         limit: Some(1),
     };
@@ -274,6 +277,7 @@ fn find_filter_sort_limit() {
     let sort = SortSpec::from_value(&json!({"age": -1})).unwrap();
     let options = FindOptions {
         sort: Some(sort),
+        projection: None,
         skip: 0,
         limit: Some(1),
     };

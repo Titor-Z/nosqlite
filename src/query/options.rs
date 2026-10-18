@@ -122,10 +122,172 @@ impl SortSpec {
 pub struct FindOptions {
     /// 排序规格(可选)。
     pub sort: Option<SortSpec>,
+    /// 字段投影(可选,`None` 表示返回整条文档)。
+    pub projection: Option<Projection>,
     /// 跳过前 N 条。
     pub skip: usize,
     /// 最多返回 N 条(None 表示不限制)。
     pub limit: Option<usize>,
+}
+
+/// 字段投影(`{"name": 1, "_id": 0}`),语义对齐 MongoDB。
+///
+/// - 只出现 `1`/`true` → **包含模式**(未列入的字段不返回);
+/// - 只出现 `0`/`false` → **排除模式**(未列入的字段全部返回);
+/// - 两种模式混用报错(例外:`_id` 可以在任一模式中反向出现);
+/// - `_id` 默认包含,除非显式 `"_id": 0`;
+/// - 支持点号路径(`a.b`);数组下标路径不支持(整字段排除)。
+#[derive(Debug, Clone)]
+pub struct Projection {
+    /// 是否为包含模式。
+    include: bool,
+    /// 字段点号路径。
+    paths: Vec<Vec<String>>,
+    /// 是否保留 `_id`。
+    keep_id: bool,
+}
+
+/// 投影规格错误。
+#[derive(Debug)]
+pub enum ProjectionError {
+    /// 顶层必须是 JSON 对象。
+    NotObject,
+    /// 值必须是 `1/true` 或 `0/false`。
+    InvalidValue(String),
+    /// 不能混用包含与排除(除 `_id` 外)。
+    MixedIncludeExclude,
+    /// 路径为空(如 `""` 或 `"a..b"`)。
+    EmptyPath,
+}
+
+impl std::fmt::Display for ProjectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProjectionError::NotObject => write!(f, "projection 顶层必须是 JSON 对象"),
+            ProjectionError::InvalidValue(field) => {
+                write!(f, "projection 字段值必须为 1/true 或 0/false,字段: {}", field)
+            }
+            ProjectionError::MixedIncludeExclude => {
+                write!(f, "projection 不能混用包含(1)与排除(0),仅 _id 可例外")
+            }
+            ProjectionError::EmptyPath => write!(f, "projection 字段路径不能为空"),
+        }
+    }
+}
+
+impl std::error::Error for ProjectionError {}
+
+impl Projection {
+    /// 从 JSON 对象解析投影规格。
+    pub fn from_value(value: &Value) -> Result<Self, ProjectionError> {
+        let map = value.as_object().ok_or(ProjectionError::NotObject)?;
+
+        // 1. 先收集显式声明的包含/排除字段(不含 _id)
+        let mut include_fields: Vec<Vec<String>> = Vec::new();
+        let mut exclude_fields: Vec<Vec<String>> = Vec::new();
+        let mut keep_id = true;
+        for (key, value) in map {
+            let flag = match value {
+                Value::Number(n) if n.as_i64() == Some(1) => true,
+                Value::Number(n) if n.as_i64() == Some(0) => false,
+                Value::Bool(b) => *b,
+                _ => return Err(ProjectionError::InvalidValue(key.clone())),
+            };
+            if key == "_id" {
+                keep_id = flag;
+                continue;
+            }
+            let path: Vec<String> = key.split('.').map(|s| s.to_string()).collect();
+            if path.iter().any(|s| s.is_empty()) {
+                return Err(ProjectionError::EmptyPath);
+            }
+            if flag {
+                include_fields.push(path);
+            } else {
+                exclude_fields.push(path);
+            }
+        }
+
+        // 2. 模式判定:两种都非空 → 混用报错
+        let include = match (include_fields.is_empty(), exclude_fields.is_empty()) {
+            (false, false) => return Err(ProjectionError::MixedIncludeExclude),
+            // 空投影或只有 _id → 按包含处理(只保留 _id 或全部)
+            (true, true) => true,
+            (false, true) => true,
+            (true, false) => false,
+        };
+        let paths = if include {
+            include_fields
+        } else {
+            exclude_fields
+        };
+        Ok(Projection {
+            include,
+            paths,
+            keep_id,
+        })
+    }
+
+    /// 对一条文档应用投影,返回新文档(不修改原文档)。
+    pub fn apply(&self, doc: &Map<String, Value>) -> Map<String, Value> {
+        if self.include {
+            let mut out = Map::new();
+            if self.keep_id
+                && let Some(id) = doc.get("_id")
+            {
+                out.insert("_id".to_string(), id.clone());
+            }
+            for path in &self.paths {
+                if let Some(value) = get_path(doc, path) {
+                    insert_path(&mut out, path, value.clone());
+                }
+            }
+            out
+        } else {
+            let mut out = doc.clone();
+            if !self.keep_id {
+                out.remove("_id");
+            }
+            for path in &self.paths {
+                remove_path(&mut out, path);
+            }
+            out
+        }
+    }
+}
+
+/// 按点号路径取文档值(不进入数组)。
+fn get_path<'a>(doc: &'a Map<String, Value>, path: &[String]) -> Option<&'a Value> {
+    let mut current = doc.get(&path[0])?;
+    for seg in &path[1..] {
+        current = current.as_object()?.get(seg)?;
+    }
+    Some(current)
+}
+
+/// 按点号路径写入新文档(中间对象自动创建)。
+fn insert_path(doc: &mut Map<String, Value>, path: &[String], value: Value) {
+    if path.len() == 1 {
+        doc.insert(path[0].clone(), value);
+        return;
+    }
+    let entry = doc
+        .entry(path[0].clone())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Value::Object(map) = entry {
+        insert_path(map, &path[1..], value);
+    }
+}
+
+/// 按点号路径从文档删除字段(路径不存在则无操作)。
+fn remove_path(doc: &mut Map<String, Value>, path: &[String]) {
+    if path.len() == 1 {
+        doc.remove(&path[0]);
+        return;
+    }
+    if let Some(Value::Object(map)) = doc.get_mut(&path[0]) {
+        remove_path(map, &path[1..]);
+    }
 }
 
 /// 排序规格错误。

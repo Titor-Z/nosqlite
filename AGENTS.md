@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.1.1 M12 完成(A 组) —— 批量 `update`/`delete` 单事务化(1000 条 7.69 s → **24.75 ms,310.7x**)、字段投影 `--fields`、`find_page_total()` 一次扫描给「总数+当页」、array/object 递归比较(可排序、`$eq` 精确);+41 例共 **235 例全绿**。参见 [taolun #27](#27-v011-m12-设计补齐能上-cms-的最小闭环a-组) / [taolun #28](#28-v011-m12-执行a-组四项落地批量单事务--projection--一次扫描--复合比较) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M10 完成 —— `$elemMatch`(操作符/文档双形态)+ `$unset`(对象删除/数组置 null/路径缺失无操作);+15 例测试共 **194 例全绿**;顺带在 CLI 暴露 M11 能力(find --sort 走 find_page、insert 数组批量)。参见 [taolun #26](#26-20260916-m10-执行elemmatch--unset) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M11 完成 —— 内存优先改造：`find/count/update/delete` 流式化（内存从 O(集合) 降到 O(命中数)/O(1)）；新增 `find_page` 两遍法（500k 档 RSS 819 MiB → **30.2 MiB**，27x）、`get/update/delete_by_id` 主键寻址（2.6 s → **20.7 ms**，Linux 0.82 ms）、`insert_many` 单事务（**4.4 万条/秒** macOS、29.9 万 Linux）；+28 例测试共 179 例全绿；首次建立跨平台基准（macOS 被 `F_FULLFSYNC` 放大 **66x**）与 GitHub Actions CI。参见 [taolun #25](#25-20260916-m11-执行流式化--主键寻址--跨平台基准) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M9 补测完成 —— 写路径对照基准定位瓶颈为 **fsync 物理成本**(A/D = 1.08x @1k、0.76x @10k),而非引擎缺陷;批量单事务收益 **314x～1562x**;读路径补齐 10万/50万档实测,确认内存放大稳定在 **5.9–12.0 倍**(50万行单次 find 的 RSS 增量达 819 MiB)。参见 [taolun #23](#23-20260916-m9-补测写路径对照基准与归因) / [项目进度-已完成](#已完成)。
@@ -416,6 +417,36 @@
 - 测试:+15 例(`tests/elem_match.rs` 8、`tests/unset.rs` 7),合计 **194 例全绿**,clippy 零警告。
 - CLI:`.help`/`help` 补充两个操作符的说明与示例。
 - **发现既有语义细节**(非缺陷,已文档化):同层的字段条件与 `$or` 分支是 **OR 关系**(`combine_conditions`:字段条件 AND 层整体与 `$or` 各项做 OR)。要表达「字段 AND $or」须显式 `$and`。这与 MongoDB 顶层语义不同,发布文档需写明。
+### 27. v0.1.1 M12 设计:补齐「能上 CMS」的最小闭环(A 组)
+
+- 背景:v0.1.0 发布后按「能否上 CMS」重新审代码,结论是有四块短板必须先修 —— 都属于「CMS 一跑就必然撞上」,且都不改变 `.nodb` 格式 v1。
+- 短板与对策:
+
+| # | 问题 | 现状 | 对策 |
+|---|---|---|---|
+| ① | `update`/`delete` 匹配多条时逐条开写事务 | 回调里对每条匹配文档调一次 `engine.update`,N 次 commit/fsync(macOS 每次 4–30 ms) | `Storage` 增 `update_many`/`delete_many` 单事务,`Database::update/delete` 改为「流式收集命中 → 单事务写回」 |
+| ② | 无 projection,列表页取整条文档 | 500 条 × 2 KB = 1 MB/页 | `FindOptions` 增 `projection`,`find_page` 透传,支持包含/排除与点号路径 |
+| ③ | 列表页双全扫 | `count` + `find_page` 各扫全集合,500k 档 ≈ 10 s | 增 `Database::find_page_total()`:一次扫描同时返回「匹配总数 + 当页文档」 |
+| ④ | array/object 比较恒等 | 数组/对象无法排序,`$eq` 对它们不可靠 | 实现 BSON 风格递归比较(数组逐元素、对象按键有序逐对) |
+
+- 语义决策:
+  - `update`/`delete` **不提供 preview 回调**,但内部按两阶段执行:先流式收集 `(doc_id, 新字节)`,再单事务写回。收集阶段内存 O(命中数),换取**原子性**(要么全成功要么全回滚)与一次 fsync。
+  - 顺带修掉既有隐患:`update` 在收集阶段若遇到错误,当前实现会留下「已写回一半」的状态;改为单事务后天然消除。
+  - projection 语义对齐 MongoDB:只出现 `1`/`true` → 包含模式(未列入的字段不返回);出现 `0`/`false` → 排除模式(只有 `_id` 可混用);两种模式混用报错;`_id` 默认包含,除非显式 `_id: 0`。
+  - `compare_values` 改为递归比较:number 按数值、string 按字典序、bool `false < true`;array 逐元素比较(先短后长,长度短者小于长者);object 按键名有序逐对比较。**这会让数组/对象可以排序,也让 `$eq`/`$in` 对它们变得可靠**。
+- 验收:既有 194 例必须全绿;新增测试按模块拆分(`tests/update_many.rs`、`tests/projection.rs`、`tests/page_total.rs`、`tests/compare_composite.rs`);`clippy -D warnings` 零警告。
+
+### 28. v0.1.1 M12 执行:A 组四项落地(批量单事务 / projection / 一次扫描 / 复合比较)
+
+- **① 批量更新/删除单事务**:`Storage` 增 `update_many`/`delete_many`(各自一个写事务、一次提交);`Database::update`/`delete` 改为两阶段 —— **流式收集命中项 → 单事务写回/删除**。顺带修掉既有隐患:旧实现中途出错会留下「改了一半」的状态,现在整体原子。
+  - 实测对照(macOS,1000 条全部命中):批量 `update` **24.75 ms(40,404 条/秒)** vs 逐条 `update_by_id` **7.69 s(130 条/秒)**,**加速比 310.7x**。
+  - 内存变化:从 O(1) 变为 **O(命中数)**(收集 `(doc_id, 新字节)`)——这是换取单次 fsync 与原子性的代价,已写入文档。
+- **② 字段投影**:`query::Projection`(对齐 MongoDB —— 包含/排除两模式、混用报错但 `_id` 例外、`_id` 默认保留、支持点号路径);`FindOptions` 增 `projection` 字段;`find_with_options` 在排序/分页/limit **之后**裁剪。
+- **③ 一次扫描给总数**:新增 `Database::find_page_total()` 返回 `(匹配总数, 页内文档)`,`find_page` 改为它的薄封装;列表页不再需要 `count` + `find_page` 双全扫(500k 档省约 2.4 s)。
+- **④ 复合值比较**:`compare_values` 的 array/object 分支从「恒等」改为**递归比较**(数组逐元素、公共前缀相等时短者在前;对象按键名有序逐对比较、键数少者在前)。副产品:数组/对象可正常排序,`$eq`/`$in` 对它们变为精确深度匹配。
+- CLI 同步:`find` 新增 `--fields <json>`、输出改为「匹配总数 + 本页条数」;`.help` 更新。
+- 测试:新增 4 个模块共 **41 例** —— `tests/update_many_batch.rs` 8、`tests/projection.rs` 13、`tests/page_total.rs` 6、`tests/compare_composite.rs` 12,`tests/cli_shell.rs` +2(`--fields`)。合计 **235 例全绿**,`clippy --all-targets -D warnings` 零警告。
+- 冒烟:CLI 全链路(`.open` → insert ×2 → find `--fields` → 批量 update → count → delete → count → `.collect`)输出正确。
 
 ## Agents
 
@@ -449,6 +480,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M12(v0.1.1):A 组四项 —— 批量 `update`/`delete` 单事务(310x)、字段投影、`find_page_total` 一次扫描、array/object 递归比较;235 例全绿。
 - M10:`$elemMatch`(操作符/文档双形态)+ `$unset`(对齐 MongoDB,数组置 null),+15 例共 194 例全绿;CLI 同步 M11 能力(`find --sort` → `find_page`、`insert` 数组 → `insert_many`)。
 - M11:内存优先改造 —— `find/count/update/delete` 流式化;`find_page` 两遍法;`get/update/delete_by_id` 主键寻址 + `{"_id":等值}` 自动快速路径;`insert_many` 单事务批量;`Storage` trait 增 `for_each/get/insert_many`;179 例全绿;跨平台基准确认 macOS `F_FULLFSYNC` 放大 66x;GitHub Actions CI 建立。
 - M9:缺陷修复(#1 数组下标路径数据破坏、#2 空更新异常)+ 压测基线(写入吞吐 43.7–238.8 条/秒且随文件增大恶化;全量 find 内存放大 6–12 倍,50 万档 819 MiB)。

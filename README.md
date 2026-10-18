@@ -14,9 +14,13 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **文档模型**:JSON 文档 + 自动主键 `_id`,集合隔离,无需建表;
 - **MongoDB 风格查询**:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch`,顶层 `$and/$or/$nor/$not`,点号路径(`a.b.c`);
 - **更新操作符**:`$set`(点号路径赋值,嵌套自动创建)、`$unset`(删除字段);
-- **内存友好**(M11):流式扫描与过滤,内存 O(命中数) 而非 O(集合大小);排序分页走两遍法(仅底层 `scan` 会全量物化,文档已警示仅限小集合)。
+- **内存友好**:流式扫描与过滤,内存 O(命中数) 而非 O(集合大小);排序分页走两遍法(仅底层 `scan` 会全量物化,文档已警示仅限小集合)。
 - **主键直查**:按 `_id` 的读/改/删走 B+树直达,不经全表扫描;
 - **批量写入**:`insert_many` 单事务批量,一次提交摊薄落盘成本;
+- **批量更新/删除**:`update`/`delete` 匹配多条时**合并为一次提交**,且整体原子(不会留下改了一半的状态);
+- **列表页一次扫描**:`find_page_total` 同时返回「匹配总数 + 当页文档」,省掉一次全表 `count`;
+- **字段投影**:`Projection` / CLI `--fields`,列表页只取需要的字段;
+- **复合值可比较**:数组/对象按 BSON 风格递归比较,可排序,`$eq`/`$in` 为精确深度匹配;
 - **附带 CLI**:`nosqlite <file.nodb>` 进入 sqlite3 风格 REPL(点命令管理 + 无点 CRUD)。
 
 底层是 [redb](https://crates.io/crates/redb)(纯 Rust 单文件 B+树 KV 存储),之上提供文档语义层。`.nodb` 格式版本 v1。
@@ -77,20 +81,22 @@ nosqlite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
 | 按 `_id` 读 | 亚毫秒 | 亚毫秒 |
 | `find` 全量扫描 | ~8 µs/条 | ~1.2 µs/条 |
 | `find_page` 排序+分页(内存增量) | 12 MiB @100k | ≈ 0 MiB @100k |
+| `update` 批量 1000 条(单事务) | ~25 ms | — |
 
 差异根源:Rust std 在 macOS 把 `sync_data/sync_all` 映射到 `F_FULLFSYNC`(强制磁盘写缓存落盘),实测比 POSIX `fsync` 慢 **66 倍**;Linux 上映射到 `fdatasync`,无放大。逐条写入的耗时 ≈ 一次提交的落盘成本 —— 要吞吐就用 `insert_many` 批量(见「持久化语义」)。
 
 ## 内存与持久化语义
 
 - **内存**:除旧接口 `scan`(全量物化,标注 deprecated)外,`find/count/update/delete` 均流式处理;带排序的查询用 `find_page`(两遍法:先收集「排序键 + _id」排序,再按主键回取页内文档),内存 O(n × 排序键大小),与命中文档大小无关。
-- **持久化**:每次写事务提交都会落盘(redb 默认 `Durability::Immediate`)。**不提供**关闭落盘的选项 —— 防止静默丢写入;需要吞吐时用 `insert_many` 把 N 次提交合并为 1 次。
+- **持久化**:每次写事务提交都会落盘(redb 默认 `Durability::Immediate`)。**不提供**关闭落盘的选项 —— 防止静默丢写入;需要吞吐时用 `insert_many` / 批量 `update` / 批量 `delete` 把 N 次提交合并为 1 次。
+- **批量写的原子性**:`insert_many`、`update`(多命中)与 `delete`(多命中)都在单个写事务内完成 —— 要么全部生效,要么整体回滚。代价是收集阶段内存为 O(命中数)。
 - **崩溃恢复**:单文件 B+树(redb),进程崩溃后文件保持一致。
 - **格式稳定**:`.nodb` v1;本库 0.x 阶段 API 可能调整,但存储格式保持兼容。
 
 ## 开发
 
 ```bash
-cargo test --all-targets     # 194 例测试
+cargo test --all-targets     # 235 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

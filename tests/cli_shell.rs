@@ -89,6 +89,7 @@ fn shell_parse_find_no_filter() {
             sort: None,
             skip: 0,
             limit: None,
+            projection: None,
         }
     );
 }
@@ -106,8 +107,32 @@ fn shell_parse_find_with_options() {
             sort: Some(r#"{"age":-1}"#.to_string()),
             skip: 2,
             limit: Some(5),
+            projection: None,
         }
     );
+}
+
+/// find <collection> + --fields 投影。
+#[test]
+fn shell_parse_find_with_projection() {
+    let cmd = parse_line(r#"find users {} --fields {"name":1,"_id":0}"#).unwrap();
+    assert_eq!(
+        cmd,
+        ShellCommand::Find {
+            collection: "users".to_string(),
+            filter: "{}".to_string(),
+            sort: None,
+            skip: 0,
+            limit: None,
+            projection: Some(r#"{"name":1,"_id":0}"#.to_string()),
+        }
+    );
+}
+
+/// `--fields` 缺参数报错。
+#[test]
+fn shell_parse_fields_needs_argument() {
+    assert!(parse_line("find users {} --fields").is_err());
 }
 
 /// update <collection> <filter> <update>。

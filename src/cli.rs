@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::database::Database;
 use crate::document::Document;
-use crate::query::{Filter, FindOptions, SortSpec, Update};
+use crate::query::{Filter, FindOptions, Projection, SortSpec, Update};
 
 /// shell 内的一条命令(不带文件路径参数)。
 ///
@@ -45,6 +45,8 @@ pub enum ShellCommand {
         skip: usize,
         /// 限制条数。
         limit: Option<usize>,
+        /// 字段投影(JSON 对象,如 `{"name": 1}`;None 表示返回整条文档)。
+        projection: Option<String>,
     },
     /// 更新集合内满足 filter 的文档。
     Update(String, String, String),
@@ -235,6 +237,7 @@ fn parse_shell_find(collection: &str, args: &[String]) -> Result<ShellCommand, S
     let mut sort: Option<String> = None;
     let mut skip: usize = 0;
     let mut limit: Option<usize> = None;
+    let mut projection: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -265,6 +268,13 @@ fn parse_shell_find(collection: &str, args: &[String]) -> Result<ShellCommand, S
                     .map_err(|_| format!("`--limit` 参数不是有效数字: {}", args[i]))?;
                 limit = Some(n);
             }
+            "--fields" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("`--fields` 需要一个 JSON 对象参数".to_string());
+                }
+                projection = Some(args[i].clone());
+            }
             // 非选项参数:filter(filter 省略则匹配全部)
             flag if filter.is_empty() && !flag.starts_with("--") => filter = flag.to_string(),
             flag => return Err(format!("find 未知参数: `{}`", flag)),
@@ -283,6 +293,7 @@ fn parse_shell_find(collection: &str, args: &[String]) -> Result<ShellCommand, S
         sort,
         skip,
         limit,
+        projection,
     })
 }
 
@@ -301,8 +312,17 @@ fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
             sort,
             skip,
             limit,
+            projection,
         } => require_db(current, |db| {
-            exec_find(db, &collection, &filter, sort.as_deref(), skip, limit)
+            exec_find(
+                db,
+                &collection,
+                &filter,
+                sort.as_deref(),
+                skip,
+                limit,
+                projection.as_deref(),
+            )
         }),
         ShellCommand::Update(collection, filter, update) => {
             require_db(current, |db| exec_update(db, &collection, &filter, &update))
@@ -467,6 +487,7 @@ fn exec_find(
     sort_json: Option<&str>,
     skip: usize,
     limit: Option<usize>,
+    projection_json: Option<&str>,
 ) -> ExitCode {
     // 解析 filter
     let filter = match parse_filter(filter_json) {
@@ -489,26 +510,54 @@ fn exec_find(
         None => None,
     };
 
-    // 组装查询选项并执行
-    // 带排序时改走 find_page 两遍法(M11):只收集排序键排序,再按主键回取,
-    // 内存 O(n × 排序键大小) 而非 O(命中数 × 文档大小);无排序保持流式过滤。
-    let result = match &sort {
-        Some(spec) => db.find_page(collection, &filter, Some(spec), skip, limit),
-        None => db
-            .find_with_options(
-                collection,
-                &filter,
-                &FindOptions {
-                    sort: None,
-                    skip,
-                    limit,
-                },
-            )
-            .map(|docs| docs.to_vec()),
+    // 解析 projection(可选)
+    let projection = match projection_json {
+        Some(json) => match serde_json::from_str::<Value>(json)
+            .map_err(|e| e.to_string())
+            .and_then(|v| Projection::from_value(&v).map_err(|e| e.to_string()))
+        {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("projection 错误: {}", e);
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+
+    // 带排序/投影时走 find_page_total 两遍法:一次扫描同时得到「匹配总数 + 当页」,
+    // 只收集排序键排序,再按主键回取,内存 O(n × 排序键大小);
+    // 无排序且无投影保持流式过滤。
+    let result = if sort.is_some() || projection.is_some() {
+        db.find_page_total(
+            collection,
+            &filter,
+            sort.as_ref(),
+            skip,
+            limit,
+            projection.as_ref(),
+        )
+    } else {
+        db.find_with_options(
+            collection,
+            &filter,
+            &FindOptions {
+                sort: None,
+                projection: None,
+                skip,
+                limit,
+            },
+        )
+        .map(|docs| (docs.len(), docs.to_vec()))
     };
     match result {
-        Ok(docs) => {
-            println!("找到 {} 条文档(集合 `{}`):", docs.len(), collection);
+        Ok((total, docs)) => {
+            println!(
+                "找到 {} 条文档(集合 `{}`,本页 {} 条):",
+                total,
+                collection,
+                docs.len()
+            );
             for doc in &docs {
                 println!(
                     "  {}",
@@ -663,13 +712,14 @@ fn print_shell_help() {
     println!(
         "  insert <collection> <json>            插入文档(json 为对象单条;为数组则单事务批量)"
     );
-    println!("  find <collection> [filter]            查询文档(带 --sort 时走分页,内存友好)");
-    println!("       [--sort <json>] [--skip <n>] [--limit <n>]");
+    println!("  find <collection> [filter]            查询文档(输出匹配总数与本页条数)");
+    println!("       [--sort <json>] [--skip <n>] [--limit <n>] [--fields <json>]");
+    println!("       --fields 字段投影,如 '{{\"name\": 1, \"_id\": 0}}'");
     println!(
-        "  update <collection> <filter> <update> 更新匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)"
+        "  update <collection> <filter> <update> 更新匹配文档(单事务原子写回;{{\"_id\":…}} 走主键快速路径)"
     );
     println!(
-        "  delete <collection> <filter>          删除匹配文档(filter 为 {{\"_id\":…}} 时走主键快速路径)"
+        "  delete <collection> <filter>          删除匹配文档(单事务原子删除;{{\"_id\":…}} 走主键快速路径)"
     );
     println!("  count <collection> [filter]           统计匹配条数");
     println!("  collections                           列出全部集合");
@@ -684,6 +734,7 @@ fn print_shell_help() {
     println!("  insert users '{{\"name\":\"张三\",\"age\":30}}'");
     println!("  insert users '[{{\"name\":\"张三\"}},{{\"name\":\"李四\"}}]'   批量插入(单事务)");
     println!("  find users '{{\"age\": {{\"$gte\": 18}}}}' --sort '{{\"age\": -1}}' --limit 10");
+    println!("  find users '{{}}' --fields '{{\"name\": 1}}'   列表页只取需要的字段");
     println!("  update users '{{\"_id\":\"u1\"}}' '{{\"$set\":{{\"vip\":true}}}}'");
     println!("  delete users '{{\"age\": {{\"$lt\": 18}}}}'");
 }

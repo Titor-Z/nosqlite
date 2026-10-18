@@ -84,6 +84,7 @@ fn find_page_matches_find_with_options() {
                 &filter("{}"),
                 &FindOptions {
                     sort: Some(sort(sort_json)),
+                    projection: None,
                     skip,
                     limit: Some(limit),
                 },
@@ -124,6 +125,7 @@ fn find_page_matches_with_filter() {
             &f,
             &FindOptions {
                 sort: Some(sort(r#"{"age":-1}"#)),
+                projection: None,
                 skip: 5,
                 limit: Some(7),
             },

@@ -145,6 +145,20 @@ pub trait Storage {
     /// 删除指定主键的文档,返回是否实际删除。
     fn delete(&self, collection: &str, doc_id: &str) -> Result<bool, StorageError>;
 
+    /// 单事务批量更新(0.2.0 新增,一次提交摊薄 fsync 成本)。
+    ///
+    /// 逐条 `update` 时每条都要付一次 commit/fsync:macOS 上次提交 4–30 ms,
+    /// 匹配上千条就是几十秒。本方法把 N 次提交合并为 1 次,并保证**要么全成功要么全回滚**。
+    /// 主键不存在的条目静默跳过。
+    fn update_many(
+        &self,
+        collection: &str,
+        docs: &[(String, Vec<u8>)],
+    ) -> Result<(), StorageError>;
+
+    /// 单事务批量删除(0.2.0 新增),语义同 [`Storage::update_many`]。
+    fn delete_many(&self, collection: &str, doc_ids: &[String]) -> Result<(), StorageError>;
+
     /// 列出数据库内全部集合名(去重,按集合名有序)。
     ///
     /// 利用 key = `集合名(0x00)doc_id` 的有序性,遍历时按分隔符提取集合名。

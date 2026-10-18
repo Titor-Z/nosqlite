@@ -13,7 +13,9 @@ use serde_json::{Map, Value};
 
 use crate::document::{Document, DocumentError};
 use crate::engine::{RedbEngine, Storage, StorageError};
-use crate::query::{Filter, FilterError, FindOptions, SortError, SortSpec, Update, UpdateError};
+use crate::query::{
+    Filter, FilterError, FindOptions, Projection, SortError, SortSpec, Update, UpdateError,
+};
 
 /// nosqlite 数据库门面。
 ///
@@ -202,6 +204,11 @@ impl Database {
             docs.truncate(limit);
         }
 
+        // 5. 字段投影(0.2.0):在排序/分页之后裁剪,保证排序字段可用
+        if let Some(projection) = &options.projection {
+            docs = docs.iter().map(|doc| projection.apply(doc)).collect();
+        }
+
         Ok(docs)
     }
 
@@ -210,7 +217,8 @@ impl Database {
     /// - 更新操作符当前支持 `$set`(字段点号路径赋值,嵌套自动创建/覆盖;路径段可为数组下标);
     /// - `_id` 主键不可被修改(修改报 [`DatabaseError::Update`]);
     /// - **内容无变化的文档不写回、不计数**(如 `$set` 写入相同值),与 MongoDB `modifiedCount` 语义一致;
-    /// - 流水线:**流式遍历** → 过滤 → 应用更新 → 逐个写回(主键不变),内存 O(1);
+    /// - 流水线:**流式遍历** → 过滤 → 应用更新 → 收集 → **单事务写回**(内存 O(命中数));
+    /// - 写回是**原子**的:要么全部成功,要么整体回滚(不会留下「改了一半」的状态);
     /// - 若 filter 为 `{"_id": "xxx"}`,自动走主键直接寻址快速路径(不经全表扫描)。
     pub fn update(
         &self,
@@ -221,8 +229,8 @@ impl Database {
         if let Some(id) = filter.single_id_eq().and_then(|v| v.as_str()) {
             return Ok(self.update_by_id(collection, id, update)? as usize);
         }
-        // 1. 流式遍历 + 过滤 + 应用更新 + 写回(内存 O(1),不再物化整个集合)
-        let mut modified = 0usize;
+        // 1. 流式遍历 + 过滤 + 应用更新,只收集实际要写的 (id, 新字节)
+        let mut rows: Vec<(String, Vec<u8>)> = Vec::new();
         let mut error: Option<DatabaseError> = None;
         self.engine.for_each(collection, &mut |doc_id, bytes| {
             if error.is_some() {
@@ -251,17 +259,10 @@ impl Database {
             if map_mut == *map {
                 return true;
             }
-            // 更新后的文档序列化写回(主键不变)
-            let new_bytes = match serde_json::to_vec(&map_mut) {
-                Ok(b) => b,
-                Err(e) => {
-                    error = Some(e.into());
-                    return false;
-                }
-            };
-            match self.engine.update(collection, doc_id, &new_bytes) {
-                Ok(_) => {
-                    modified += 1;
+            // 序列化(在事务外完成,减小事务持锁时间)
+            match serde_json::to_vec(&map_mut) {
+                Ok(b) => {
+                    rows.push((doc_id.to_string(), b));
                     true
                 }
                 Err(e) => {
@@ -273,19 +274,24 @@ impl Database {
         if let Some(e) = error {
             return Err(e);
         }
+
+        // 2. 单事务写回(0.2.0):N 条修改只付一次 commit/fsync,且整体原子
+        let modified = rows.len();
+        self.engine.update_many(collection, &rows)?;
         Ok(modified)
     }
 
     /// 删除集合内所有满足 filter 的文档,返回删除条数。
     ///
-    /// 流水线:**流式遍历** → 过滤 → 逐个删除(内存 O(1))。
+    /// 流水线:**流式遍历** → 过滤 → 收集命中的主键 → **单事务删除**(内存 O(命中数)),
+    /// 删除是**原子**的(要么全删要么全不删)。
     /// 若 filter 为 `{"_id": "xxx"}`,自动走主键直接寻址快速路径(不经全表扫描)。
     pub fn delete(&self, collection: &str, filter: &Filter) -> Result<usize, DatabaseError> {
         if let Some(id) = filter.single_id_eq().and_then(|v| v.as_str()) {
             return Ok(self.delete_by_id(collection, id)? as usize);
         }
-        // 流式遍历 + 过滤 + 删除
-        let mut deleted = 0usize;
+        // 1. 流式遍历 + 过滤,只收集命中的主键
+        let mut ids: Vec<String> = Vec::new();
         let mut error: Option<DatabaseError> = None;
         self.engine.for_each(collection, &mut |doc_id, bytes| {
             if error.is_some() {
@@ -298,23 +304,18 @@ impl Database {
                     return false;
                 }
             };
-            if !filter.matches(doc.as_map()) {
-                return true;
+            if filter.matches(doc.as_map()) {
+                ids.push(doc_id.to_string());
             }
-            match self.engine.delete(collection, doc_id) {
-                Ok(_) => {
-                    deleted += 1;
-                    true
-                }
-                Err(e) => {
-                    error = Some(e.into());
-                    false
-                }
-            }
+            true
         })?;
         if let Some(e) = error {
             return Err(e);
         }
+
+        // 2. 单事务删除(0.2.0):N 条删除只付一次 commit/fsync
+        let deleted = ids.len();
+        self.engine.delete_many(collection, &ids)?;
         Ok(deleted)
     }
 
@@ -476,6 +477,27 @@ impl Database {
         skip: usize,
         limit: Option<usize>,
     ) -> Result<Vec<Map<String, Value>>, DatabaseError> {
+        Ok(self.find_page_total(collection, filter, sort, skip, limit, None)?.1)
+    }
+
+    /// 排序 + 分页 + **一次扫描同时给出匹配总数**(0.2.0 新增,列表页专用)。
+    ///
+    /// 与 [`find_page`](Self::find_page) 的唯一差别:额外返回第一遍扫描中统计到的
+    /// **匹配文档总数**(不是页内条数)。列表页需要「总数 + 当页」时,用本方法可省掉
+    /// 一次独立的 [`count`](Self::count) 全表扫描 —— 500k 档可省约 2.4 s。
+    ///
+    /// `projection` 在排序/分页之后应用(保证排序字段与 `_id` 可被正常读取)。
+    ///
+    /// 返回 `(匹配总数, 页内文档)`。
+    pub fn find_page_total(
+        &self,
+        collection: &str,
+        filter: &Filter,
+        sort: Option<&SortSpec>,
+        skip: usize,
+        limit: Option<usize>,
+        projection: Option<&Projection>,
+    ) -> Result<(usize, Vec<Map<String, Value>>), DatabaseError> {
         // ---------- 第一遍:流式收集 (排序键, _id) ----------
         let mut index: Vec<(Vec<Option<Value>>, String)> = Vec::new();
         let mut error: Option<DatabaseError> = None;
@@ -528,6 +550,9 @@ impl Database {
             index.sort_by(|a, b| spec.compare_sort_keys(&a.0, &b.0));
         }
 
+        // 匹配总数:排序之前统计(索引里就是全部命中项)
+        let total = index.len();
+
         // ---------- 截取页内主键 ----------
         let start = skip.min(index.len());
         let page_ids: Vec<String> = match limit {
@@ -548,6 +573,11 @@ impl Database {
                 out.push(doc);
             }
         }
-        Ok(out)
+
+        // ---------- 字段投影(排序/分页之后应用) ----------
+        if let Some(projection) = projection {
+            out = out.iter().map(|doc| projection.apply(doc)).collect();
+        }
+        Ok((total, out))
     }
 }

@@ -7,7 +7,10 @@
 //! - number 内部按数值比较(int/float 可互比);
 //! - string 按字典序;
 //! - bool 按 `false < true`;
-//! - array / object 不支持跨类型排序,比较时视为相等(排序稳定即可)。
+//! - array 逐元素比较(先比公共长度部分,再比长度,短者在前);
+//! - object 按键名有序逐对比较(同键比值,键数少者在前)。
+//!
+//! 0.2.0 起 array/object 可参与排序与 `$eq`,不再是「恒等」。
 
 use serde_json::Value;
 
@@ -27,8 +30,7 @@ fn type_rank(value: Option<&Value>) -> u8 {
 /// 比较两个值(可能为缺失,即 `None`)。
 ///
 /// 遵循 BSON 风格类型序;同类型内部按各自规则比较。
-/// 对于 array/object(以及缺失 vs 对象等复杂情况),仅保证"可比较"但不保证完全有序:
-/// 返回 `Equal` 表示大小关系无法判定,排序时保持相对位置。
+/// array/object 递归比较(BSON 风格子集),因此可以参与排序与相等判断。
 pub fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
     let ra = type_rank(a);
     let rb = type_rank(b);
@@ -48,7 +50,31 @@ pub fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Orderin
             }
             // string:字典序
             (Some(Value::String(x)), Some(Value::String(y))) => x.cmp(y),
-            // array / object:不能精确比较,视为相等(保持稳定排序)
+            // array:逐元素比较,公共部分相等时短者在前
+            (Some(Value::Array(x)), Some(Value::Array(y))) => {
+                for (xi, yi) in x.iter().zip(y.iter()) {
+                    let ord = compare_values(Some(xi), Some(yi));
+                    if ord != std::cmp::Ordering::Equal {
+                        return ord;
+                    }
+                }
+                x.len().cmp(&y.len())
+            }
+            // object:按键名有序逐对比较(serde_json::Map 的迭代器已按 key 有序)
+            (Some(Value::Object(x)), Some(Value::Object(y))) => {
+                for ((kx, vx), (ky, vy)) in x.iter().zip(y.iter()) {
+                    let ord = kx.cmp(ky);
+                    if ord != std::cmp::Ordering::Equal {
+                        return ord;
+                    }
+                    let ord = compare_values(Some(vx), Some(vy));
+                    if ord != std::cmp::Ordering::Equal {
+                        return ord;
+                    }
+                }
+                x.len().cmp(&y.len())
+            }
+            // 同类型序但组合不可能(防御):视为相等
             _ => std::cmp::Ordering::Equal,
         },
         other => other,

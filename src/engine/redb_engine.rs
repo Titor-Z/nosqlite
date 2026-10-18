@@ -416,6 +416,70 @@ impl Storage for RedbEngine {
         Ok(deleted)
     }
 
+    fn update_many(
+        &self,
+        collection: &str,
+        docs: &[(String, Vec<u8>)],
+    ) -> Result<(), StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 空批次直接成功(避免无意义地开事务)
+        if docs.is_empty() {
+            return Ok(());
+        }
+
+        // 3. 单写事务内覆盖写入全部文档,一次性提交
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        {
+            let mut table = write_tx
+                .open_table(DOCS_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            for (doc_id, bytes) in docs {
+                let key = build_doc_key(collection, doc_id);
+                table
+                    .insert(&key[..], &bytes[..])
+                    .map_err(|e| StorageError::Other(format!("更新文档失败: {}", e)))?;
+            }
+        }
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))
+    }
+
+    fn delete_many(&self, collection: &str, doc_ids: &[String]) -> Result<(), StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 空批次直接成功
+        if doc_ids.is_empty() {
+            return Ok(());
+        }
+
+        // 3. 单写事务内删除全部主键,一次性提交
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        {
+            let mut table = write_tx
+                .open_table(DOCS_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            for doc_id in doc_ids {
+                let key = build_doc_key(collection, doc_id);
+                table
+                    .remove(&key[..])
+                    .map_err(|e| StorageError::Other(format!("删除文档失败: {}", e)))?;
+            }
+        }
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交写入事务失败: {}", e)))
+    }
+
     fn list_collections(&self) -> Result<Vec<String>, StorageError> {
         // 读取事务 + 打开文档表
         let read_tx = self

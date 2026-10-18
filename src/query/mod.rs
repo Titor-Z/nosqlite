@@ -15,5 +15,5 @@ mod update;
 
 pub use compare::compare_values;
 pub use filter::{Filter, FilterError};
-pub use options::{FindOptions, SortError, SortSpec};
+pub use options::{FindOptions, Projection, ProjectionError, SortError, SortSpec};
 pub use update::{Update, UpdateError};
