@@ -13,12 +13,87 @@
 //!   时区偏移与精度差异在解析阶段即归一。
 //!
 //! v0.1.1 起 array/object 可参与排序与 `$eq`,不再是「恒等」;
-//! v0.1.3 起支持 Date 类型。
+//! v0.1.3 起支持 Date 类型;v0.2.0 起支持 Extended JSON 的 `$oid`/`$numberLong`/`$numberDouble`。
+//!
+//! # Extended JSON 归一化
+//!
+//! 为了让 MongoDB driver 与 C ABI 客户端能用各自的惯用写法互通,
+//! 下列字面量在**比较与匹配时**按其「真实类型」参与:
+//!
+//! - `{"$oid": "<24位hex>"}` ≡ 普通字符串(主键就是 24 位 hex 字符串);
+//! - `{"$numberLong": "123"}` ≡ 整数;`{"$numberDouble": "1.5"}` ≡ 浮点;
+//! - `{"$date": ...}` ≡ 时间戳(见 [`as_date`])。
+//!
+//! 存储层不做改写 —— 写入什么就存什么,只在比较时归一,保证已有数据不受影响。
 
 use serde_json::Value;
 
 /// 日期在类型序中的位置:介于 number 与 string 之间。
 const RANK_DATE: u8 = 4;
+
+/// 若值是 Extended JSON 的 `{"$oid": "..."}`,返回其中的字符串。
+///
+/// `_id` 在 nosqlite 中就是 24 位 hex 字符串,因此 `$oid` 与普通字符串等价。
+pub fn as_oid(value: &Value) -> Option<&str> {
+    wrap_str(value, "$oid")
+}
+
+/// 若值是 `{"$numberLong": "123"}`,返回其数值(整数优先)。
+pub fn as_number_long(value: &Value) -> Option<Value> {
+    scalar_wrap(value, "$numberLong")
+        .and_then(|v| parse_numeric(v.as_str()?, true))
+        .map(Value::from)
+}
+
+/// 若值是 `{"$numberDouble": "1.5"}`,返回其数值。
+pub fn as_number_double(value: &Value) -> Option<Value> {
+    scalar_wrap(value, "$numberDouble")
+        .and_then(|v| parse_numeric(v.as_str()?, false))
+        .map(Value::from)
+}
+
+/// 取出「恰好只有一个指定键」的包装对象内的值。
+fn scalar_wrap<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    let obj = value.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    obj.get(key)
+}
+
+/// 取出 `{"$key": "字符串"}` 中的字符串(非字符串值不算)。
+fn wrap_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    scalar_wrap(value, key)?.as_str()
+}
+
+/// 解析数字字符串:整数优先,浮点按需。
+fn parse_numeric(raw: &str, integer_only: bool) -> Option<serde_json::Number> {
+    if let Ok(i) = raw.parse::<i64>() {
+        return Some(serde_json::Number::from(i));
+    }
+    if integer_only {
+        return None;
+    }
+    raw.parse::<f64>()
+        .ok()
+        .and_then(serde_json::Number::from_f64)
+}
+
+/// 把 Extended JSON 包装归一为基础值;普通的字符串/数字原样返回。
+///
+/// 返回值是「该值参与比较时的真实形态」。
+fn normalize(value: &Value) -> std::borrow::Cow<'_, Value> {
+    if let Some(oid) = as_oid(value) {
+        return std::borrow::Cow::Owned(Value::String(oid.to_string()));
+    }
+    if let Some(n) = as_number_long(value) {
+        return std::borrow::Cow::Owned(n);
+    }
+    if let Some(n) = as_number_double(value) {
+        return std::borrow::Cow::Owned(n);
+    }
+    std::borrow::Cow::Borrowed(value)
+}
 
 /// 若值是 Date 字面量(`{"$date": ...}` 且只有一个键),解析为 UTC 毫秒。
 ///
@@ -170,16 +245,23 @@ fn days_from_civil(mut y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// BSON 风格类型等级(用于确定类型间大小)。
+///
+/// 先做 Extended JSON 归一(`$oid`→字符串、`$numberLong`→数字),再判等级。
 fn type_rank(value: Option<&Value>) -> u8 {
     match value {
         None => 0, // 缺失字段视为最小
-        Some(Value::Null) => 1,
-        Some(Value::Bool(_)) => 2,
-        Some(Value::Number(_)) => 3,
-        Some(v) if as_date(v).is_some() => RANK_DATE,
-        Some(Value::String(_)) => 5,
-        Some(Value::Array(_)) => 6,
-        Some(Value::Object(_)) => 7,
+        Some(v) => {
+            let v = normalize(v);
+            match v.as_ref() {
+                Value::Null => 1,
+                Value::Bool(_) => 2,
+                Value::Number(_) => 3,
+                _ if as_date(&v).is_some() => RANK_DATE,
+                Value::String(_) => 5,
+                Value::Array(_) => 6,
+                Value::Object(_) => 7,
+            }
+        }
     }
 }
 
@@ -188,6 +270,11 @@ fn type_rank(value: Option<&Value>) -> u8 {
 /// 遵循 BSON 风格类型序;同类型内部按各自规则比较。
 /// array/object 递归比较(BSON 风格子集),因此可以参与排序与相等判断。
 pub fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    // 先做 Extended JSON 归一($oid→字符串、$numberLong/$numberDouble→数字)
+    let na = a.map(normalize);
+    let nb = b.map(normalize);
+    let a = na.as_deref();
+    let b = nb.as_deref();
     let ra = type_rank(a);
     let rb = type_rank(b);
     match ra.cmp(&rb) {

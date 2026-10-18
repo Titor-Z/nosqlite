@@ -1,6 +1,6 @@
 [package]
 name = "nosqlite"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "一个像 SQLite 一样小巧的单文件 NoSQL 数据库(.nodb):MongoDB 风格文档模型,单文件零配置部署"
@@ -13,7 +13,7 @@ readme = "README.md"
 [dependencies]
 redb = "3"
 regex = "1"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [dev-dependencies]
 redb = "3"

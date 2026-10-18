@@ -14,7 +14,8 @@ use serde_json::{Map, Value};
 use crate::document::{Document, DocumentError};
 use crate::engine::{RedbEngine, Storage, StorageError};
 use crate::query::{
-    Filter, FilterError, FindOptions, Projection, SortError, SortSpec, Update, UpdateError,
+    Filter, FilterError, FindOptions, Projection, ProjectionError, SortError, SortSpec, Update,
+    UpdateError,
 };
 
 /// nosqlite 数据库门面。
@@ -41,6 +42,8 @@ pub enum DatabaseError {
     Sort(SortError),
     /// 更新操作错误(见 [`UpdateError`])。
     Update(UpdateError),
+    /// 投影规格错误(见 [`ProjectionError`])。
+    Projection(ProjectionError),
 }
 
 impl std::fmt::Display for DatabaseError {
@@ -51,6 +54,7 @@ impl std::fmt::Display for DatabaseError {
             DatabaseError::Filter(e) => write!(f, "{}", e),
             DatabaseError::Sort(e) => write!(f, "{}", e),
             DatabaseError::Update(e) => write!(f, "{}", e),
+            DatabaseError::Projection(e) => write!(f, "{}", e),
         }
     }
 }
@@ -84,6 +88,12 @@ impl From<DocumentError> for DatabaseError {
 impl From<FilterError> for DatabaseError {
     fn from(e: FilterError) -> Self {
         DatabaseError::Filter(e)
+    }
+}
+
+impl From<ProjectionError> for DatabaseError {
+    fn from(e: ProjectionError) -> Self {
+        DatabaseError::Projection(e)
     }
 }
 

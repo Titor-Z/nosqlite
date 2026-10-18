@@ -16,7 +16,7 @@ use std::cmp::Ordering;
 
 use serde_json::{Map, Value};
 
-use super::compare::{as_date, compare_values};
+use super::compare::{as_date, as_number_double, as_number_long, as_oid, compare_values};
 
 /// 查询条件错误。
 #[derive(Debug)]
@@ -409,10 +409,11 @@ fn parse_field_condition(path: &str, value: &Value) -> Result<Condition, FilterE
     let path = path.split('.').map(|s| s.to_string()).collect::<Vec<_>>();
 
     // 若值是对象且含 $ 前缀键 → 操作符对象。
-    // 例外:Date 字面量 `{"$date": ...}` 是**值**而非操作符对象(v0.1.3)。
+    // 例外:Extended JSON 字面量(`$date`/`$oid`/`$numberLong`/`$numberDouble`)
+    // 是**值**而非操作符对象(v0.1.3 起支持 $date,v0.2.0 起支持其余)。
     let ops = match value {
         Value::Object(map)
-            if map.keys().any(|k| k.starts_with('$')) && as_date(value).is_none() =>
+            if map.keys().any(|k| k.starts_with('$')) && !is_extended_json_literal(value) =>
         {
             parse_operator_object(map)?
         }
@@ -513,6 +514,14 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
         ops.push(op);
     }
     Ok(ops)
+}
+
+/// 判断一个对象是否是 Extended JSON 字面量(应作为**值**而非操作符对象)。
+fn is_extended_json_literal(value: &Value) -> bool {
+    as_date(value).is_some()
+        || as_oid(value).is_some()
+        || as_number_long(value).is_some()
+        || as_number_double(value).is_some()
 }
 
 /// 按点号路径解析文档字段值,返回**全部候选值**(v0.1.2)。

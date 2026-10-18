@@ -28,6 +28,17 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 
 底层是 [redb](https://crates.io/crates/redb)(纯 Rust 单文件 B+树 KV 存储),之上提供文档语义层。`.nodb` 格式版本 v1。
 
+## 路线:双形态
+
+nosqlite 有两个形态,共用同一套查询语义:
+
+| 形态 | 形态说明 | 状态 |
+|---|---|---|
+| **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程;适合本地 GUI/App、CLI、桌面软件 | 计划中(`nosqlite-ffi`) |
+| **服务端(wire 协议)** | `nosqlite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连,可替换 mongodb-server | 计划中 |
+
+当前已完成端侧全部能力(Rust 内嵌 API + CLI)。
+
 ## 何时**不要**用
 
 诚实地说,nosqlite 不适合以下场景:
@@ -66,9 +77,21 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **聚合管道**:`aggregate` 整体未实现(`$match`/`$group`/`$lookup`/`$unwind`/`$facet`…)
 - **索引**:仅 `_id` 主键索引;无二级/复合/唯一/TTL 索引,所有非 `_id` 查询都是全表扫描
 - **事务**:仅单集合内的写事务;无跨集合/跨文档显式事务会话
-- **类型系统**:文档值即 JSON。**Date 用 Extended JSON 的 `{"$date": ...}` 表示**(按时间戳比较与排序,存储仍是普通 JSON);无 `ObjectId`/`Binary`/`Decimal128` 类型,`_id` 是 24 位十六进制字符串
+- **类型系统**:文档值即 JSON,**富类型用 MongoDB Extended JSON 表示** —— `{"$date": ...}`(按时间戳比较排序)、`{"$oid": ...}` ≡ 24 位 hex 字符串、`{"$numberLong": ...}`/`{"$numberDouble": ...}` ≡ 数字;存储仍是普通 JSON。无 `Binary`/`Decimal128`/`Timestamp`/`MinKey` 等剩余 BSON 类型
 - **Server / 协议**:无 MongoDB wire 协议,官方 driver 与 `mongosh` 无法直连
 - **其他**:`distinct`、`explain`、change stream、schema validation、`$regex` 的 `$options`
+
+### 跨语言契约
+
+为 C ABI(`nosqlite-ffi`)与 MongoDB wire 协议共用,以下三项已冻结:
+
+| 契约 | 说明 |
+|---|---|
+| **错误码** | `nosqlite::ErrorCode`,`as_str()` 如 `DUPLICATE_KEY`/`INVALID_FILTER`,`as_i32()` 供 C 侧返回(0 保留给成功) |
+| **字段序** | 文档字段顺序**保持写入顺序**(已开启 `serde_json/preserve_order`),投影后 `_id` 恒在最前 |
+| **Extended JSON** | `$date`/`$oid`/`$numberLong`/`$numberDouble` 在比较与匹配时按真实类型归一,存储层不改写 |
+
+> 错误的中文文案(`Display`)仅供 CLI 展示;**程序化判断请一律用 `code()`**。
 
 ### 数据导入导出
 
@@ -147,7 +170,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 335 例测试
+cargo test --all-targets     # 351 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

@@ -18,7 +18,9 @@ pub mod cli;
 pub mod database;
 pub mod document;
 pub mod engine;
+pub mod error;
 pub mod query;
 
 pub use database::{Database, DatabaseError, UpsertResult};
 pub use document::{Document, DocumentError};
+pub use error::ErrorCode;

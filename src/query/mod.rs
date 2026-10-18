@@ -13,7 +13,9 @@ mod filter;
 mod options;
 mod update;
 
-pub use compare::{as_date, compare_values, parse_iso8601};
+pub use compare::{
+    as_date, as_number_double, as_number_long, as_oid, compare_values, parse_iso8601,
+};
 pub use filter::{Filter, FilterError};
 pub use options::{FindOptions, Projection, ProjectionError, SortError, SortSpec};
 pub use update::{Update, UpdateError};

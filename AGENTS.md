@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.2.0 M17 完成(阶段 0) —— 跨语言契约冻结:字段序保持(`preserve_order`,实测修复静默重排)、稳定错误码 `ErrorCode`(12 码,C ABI 整数 + wire 字符串)、Extended JSON 扩展(`$oid`/`$numberLong`/`$numberDouble`);+16 例共 **351 例全绿**。同时写入「双形态路线」总纲与「尽可能完整支持最新 MongoDB」的长期目标。参见 [taolun #37](#37-v020-m17-设计阶段-0--跨语言契约冻结双形态前置) / [taolun #38](#38-v020-m17-执行阶段-0-契约冻结) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.5 M16 完成 —— CLI `.export`(JSON Lines,分批写出)/`.import`(JSONL 或 JSON 数组,单事务整批)/`.stats`(文件大小 + 各集合条数);+10 例共 **335 例全绿**;顺带修正 `.help` 里残留的旧命令名。参见 [taolun #35](#35-v015-m16-设计cli-export--import--stats) / [taolun #36](#36-v015-m16-执行cli-export--import--stats) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.4 M15 完成 —— 更新操作符 `$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate`(数组支持 `$each/$position/$slice/$sort`)+ upsert(`update_or_insert`);+50 例共 **325 例全绿**。参见 [taolun #33](#33-v014-m15-设计更新操作符扩展--upsert) / [taolun #34](#34-v014-m15-执行更新操作符扩展--upsert) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.3 M14 完成 —— Date 类型:`{"$date": "ISO-8601"}` / 毫秒时间戳,按时间戳比较排序、时区偏移归一,存储仍是普通 JSON(`.nodb` 格式 v1 不变);+17 例共 **275 例全绿**。参见 [taolun #31](#31-v013-m14-设计date-类型优先级-2) / [taolun #32](#32-v013-m14-执行date-类型) / [项目进度-已完成](#已完成)。
@@ -582,6 +583,43 @@
 - 测试:新增 `tests/cli_io.rs` **9 例**(往返、JSON 数组导入、非法 JSON 整批不写、主键冲突回滚、`--append`、默认覆盖、空集合导出、`.stats` 输出、缺参提示;通过 `CARGO_BIN_EXE_nosqlite` + stdin 注入驱动真实二进制)+ `tests/cli_shell.rs` 1 例解析;合计 **335 例全绿**,clippy 零警告。
 - 冒烟:建库 → 插入两个集合 → `.stats` → `.export` → 新库 `.import` → `count`/`.stats` 全部正确。
 
+### 37. v0.2.0 M17 设计:阶段 0 —— 跨语言契约冻结(双形态前置)
+
+- 用户决策(本轮确认):
+  1. **双形态**(嵌入式 C ABI + 服务端 wire 协议)是总纲,已写入「双形态路线」章节;
+  2. 查询语义以**尽可能完整支持最新 MongoDB 为长期目标**,当前只是最小集;
+  3. C ABI 采用**高层 API 为主 + `nosqlite_exec` 兜底**。
+- 为什么先做阶段 0:C ABI 与 wire 协议**共用**错误码、字段序、Extended JSON 契约。等两边写完再改要动两处,现在定契约成本最低。
+- 阶段 0 三件事:
+
+| # | 内容 | 理由 |
+|---|---|---|
+| ① | 开启 `serde_json/preserve_order` | 已实测:写 `{"zebra":1,"apple":2}` 读出变成 `{"apple":2,"zebra":1}`。字段序是**数据表达的一部分**,Go/TS 往返后静默改变 |
+| ② | 统一错误码 `ErrorCode` | C 侧与 wire 侧都需要**稳定、可程序判断**的码;现有错误只有中文文案,客户端只能 `Contains("主键冲突")` |
+| ③ | 扩展 Extended JSON | 已有 `{"$date": ...}`;补 `$oid` / `$numberLong` / `$numberDouble` 等,为 BSON 类型翻译打底 |
+
+- 具体设计:
+  - **`ErrorCode`**(`src/error.rs`):稳定大写下划线码,如 `DUPLICATE_KEY`/`NOT_FOUND`/`INVALID_FILTER`/`INVALID_UPDATE`/`INVALID_PATH`/`VERSION_MISMATCH`/`IO_ERROR`/`INTERNAL`。`DatabaseError::code()` 返回它;`Display` 保持中文不变(CLI 仍可读)。
+  - **保留字段序**:`serde_json = { version = "1", features = ["preserve_order"] }`,底层由 BTreeMap 变 IndexMap。**必须回归全部测试**(依赖字段序的地方主要集中在导出/投影/排序键)。
+  - **Extended JSON**:`$date` 已完成;本轮补 `{"$oid": "..."}`(与 `_id` 字符串互通)、`{"$numberLong": "..."}`,并在比较层把这二者归一为字符串/整数。
+- 不做(留到阶段 1/2):C ABI 本体、BSON 编解码、wire 协议、聚合管道。
+
+### 38. v0.2.0 M17 执行:阶段 0 契约冻结
+
+- **① 字段序保持**:`Cargo.toml` 的 `serde_json` 开启 `preserve_order`(底层 BTreeMap → IndexMap)。
+  - 实测确认:改前写 `{"zebra":1,"apple":2,"name":"张三"}` 读出为 `{"apple":2,"name":"张三","zebra":1}`;改后保持写入顺序。
+  - **全部 335 例既有测试零修改通过** —— 说明此前没有逻辑依赖字典序。
+- **② 稳定错误码**:新增 `src/error.rs`。
+  - `pub enum ErrorCode`(12 个码),`as_str()` 给 wire 协议用、`as_i32()` 给 C ABI 用(0 保留给成功,已发布不得重排)、`is_client_error()` 区分 4xx/5xx。
+  - `DatabaseError::code()` 完成映射;`Display` 保持中文不变(CLI 可读性不受影响)。
+  - **顺带补齐遗漏**:`DatabaseError` 此前缺少 `Projection` 变体(投影错误被并入 Document),已补上并加 `From<ProjectionError>`。
+- **③ Extended JSON 扩展**:`compare.rs` 增 `as_oid`/`as_number_long`/`as_number_double`,内部 `normalize` 把包装归一为基础值,`type_rank` 与 `compare_values` 均改走归一化。
+  - 效果:`{"$oid": "abc"}` ≡ 字符串 `"abc"`(故可用普通字符串查主键);`{"$numberLong": "42"}` ≡ 数字 `42`。
+  - `filter.rs` 增 `is_extended_json_literal` —— 否则 `{"_id": {"$oid": "..."}}` 会被当成含 `$` 键的操作符对象而报「不支持的字段操作符」。
+  - **存储层不改写**:写什么存什么,只在比较/匹配时归一,已有数据格式不受影响。
+- 测试:新增 `tests/contract.rs` **16 例**,三块各自锁定(字段序 2 例、错误码 7 例、Extended JSON 7 例);合计 **351 例全绿**,clippy 零警告。
+- README 增「跨语言契约」与「路线:双形态」两节;「与 MongoDB 的差异」中的类型系统条目更新。
+
 ## Agents
 
 ### 规范
@@ -593,13 +631,42 @@
 5. 写测试时,测试文件按功能模块拆分成多个文件,禁止在一个文件里写全部内容。
 6. 开发采用 OOP 面向对象方式(Rust 惯用 `struct + impl + trait`),模块单一职责,高内聚低耦合。
 
+### 双形态路线(v0.2 起的总纲)
+
+> 定位:**端侧像 SQLite(嵌入式),服务端对 MongoDB 生态透明(可替换 mongodb-server)。**
+> 两者共用同一套查询语义,这是本项目区别于任何单一形态产品的立足点。
+
+- **形态 A —— 嵌入式(C ABI)**:`.nodb` 由宿主进程独占,像 SQLite 一样被任何语言**进程内**调用。
+  - 适用:本地 GUI/App(Electron/Tauri/Go/Wails)、CLI 工具、桌面软件。
+  - 硬要求:不能让端侧用户额外安装/常驻服务进程。
+- **形态 B —— 服务端(wire 协议)**:`nosqlite-server` 监听 `mongodb://`,**第三方 MongoDB 官方/社区 driver 直连**。
+  - 适用:多进程/多语言共享、Web 后端(如 CMS)。
+  - 目标:客户端无需任何 nosqlite 专属 SDK。
+- 共同基础:查询语义、Extended JSON、错误码 —— **两者共享,不得分叉**。
+
+#### 查询语义总目标:**尽可能完整地支持最新 MongoDB 查询语言**
+
+- 当前实现的是「满足驱动/ORM 调用面的**最小集**」,**不是终点**。
+- **长期目标:尽可能完整地支持最新版 MongoDB 的查询/更新/聚合语义**,包括但不限于:
+  - 查询:已实现 `$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch/$not`(字段级+顶层)、`$and/$or/$nor`;
+    待补 `$exists/$type/$all/$size/$mod/$expr/$text/$where`、`$regex` 的 `$options`、地理查询等。
+  - 更新:已实现 `$set/$unset/$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate`;
+    待补 `$pull/$pop/$setOnInsert/$bit/$push` 全部修饰符、数组过滤器 `$[]/$[id]` 等。
+  - 聚合管道:`$match/$group/$project/$sort/$limit/$skip/$unwind/$lookup/$facet/$addFields/$replaceRoot/...`。
+- 纪律:每一项补齐都必须**以 MongoDB 官方文档为唯一语义基准**,并用真实 driver 行为回归验证;
+  已实现的语义不得回退(现有测试即护栏)。
+- 判定优先级:**被真实 driver/ORM 隐式调用到的语义优先**(如 Mongoose 生成的 `$exists`),而非文档里看起来常用的。
+
 ### 项目进度
 
 #### 计划中
+- **阶段 1:`nosqlite-ffi`(C ABI)** —— 高层 API 为主 + `nosqlite_exec` 兜底;JSON 进出、错误码返回、回调式流式遍历;三平台预编译动态库。
+- **阶段 2:`nosqlite-server`(wire 协议)** —— OP_MSG + BSON + `hello` 握手 + CRUD 命令 + 游标(`getMore`/`killCursors`),用官方 Node/Go driver 实测。
+- **语义长期目标**:向最新 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - crates.io 发布:干跑已通过,**按用户决定暂缓**(GitHub Release v0.1.0 已发);待需要 crates.io 分发时 `cargo login` 后 `cargo publish` 即可。
 - CMS 项目启动后进入维护模式:真实场景验收(CMS 作为第一个真实用户)优先于新功能。
 - 后续(按需触发):索引下推/排序下推(单集合超大数据量时)、Server 模式(触发条件:出现「多个独立服务共享同一库」的真实需求;实现顺序:HTTP/axum 包一层 → C ABI/FFI → MongoDB wire 协议)、聚合管道。
-- **跨语言访问路线(已定)**:HTTP(axum/CMS)→ C ABI/FFI(`nosqlite-ffi`,cbindgen 生成头文件)→ wire 协议;`.nodb` 文件永远由进程独占,客户端只走网络访问 —— Node/Go 等 MongoDB 驱动在 wire 协议落地前无法直连。
+- **跨语言访问路线(v0.2 起重定)**:见下方「双形态路线」章节。旧结论「先 HTTP 再 C ABI」已作废 —— 端侧(App)的核心价值恰恰是**嵌入式**,不能要求用户装服务。
 
 #### 代办
 - (无 —— M11 已完成，CLI 同步并入 M10 或发布前置项)
@@ -614,6 +681,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M17(v0.2.0,阶段 0):跨语言契约冻结 —— 字段序 / 错误码 / Extended JSON;351 例全绿。
 - M16(v0.1.5):CLI `.export`/`.import`/`.stats`;335 例全绿。
 - M15(v0.1.4):更新操作符扩展(8 个)+ upsert;325 例全绿。
 - M14(v0.1.3):Date 类型 —— `{"$date": ...}` 按时间戳比较排序(时区归一),格式仍 v1;275 例全绿。
