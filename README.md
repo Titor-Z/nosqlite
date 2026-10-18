@@ -132,6 +132,46 @@ nosqlite_close(db);
 | 错误信息 | 一个笼统错误码 | **结构化**:`{code, code_str, message, op}` |
 | 接口演进 | 只能堆 `_v2`/`_v3` | **`struct_size` 版本化 options** |
 
+### 获取库
+
+两种方式,任选:
+
+**① 预编译包**(推荐):从 [GitHub Releases](https://github.com/Titor-Z/nosqlite/releases) 下载对应平台的 `nosqlite-ffi-<platform>.tar.gz`,内含动态库、静态库与 `include/nosqlite.h`,并附 `.sha256` 校验。
+
+| 平台 | 动态库 | 静态库 |
+|---|---|---|
+| Linux x86_64 | `libnosqlite.so` | `libnosqlite.a` |
+| macOS aarch64 | `libnosqlite.dylib` | `libnosqlite.a` |
+| Windows x86_64 | `nosqlite.dll` | `nosqlite.lib` |
+
+**② 本地构建**:`cargo build --release`,产物在 `target/release/`。
+
+### 各语言接入
+
+```python
+# Python(标准库 ctypes,零依赖)
+import ctypes
+lib = ctypes.CDLL("./libnosqlite.dylib")
+lib.nosqlite_open.restype = ctypes.c_void_p
+lib.nosqlite_open.argtypes = [ctypes.c_char_p, ctypes.c_uint8]
+db = lib.nosqlite_open(b"app.nodb", 1)
+```
+
+```go
+// Go(cgo)
+/*
+#cgo LDFLAGS: -L. -lnosqlite
+#include "nosqlite.h"
+*/
+import "C"
+// C.nosqlite_open(cPath, 1)
+```
+
+```rust
+// Rust:直接用 crate,无需 C ABI(编译期零开销)
+let db = nosqlite::Database::open(Path::new("app.nodb"))?;
+```
+
 - 完整 Python 示例(纯标准库 `ctypes`,无第三方依赖):[`examples/python/nosqlite.py`](examples/python/nosqlite.py)
 - 错误码表见 `include/nosqlite.h` 顶部宏定义;程序化判断请用 `code`,不要匹配消息文本
 

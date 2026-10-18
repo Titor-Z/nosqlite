@@ -157,6 +157,37 @@ int main(int argc, char **argv) {
     CHECK(r->code == NOSQLITE_INVALID_FILTER, "非法 filter 应返回 INVALID_FILTER");
     nosqlite_result_free(r);
 
+    /* ---------- open_ex:选项结构 + struct_size 校验 ---------- */
+    {
+        NosqliteOpenOptions opts;
+        memset(&opts, 0, sizeof(opts));
+        opts.struct_size = sizeof(NosqliteOpenOptions);
+        opts.create_if_missing = 1;
+
+        /* 后缀必须是 .nodb(引擎硬性要求) */
+        char ex_path[512];
+        snprintf(ex_path, sizeof(ex_path), "%s_ex.nodb", path);
+        NosqliteDb *db2 = nosqlite_open_ex(ex_path, &opts);
+        CHECK(db2 != NULL, "open_ex(struct_size 正确)应成功");
+        if (db2) {
+            nosqlite_close(db2);
+        }
+
+        /* struct_size 过小 → 必须拒绝,不能越界读 */
+        opts.struct_size = 0;
+        NosqliteDb *bad = nosqlite_open_ex(ex_path, &opts);
+        CHECK(bad == NULL, "open_ex(struct_size=0)应失败");
+        CHECK(nosqlite_last_error_code() == NOSQLITE_INTERNAL,
+              "open_ex 失败应给出 INTERNAL 码");
+
+        /* flags 非 0 → 拒绝 */
+        opts.struct_size = sizeof(NosqliteOpenOptions);
+        opts.flags = 1;
+        CHECK(nosqlite_open_ex(ex_path, &opts) == NULL, "open_ex(flags!=0)应失败");
+
+        remove(ex_path);
+    }
+
     /* ---------- 关闭 ---------- */
     nosqlite_close(db);
     free(id);

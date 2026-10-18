@@ -319,6 +319,49 @@ pub unsafe extern "C" fn nosqlite_open(
     }
 }
 
+/// 用选项结构打开数据库(可扩展入口)。
+///
+/// `opts` 为 `NULL` 时等价于 [`nosqlite_open`](path, create_if_missing = 1)。
+///
+/// # Safety
+///
+/// `path` 必须是合法 NUL 结尾字符串;`opts` 若非空,其 `struct_size` 必须
+/// 不小于 [`NosqliteOpenOptions`] 的当前大小。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nosqlite_open_ex(
+    path: *const c_char,
+    opts: *const NosqliteOpenOptions,
+) -> *mut NosqliteDb {
+    // 未提供选项:走默认(不存在则创建)
+    let Some(opts) = (unsafe { opts.as_ref() }) else {
+        return unsafe { nosqlite_open(path, 1) };
+    };
+
+    // struct_size 校验:允许调用方传更大的结构(将来字段扩展),但不允许更小
+    let required = std::mem::size_of::<NosqliteOpenOptions>() as u32;
+    if opts.struct_size < required {
+        set_error_msg(
+            "open_ex",
+            ErrorCode::Internal,
+            &format!(
+                "opts.struct_size 过小: 收到 {},至少需要 {}",
+                opts.struct_size, required
+            ),
+        );
+        return std::ptr::null_mut();
+    }
+    if opts.flags != 0 {
+        set_error_msg(
+            "open_ex",
+            ErrorCode::Internal,
+            &format!("opts.flags 必须为 0,收到 {}", opts.flags),
+        );
+        return std::ptr::null_mut();
+    }
+
+    unsafe { nosqlite_open(path, opts.create_if_missing) }
+}
+
 /// 关闭数据库句柄。
 ///
 /// # Safety

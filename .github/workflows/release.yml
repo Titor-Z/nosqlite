@@ -1,6 +1,9 @@
 name: Release
 
-# 推送 v* tag 时:构建三大平台 CLI 二进制并附到 GitHub Release。
+# 推送 v* tag 时,构建三大平台的:
+#   1. CLI 二进制(nosqlite / nosqlite.exe);
+#   2. C ABI 库产物(动态库 + 静态库 + 头文件),供任意语言进程内嵌入。
+# 两者各自打包并附 SHA256 到 GitHub Release。
 # crates.io 的库发布由维护者本地执行(cargo publish,见 README「发布」)。
 on:
   push:
@@ -23,13 +26,25 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            platform: linux-x86_64
             archive: nosqlite-cli-linux-x86_64.tar.gz
+            lib_archive: nosqlite-ffi-linux-x86_64.tar.gz
+            dylib: libnosqlite.so
+            staticlib: libnosqlite.a
           - target: aarch64-apple-darwin
             os: macos-latest
+            platform: macos-aarch64
             archive: nosqlite-cli-macos-aarch64.tar.gz
+            lib_archive: nosqlite-ffi-macos-aarch64.tar.gz
+            dylib: libnosqlite.dylib
+            staticlib: libnosqlite.a
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            platform: windows-x86_64
             archive: nosqlite-cli-windows-x86_64.zip
+            lib_archive: nosqlite-ffi-windows-x86_64.zip
+            dylib: nosqlite.dll
+            staticlib: nosqlite.lib
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +67,17 @@ jobs:
           cd ../../..
           shasum -a 256 ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
 
+      - name: 打包 C ABI 库(Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          # 库 + 头文件,保持 include/ 目录结构,下游可直接 -Iinclude
+          tar czf ../../../${{ matrix.lib_archive }} \
+            ${{ matrix.dylib }} ${{ matrix.staticlib }} \
+            -C "$GITHUB_WORKSPACE" include
+          cd ../../..
+          shasum -a 256 ${{ matrix.lib_archive }} > ${{ matrix.lib_archive }}.sha256
+
       - name: 打包(Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -61,9 +87,26 @@ jobs:
           (Get-FileHash ${{ matrix.archive }} -Algorithm SHA256).Hash | `
             Out-File -Encoding ascii ${{ matrix.archive }}.sha256
 
+          # C ABI 库产物(动态库 + 静态库 + 头文件)
+          New-Item -ItemType Directory -Force -Path stage/include | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.dylib }} stage/
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.staticlib }} stage/
+          Copy-Item include/nosqlite.h stage/include/
+          Compress-Archive -Path stage/* -DestinationPath ${{ matrix.lib_archive }}
+          (Get-FileHash ${{ matrix.lib_archive }} -Algorithm SHA256).Hash | `
+            Out-File -Encoding ascii ${{ matrix.lib_archive }}.sha256
+
+      - name: 校验库产物存在
+        if: runner.os != 'Windows'
+        run: |
+          test -f target/${{ matrix.target }}/release/${{ matrix.dylib }}
+          test -f target/${{ matrix.target }}/release/${{ matrix.staticlib }}
+
       - name: 上传到 Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ matrix.archive }}
             ${{ matrix.archive }}.sha256
+            ${{ matrix.lib_archive }}
+            ${{ matrix.lib_archive }}.sha256

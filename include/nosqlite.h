@@ -92,6 +92,13 @@ typedef struct NosqliteCursor NosqliteCursor;
 /* 打开(或按 create_if_missing 创建)数据库。失败返回 NULL,错误见 nosqlite_last_error。 */
 NosqliteDb *nosqlite_open(const char *path, uint8_t create_if_missing);
 
+/*
+ * 用选项结构打开(可扩展入口)。
+ * opts 为 NULL 时等价于 nosqlite_open(path, 1)。
+ * opts->struct_size 必须 >= sizeof(NosqliteOpenOptions),flags 必须为 0。
+ */
+NosqliteDb *nosqlite_open_ex(const char *path, const NosqliteOpenOptions *opts);
+
 /* 关闭句柄。 */
 void nosqlite_close(NosqliteDb *db);
 

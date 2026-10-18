@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.2.2 M19 完成(阶段 1.5) —— C ABI 收尾:新增 `open_ex`(兑现 `struct_size` 版本化)、`release.yml` 产出 `nosqlite-ffi-<platform>` 库包(动态库+静态库+头文件+SHA256)、README 补「获取库」「各语言接入」;**354 例全绿**。参见 [taolun #41](#41-v022-m19-设计阶段-15--c-abi-收尾可用性而非功能) / [taolun #42](#42-v022-m19-执行阶段-15--c-abi-收尾) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.1 M18 完成(阶段 1) —— **C ABI 落地**:`src/ffi.rs` + `include/nosqlite.h`,产出 cdylib/staticlib;骨架照搬 SQLite(不透明句柄 + 错误码 + 游标),现代化三点(arena 结果 / 结构化错误 / 版本化 options);真实 C 程序冒烟 + Python ctypes 实证;**354 例全绿**。参见 [taolun #39](#39-v021-m18-设计阶段-1--nosqlite-ffic-abi) / [taolun #40](#40-v021-m18-执行阶段-1--nosqlite-ffic-abi) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.0 M17 完成(阶段 0) —— 跨语言契约冻结:字段序保持(`preserve_order`,实测修复静默重排)、稳定错误码 `ErrorCode`(12 码,C ABI 整数 + wire 字符串)、Extended JSON 扩展(`$oid`/`$numberLong`/`$numberDouble`);+16 例共 **351 例全绿**。同时写入「双形态路线」总纲与「尽可能完整支持最新 MongoDB」的长期目标。参见 [taolun #37](#37-v020-m17-设计阶段-0--跨语言契约冻结双形态前置) / [taolun #38](#38-v020-m17-执行阶段-0-契约冻结) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.5 M16 完成 —— CLI `.export`(JSON Lines,分批写出)/`.import`(JSONL 或 JSON 数组,单事务整批)/`.stats`(文件大小 + 各集合条数);+10 例共 **335 例全绿**;顺带修正 `.help` 里残留的旧命令名。参见 [taolun #35](#35-v015-m16-设计cli-export--import--stats) / [taolun #36](#36-v015-m16-执行cli-export--import--stats) / [项目进度-已完成](#已完成)。
@@ -658,6 +659,34 @@
 - **实证**:`examples/python/nosqlite.py` 用**纯标准库 ctypes**跑通 insert/update/upsert/find/get/count/delete,证明「任何语言进程内嵌入」成立,无需服务进程、无需第三方包。
 - 合计 **354 例全绿**,clippy 零警告。
 
+### 41. v0.2.2 M19 设计:阶段 1.5 —— C ABI 收尾(可用性而非功能)
+
+- 动机:阶段 1 只在**本机**能编出 dylib。别人拿不到二进制 = C ABI 的实际价值发挥不出来。这一步补的是**分发与可用性**,不新增语义。
+- 四件事:
+
+| # | 内容 | 理由 |
+|---|---|---|
+| ① | `open_ex`(暴露 `NosqliteOpenOptions`) | 结构体已定义但未启用,留着就是「声称的现代化没兑现」 |
+| ② | `release.yml` 增加 **库产物**(dylib/so/dll + 静态库 + 头文件)打包 | 让 C ABI 真正可分发给下游 |
+| ③ | 三平台产物附 SHA256 | 与 CLI 一致,供校验 |
+| ④ | 文档:各语言如何拿到库(路径/命名/加载方式) | 目前只有 Python 示例,缺「从哪下载」的说明 |
+
+- 命名约定(供下游写加载逻辑):Linux `libnosqlite.so`、macOS `libnosqlite.dylib`、Windows `nosqlite.dll`;静态库 `libnosqlite.a` / `nosqlite.lib`。
+- 暂不做(等真有下游再投入):macOS 代码签名/notarization、npm/go module 分发元数据、Windows MSVC 运行时说明。
+  - 理由:签名需要开发者账号与证书,在没有实际下游用户前是纯成本;预编译包 + SHA256 已能覆盖自用与早期采用者。
+
+### 42. v0.2.2 M19 执行:阶段 1.5 —— C ABI 收尾
+
+- **① `open_ex`**:`src/ffi.rs` 新增,`include/nosqlite.h` 同步声明。校验 `struct_size`(不得小于当前大小,允许更大以兼容未来字段)与 `flags`(必须为 0);`opts == NULL` 时退化为 `nosqlite_open(path, 1)`。
+  - 至此 `NosqliteOpenOptions` 不再是「定义了却没用上」的死结构,声称的 ABI 演进能力兑现。
+- **② `release.yml` 增加库产物**:矩阵新增 `platform`/`lib_archive`/`dylib`/`staticlib` 四个字段;每个平台额外产出一个 `nosqlite-ffi-<platform>.{tar.gz,zip}`,内含动态库 + 静态库 + `include/` 目录(保留目录结构,下游可直接 `-Iinclude`),并附 `.sha256`。
+  - 本地已模拟验证 tar 打包与内容结构正确;YAML 语法已校验。
+- **③ 文档**:README 新增「获取库」(预编译包 / 本地构建,三平台命名对照表)与「各语言接入」(Python ctypes / Go cgo / Rust 直连)两节。
+- **④ C 冒烟测试扩展**:`tests/c_smoke.c` 增加 `open_ex` 用例 —— 正确 `struct_size` 成功、`struct_size=0` 失败且给 `INTERNAL` 码、`flags!=0` 失败。
+  - 过程中被引擎挡住一次:测试最初用了 `xxx.nodb.ex` 后缀,被 M1 的后缀校验拒绝(报 `INVALID_PATH`)。**这正说明校验在按预期工作**,改为 `xxx_ex.nodb`。
+- **明确暂不做**(理由记于此,避免反复纠结):macOS 代码签名/notarization 需要开发者账号与证书,在无真实下游前是纯成本;npm/go module 分发元数据同理。预编译包 + SHA256 已覆盖自用与早期采用者。
+- 合计 **354 例全绿**,clippy 零警告;Python ctypes 示例回归通过。
+
 ## Agents
 
 ### 规范
@@ -698,7 +727,7 @@
 ### 项目进度
 
 #### 计划中
-- **阶段 1.5:C ABI 收尾** —— `open_ex`(暴露已定义但未启用的 `NosqliteOpenOptions`)、三平台 CI 预编译产物 + 校验和、npm/go module 分发元数据、macOS 签名与 notarization。
+- **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2:`nosqlite-server`(wire 协议)** —— OP_MSG + BSON + `hello` 握手 + CRUD 命令 + 游标(`getMore`/`killCursors`),用官方 Node/Go driver 实测。
 - **语义长期目标**:向最新 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - crates.io 发布:干跑已通过,**按用户决定暂缓**(GitHub Release v0.1.0 已发);待需要 crates.io 分发时 `cargo login` 后 `cargo publish` 即可。
@@ -719,6 +748,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M19(v0.2.2,阶段 1.5):C ABI 收尾 —— `open_ex` + 三平台库产物 + 分发文档;354 例全绿。
 - M18(v0.2.1,阶段 1):C ABI(`nosqlite-ffi`)—— 句柄/错误码/游标 + arena 结果 + 结构化错误;真实 C 与 Python 双验证;354 例全绿。
 - M17(v0.2.0,阶段 0):跨语言契约冻结 —— 字段序 / 错误码 / Extended JSON;351 例全绿。
 - M16(v0.1.5):CLI `.export`/`.import`/`.stats`;335 例全绿。
