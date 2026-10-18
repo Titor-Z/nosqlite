@@ -17,6 +17,7 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **内存友好**:流式扫描与过滤,内存 O(命中数) 而非 O(集合大小);排序分页走两遍法(仅底层 `scan` 会全量物化,文档已警示仅限小集合)。
 - **主键直查**:按 `_id` 的读/改/删走 B+树直达,不经全表扫描;
 - **批量写入**:`insert_many` 单事务批量,一次提交摊薄落盘成本;
+- **Date 类型**:`{"$date": "2026-09-16T10:00:00Z"}`,按时间戳比较排序,时区偏移自动归一;
 - **批量更新/删除**:`update`/`delete` 匹配多条时**合并为一次提交**,且整体原子(不会留下改了一半的状态);
 - **列表页一次扫描**:`find_page_total` 同时返回「匹配总数 + 当页文档」,省掉一次全表 `count`;
 - **字段投影**:`Projection` / CLI `--fields`,列表页只取需要的字段;
@@ -51,6 +52,7 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 | 点号穿透数组 | `{"items.name":"x"}` 会遍历 `items` 数组元素的 `name` |
 | 缺失 = null | `{"deleted_at":null}` 匹配**字段缺失**的文档;`{"$ne":null}` 不匹配 |
 | 字段级 `$not` | `{"age":{"$not":{"$gt":18}}}` |
+| Date 按时间比较 | `{"$date":"2026-09-16T10:00:00Z"}`,时区偏移归一(v0.1.3) |
 
 > ⚠️ **升级提示**:前四条是破坏性变更 —— v0.1.1 及更早版本上,`$or` 与字段条件为 OR 关系、数组字段的标量等值不命中、点号路径不穿透数组。若你在旧版上依赖这些行为,升级后查询结果会变化。
 
@@ -62,7 +64,7 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **聚合管道**:`aggregate` 整体未实现(`$match`/`$group`/`$lookup`/`$unwind`/`$facet`…)
 - **索引**:仅 `_id` 主键索引;无二级/复合/唯一/TTL 索引,所有非 `_id` 查询都是全表扫描
 - **事务**:仅单集合内的写事务;无跨集合/跨文档显式事务会话
-- **类型系统**:文档值即 JSON(无 `Date`/`ObjectId`/`Binary`/`Decimal128`;`_id` 是 24 位十六进制字符串)
+- **类型系统**:文档值即 JSON。**Date 用 Extended JSON 的 `{"$date": ...}` 表示**(按时间戳比较与排序,存储仍是普通 JSON);无 `ObjectId`/`Binary`/`Decimal128` 类型,`_id` 是 24 位十六进制字符串
 - **Server / 协议**:无 MongoDB wire 协议,官方 driver 与 `mongosh` 无法直连
 - **其他**:`distinct`、`explain`、change stream、schema validation、`$regex` 的 `$options`
 
@@ -125,7 +127,7 @@ nosqlite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
 ## 开发
 
 ```bash
-cargo test --all-targets     # 258 例测试
+cargo test --all-targets     # 275 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

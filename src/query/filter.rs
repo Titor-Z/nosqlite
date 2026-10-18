@@ -9,13 +9,14 @@
 //! - 支持点号路径(如 `a.b.c`),**路径遇数组会遍历其元素的同名子字段**;
 //! - 顶层支持 `$and/$or/$nor/$not` 逻辑组合,语义与 MongoDB 一致:
 //!   **同层字段条件与 `$or` 是 AND 关系**(v0.1.2 修正,旧版误为 OR);
-//! - 数组语义与 MongoDB 对齐:标量等值 / `$in` 可命中「数组中包含该值」的文档。
+//! - 数组语义与 MongoDB 对齐:标量等值 / `$in` 可命中「数组中包含该值」的文档;
+//! - 字段值支持 Date 字面量 `{"$date": "2026-09-16T10:00:00Z"}`,按时间戳比较。
 
 use std::cmp::Ordering;
 
 use serde_json::{Map, Value};
 
-use super::compare::compare_values;
+use super::compare::{as_date, compare_values};
 
 /// 查询条件错误。
 #[derive(Debug)]
@@ -382,9 +383,14 @@ fn parse_field_condition(path: &str, value: &Value) -> Result<Condition, FilterE
     // 字段点号路径拆分
     let path = path.split('.').map(|s| s.to_string()).collect::<Vec<_>>();
 
-    // 若值是对象且含 $ 前缀键 → 操作符对象
+    // 若值是对象且含 $ 前缀键 → 操作符对象。
+    // 例外:Date 字面量 `{"$date": ...}` 是**值**而非操作符对象(v0.1.3)。
     let ops = match value {
-        Value::Object(map) if map.keys().any(|k| k.starts_with('$')) => parse_operator_object(map)?,
+        Value::Object(map)
+            if map.keys().any(|k| k.starts_with('$')) && as_date(value).is_none() =>
+        {
+            parse_operator_object(map)?
+        }
         // 否则隐式 $eq
         other => vec![Operator::Eq(other.clone())],
     };

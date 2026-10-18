@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.1.3 M14 完成 —— Date 类型:`{"$date": "ISO-8601"}` / 毫秒时间戳,按时间戳比较排序、时区偏移归一,存储仍是普通 JSON(`.nodb` 格式 v1 不变);+17 例共 **275 例全绿**。参见 [taolun #31](#31-v013-m14-设计date-类型优先级-2) / [taolun #32](#32-v013-m14-执行date-类型) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.2 M13 完成 —— 查询语义与 MongoDB 对齐 6 项:同层条件改 AND、数组字段的 `$eq`/`$in` 按元素展开、点号路径穿透数组、缺失字段匹配 `null`、字段级 `$not`;+23 例共 **258 例全绿**。**含 4 项破坏性变更**,详见 README「与 MongoDB 的差异」。参见 [taolun #29](#29-v012-m13-设计查询语义与-mongodb-对齐优先级-1) / [taolun #30](#30-v012-m13-执行查询语义与-mongodb-对齐) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.1 M12 完成(A 组) —— 批量 `update`/`delete` 单事务化(1000 条 7.69 s → **24.75 ms,310.7x**)、字段投影 `--fields`、`find_page_total()` 一次扫描给「总数+当页」、array/object 递归比较(可排序、`$eq` 精确);+41 例共 **235 例全绿**。参见 [taolun #27](#27-v011-m12-设计补齐能上-cms-的最小闭环a-组) / [taolun #28](#28-v011-m12-执行a-组四项落地批量单事务--projection--一次扫描--复合比较) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M10 完成 —— `$elemMatch`(操作符/文档双形态)+ `$unset`(对象删除/数组置 null/路径缺失无操作);+15 例测试共 **194 例全绿**;顺带在 CLI 暴露 M11 能力(find --sort 走 find_page、insert 数组批量)。参见 [taolun #26](#26-20260916-m10-执行elemmatch--unset) / [项目进度-已完成](#已完成)。
@@ -491,6 +492,30 @@
   3. 缺失字段现在匹配 `{"a": null}`;
   4. 点号路径现在穿透数组(以前返回空)。
 
+### 31. v0.1.3 M14 设计:Date 类型(优先级 2)
+
+- 背景:CMS 里「时间范围查询」是刚需。现状只能存字符串,靠字典序比较:对 UTC 且格式统一的 ISO 字符串**碰巧**成立,一旦混入时区偏移(`+08:00` 与 `Z`)或精度不同就静默排错。
+- 硬约束:`.nodb` 格式保持 v1 —— 不能新增 BSON 类型,不能改存储布局。
+- 方案:**MongoDB Extended JSON 的 `{"$date": ...}`**
+  - 文档值写成 `{"$date": "2026-09-16T10:00:00Z"}`(或 `{"$date": 1758000000000}` 毫秒时间戳);
+  - 存储就是普通 JSON 对象,**零格式变更、旧库可直接打开**;
+  - 比较时识别「恰有一个 `$date` 键」的对象,解析为 UTC 毫秒后按数值比较 —— 于是 `+08:00` 与 `Z`、有无小数秒都归一,排序与范围查询真正正确。
+- 类型序:插入到 number 与 string 之间 —— 缺失 < null < bool < number **< date <** string < array < object。date 作为标量排在字符串前,与「时间戳比格式化的字符串更基本」一致。
+- 解析(不引依赖):自实现 ISO-8601 子集 —— `YYYY-MM-DD`、`YYYY-MM-DDTHH:MM[:SS[.fff]]`、可选 `Z`/`±HH:MM`/`±HHMM` 偏移;用 days-from-civil 算法转毫秒。
+- 容错:对象带 `$date` 键但值无法解析、或还有别的键 → **当作普通对象**处理(不报错,保证既有文档不受影响)。
+- 连带改动:filter 解析层 `parse_field_condition` 需先识别 Date 字面量,否则 `{"createdAt": {"$date": "..."}}` 会被当成操作符对象而报「不支持的字段操作符」。
+- 不做(本里程碑):`ObjectId` 类型、二进、Decimal128;不做 TTL 索引(需后台清理线程,留待必要)。
+
+### 32. v0.1.3 M14 执行:Date 类型
+
+- **`{"$date": ...}` 字面量**:`compare::as_date` 识别「恰好只有一个 `$date` 键」的对象 —— 值为毫秒时间戳或 ISO-8601 字符串;`parse_iso8601` 自实现解析(`YYYY-MM-DD[THH:MM[:SS[.fff]]][Z|±HH:MM|±HHMM]`),用 Howard Hinnant 的 `days_from_civil` 转 UTC 毫秒,不引新依赖。
+- **类型序**:缺失 < null < bool < number **< date <** string < array < object。`compare_values` 抽出 `compare_objects`;date 与 date 按毫秒比,解析失败的 `$date` 对象降级为普通对象比较(不报错、不 panic)。
+- **filter 解析**:`parse_field_condition` 先用 `as_date` 判定 —— 否则 `{"at": {"$date": "..."}}` 会被当成含 `$` 键的操作符对象而报「不支持的字段操作符」。
+- **导出**:`query::{as_date, parse_iso8601, compare_values}`。
+- **格式零变更**:Date 在存储里就是普通 JSON 对象,`.nodb` 仍为 v1,旧库直接打开。
+- 测试:新增 `tests/date.rs` **17 例**(ISO 解析含闰年/小数秒/时区/非法输入、字面量识别与误判、跨时区比较与相等、类型序、范围查询、`$in`/`$elemMatch`、排序体现时间序、端到端持久化);合计 **275 例全绿**,clippy 零警告。
+- 一处测试自身的错误(非代码缺陷):手算的毫秒常数写错(`1757988000000` 应为 `1789524000000`),已用 Python 核对修正。
+
 ## Agents
 
 ### 规范
@@ -523,6 +548,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M14(v0.1.3):Date 类型 —— `{"$date": ...}` 按时间戳比较排序(时区归一),格式仍 v1;275 例全绿。
 - M13(v0.1.2):查询语义与 MongoDB 对齐 —— 同层 AND、数组等值/`$in` 展开、点号路径穿透数组、缺失匹配 null、字段级 `$not`;258 例全绿。
 - M12(v0.1.1):A 组四项 —— 批量 `update`/`delete` 单事务(310x)、字段投影、`find_page_total` 一次扫描、array/object 递归比较;235 例全绿。
 - M10:`$elemMatch`(操作符/文档双形态)+ `$unset`(对齐 MongoDB,数组置 null),+15 例共 194 例全绿;CLI 同步 M11 能力(`find --sort` → `find_page`、`insert` 数组 → `insert_many`)。
