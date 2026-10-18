@@ -540,7 +540,9 @@ impl Database {
         skip: usize,
         limit: Option<usize>,
     ) -> Result<Vec<Map<String, Value>>, DatabaseError> {
-        Ok(self.find_page_total(collection, filter, sort, skip, limit, None)?.1)
+        Ok(self
+            .find_page_total(collection, filter, sort, skip, limit, None)?
+            .1)
     }
 
     /// 排序 + 分页 + **一次扫描同时给出匹配总数**(0.2.0 新增,列表页专用)。

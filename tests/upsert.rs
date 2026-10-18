@@ -112,7 +112,11 @@ fn matched_but_unchanged_is_updated_zero() {
         )
         .expect("upsert 应成功");
 
-    assert_eq!(result, UpsertResult::Updated(0), "命中但未改应判为 Updated(0)");
+    assert_eq!(
+        result,
+        UpsertResult::Updated(0),
+        "命中但未改应判为 Updated(0)"
+    );
     assert_eq!(db.count("users", &f(json!({}))).unwrap(), 1);
 
     drop(db);

@@ -90,7 +90,10 @@ fn parse_iso_timezone_offset() {
 /// 闰年与月末。
 #[test]
 fn parse_iso_leap_year() {
-    assert_eq!(parse_iso8601("2024-02-29"), parse_iso8601("2024-02-29T00:00:00Z"));
+    assert_eq!(
+        parse_iso8601("2024-02-29"),
+        parse_iso8601("2024-02-29T00:00:00Z")
+    );
     assert!(parse_iso8601("2024-02-29").is_some());
     // 2024-03-01 比 2024-02-29 晚一天
     assert_eq!(
@@ -160,12 +163,18 @@ fn date_comparison_normalizes_timezone() {
     );
     // 早于
     assert_eq!(
-        cmp(json!({"$date": "2026-01-01"}), json!({"$date": "2026-01-02"})),
+        cmp(
+            json!({"$date": "2026-01-01"}),
+            json!({"$date": "2026-01-02"})
+        ),
         Less
     );
     // 晚于
     assert_eq!(
-        cmp(json!({"$date": "2026-01-02"}), json!({"$date": "2026-01-01"})),
+        cmp(
+            json!({"$date": "2026-01-02"}),
+            json!({"$date": "2026-01-01"})
+        ),
         Greater
     );
 }
@@ -186,17 +195,17 @@ fn date_string_equals_millis() {
 #[test]
 fn date_type_rank() {
     use std::cmp::Ordering::*;
-    assert_eq!(cmp(json!(999999), json!({"$date": 0})), Less, "number < date");
+    assert_eq!(
+        cmp(json!(999999), json!({"$date": 0})),
+        Less,
+        "number < date"
+    );
     assert_eq!(
         cmp(json!({"$date": 0}), json!("1970")),
         Less,
         "date < string"
     );
-    assert_eq!(
-        cmp(json!({"$date": 0}), json!([1])),
-        Less,
-        "date < array"
-    );
+    assert_eq!(cmp(json!({"$date": 0}), json!([1])), Less, "date < array");
 }
 
 /// 无法解析的 `$date` 对象降级为普通对象,不 panic。
@@ -313,7 +322,12 @@ fn end_to_end_dates_persist() {
     // 重新打开后 Date 仍按时间比较
     drop(db);
     let db = Database::open(&path).unwrap();
-    let found = db.find("events", &f(json!({"at": {"$lt": {"$date": "2026-02-01"}}}))).unwrap();
+    let found = db
+        .find(
+            "events",
+            &f(json!({"at": {"$lt": {"$date": "2026-02-01"}}})),
+        )
+        .unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0]["name"], json!("a"));
     // 存的就是普通 JSON 对象(格式未变)

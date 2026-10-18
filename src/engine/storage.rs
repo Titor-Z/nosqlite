@@ -150,11 +150,8 @@ pub trait Storage {
     /// 逐条 `update` 时每条都要付一次 commit/fsync:macOS 上次提交 4–30 ms,
     /// 匹配上千条就是几十秒。本方法把 N 次提交合并为 1 次,并保证**要么全成功要么全回滚**。
     /// 主键不存在的条目静默跳过。
-    fn update_many(
-        &self,
-        collection: &str,
-        docs: &[(String, Vec<u8>)],
-    ) -> Result<(), StorageError>;
+    fn update_many(&self, collection: &str, docs: &[(String, Vec<u8>)])
+    -> Result<(), StorageError>;
 
     /// 单事务批量删除(0.2.0 新增),语义同 [`Storage::update_many`]。
     fn delete_many(&self, collection: &str, doc_ids: &[String]) -> Result<(), StorageError>;

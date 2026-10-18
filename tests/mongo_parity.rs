@@ -106,7 +106,10 @@ fn nin_is_negation_of_in() {
 fn eq_scalar_hits_array_containment() {
     let filter = json!({"tags": "rust"});
     assert!(hit(filter.clone(), json!({"tags": "rust"})));
-    assert!(hit(filter.clone(), json!({"tags": ["rust", "db"]})), "数组包含应命中");
+    assert!(
+        hit(filter.clone(), json!({"tags": ["rust", "db"]})),
+        "数组包含应命中"
+    );
     assert!(!hit(filter.clone(), json!({"tags": ["db"]})));
 }
 
@@ -151,7 +154,10 @@ fn dotted_path_traverses_array_with_comparison() {
     let filter = json!({"items.qty": {"$gt": 5}});
     let doc = json!({"items": [{"qty": 1}, {"qty": 10}]});
     assert!(hit(filter.clone(), doc));
-    assert!(!hit(filter.clone(), json!({"items": [{"qty": 1}, {"qty": 2}]})));
+    assert!(!hit(
+        filter.clone(),
+        json!({"items": [{"qty": 1}, {"qty": 2}]})
+    ));
 }
 
 /// 同一字段的多个操作符需分别被满足(可来自不同元素,同 MongoDB)。
@@ -159,11 +165,20 @@ fn dotted_path_traverses_array_with_comparison() {
 fn dotted_path_multiple_ops_separately_satisfied() {
     let filter = json!({"items.qty": {"$gt": 5, "$lt": 20}});
     // 两个条件分别由不同元素满足 → 命中
-    assert!(hit(filter.clone(), json!({"items": [{"qty": 10}, {"qty": 15}]})));
+    assert!(hit(
+        filter.clone(),
+        json!({"items": [{"qty": 10}, {"qty": 15}]})
+    ));
     // 无任何元素 > 5 → 不命中
-    assert!(!hit(filter.clone(), json!({"items": [{"qty": 1}, {"qty": 2}]})));
+    assert!(!hit(
+        filter.clone(),
+        json!({"items": [{"qty": 1}, {"qty": 2}]})
+    ));
     // 无任何元素 < 20 → 不命中
-    assert!(!hit(filter.clone(), json!({"items": [{"qty": 30}, {"qty": 40}]})));
+    assert!(!hit(
+        filter.clone(),
+        json!({"items": [{"qty": 30}, {"qty": 40}]})
+    ));
 }
 
 /// 多层数组路径。
@@ -187,7 +202,10 @@ fn dotted_path_missing_is_no_match() {
 fn eq_null_matches_missing_field() {
     let filter = json!({"deleted_at": null});
     assert!(hit(filter.clone(), json!({"deleted_at": null})));
-    assert!(hit(filter.clone(), json!({"name": "x"})), "缺失字段应匹配 null");
+    assert!(
+        hit(filter.clone(), json!({"name": "x"})),
+        "缺失字段应匹配 null"
+    );
     assert!(!hit(filter.clone(), json!({"deleted_at": 0})));
 }
 
@@ -195,7 +213,10 @@ fn eq_null_matches_missing_field() {
 #[test]
 fn ne_null_rejects_missing_field() {
     let filter = json!({"deleted_at": {"$ne": null}});
-    assert!(!hit(filter.clone(), json!({"name": "x"})), "缺失字段不应匹配 $ne: null");
+    assert!(
+        !hit(filter.clone(), json!({"name": "x"})),
+        "缺失字段不应匹配 $ne: null"
+    );
     assert!(hit(filter.clone(), json!({"deleted_at": 5})));
     assert!(!hit(filter.clone(), json!({"deleted_at": null})));
 }
@@ -205,7 +226,10 @@ fn ne_null_rejects_missing_field() {
 fn ne_non_null_matches_missing_field() {
     let filter = json!({"a": {"$ne": 5}});
     assert!(hit(filter.clone(), json!({"a": 1})));
-    assert!(hit(filter.clone(), json!({"b": 1})), "缺失字段应匹配 $ne: 5");
+    assert!(
+        hit(filter.clone(), json!({"b": 1})),
+        "缺失字段应匹配 $ne: 5"
+    );
     assert!(!hit(filter.clone(), json!({"a": 5})));
 }
 

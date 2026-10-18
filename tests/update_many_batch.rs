@@ -87,14 +87,8 @@ fn update_many_only_touches_matches() {
         .expect("批量更新应成功");
     assert_eq!(modified, 10);
 
-    let y = db
-        .find("items", &f(json!({"tag": "y"})))
-        .unwrap()
-        .len();
-    let x = db
-        .find("items", &f(json!({"tag": "x"})))
-        .unwrap()
-        .len();
+    let y = db.find("items", &f(json!({"tag": "y"}))).unwrap().len();
+    let x = db.find("items", &f(json!({"tag": "x"}))).unwrap().len();
     assert_eq!((x, y), (10, 10));
 
     drop(db);
@@ -121,10 +115,7 @@ fn update_many_skips_noop() {
 /// 批量删除:一次删掉全部命中项,返回条数准确。
 #[test]
 fn delete_many_removes_all_matches() {
-    let (path, db) = setup(
-        "del",
-        (0..30).map(|i| json!({"n": i})).collect(),
-    );
+    let (path, db) = setup("del", (0..30).map(|i| json!({"n": i})).collect());
 
     let deleted = db
         .delete("items", &f(json!({"n": {"$lt": 20}})))
@@ -182,10 +173,7 @@ fn update_many_persists() {
 /// 批量更新遇到非法操作(`_id` 不可改)时**整体回滚**,不留半成品。
 #[test]
 fn update_many_rolls_back_on_error() {
-    let (path, db) = setup(
-        "rollback",
-        (0..10).map(|i| json!({"n": i})).collect(),
-    );
+    let (path, db) = setup("rollback", (0..10).map(|i| json!({"n": i})).collect());
 
     // `_id` 不可修改 —— 处理第一条时就应报错
     let err = db

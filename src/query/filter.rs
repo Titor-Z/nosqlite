@@ -145,9 +145,7 @@ impl Filter {
         let mut out = Vec::new();
         for cond in conds {
             match cond {
-                Condition::Field(field)
-                    if field.path.len() == 1 && field.ops.len() == 1 =>
-                {
+                Condition::Field(field) if field.path.len() == 1 && field.ops.len() == 1 => {
                     match &field.ops[0] {
                         Operator::Eq(v) => out.push((field.path[0].clone(), v.clone())),
                         _ => return None,
@@ -243,18 +241,18 @@ impl Operator {
             // $ne:定义为 $eq 的取反(顺带修好「缺失 vs null」)
             Operator::Ne(expected) => !values_match(values, expected),
             // 比较类:任一候选值满足
-            Operator::Gt(expected) => {
-                values.iter().any(|v| compare_values(Some(v), Some(expected)) == Ordering::Greater)
-            }
-            Operator::Gte(expected) => {
-                values.iter().any(|v| compare_values(Some(v), Some(expected)) != Ordering::Less)
-            }
-            Operator::Lt(expected) => {
-                values.iter().any(|v| compare_values(Some(v), Some(expected)) == Ordering::Less)
-            }
-            Operator::Lte(expected) => {
-                values.iter().any(|v| compare_values(Some(v), Some(expected)) != Ordering::Greater)
-            }
+            Operator::Gt(expected) => values
+                .iter()
+                .any(|v| compare_values(Some(v), Some(expected)) == Ordering::Greater),
+            Operator::Gte(expected) => values
+                .iter()
+                .any(|v| compare_values(Some(v), Some(expected)) != Ordering::Less),
+            Operator::Lt(expected) => values
+                .iter()
+                .any(|v| compare_values(Some(v), Some(expected)) == Ordering::Less),
+            Operator::Lte(expected) => values
+                .iter()
+                .any(|v| compare_values(Some(v), Some(expected)) != Ordering::Greater),
             // $in:任一候选值等于候选列表任一元素
             Operator::In(list) => list.iter().any(|item| values_match(values, item)),
             // $nin:定义为 $in 的取反
@@ -264,9 +262,9 @@ impl Operator {
                 .iter()
                 .any(|v| matches!(v, Value::String(s) if re.is_match(s))),
             // $elemMatch:本字段自身须为数组,且至少一个元素满足内部条件
-            Operator::ElemMatch(spec) => values
-                .iter()
-                .any(|v| matches!(v, Value::Array(arr) if arr.iter().any(|el| spec_matches(spec, el)))),
+            Operator::ElemMatch(spec) => values.iter().any(
+                |v| matches!(v, Value::Array(arr) if arr.iter().any(|el| spec_matches(spec, el))),
+            ),
             // $not:字段级取反(对整组候选值取反)
             Operator::Not(cond) => !cond.matches_field(values),
         }
@@ -458,15 +456,18 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
             }
             "$not" => {
                 // 字段级 $not:值必须是一条完整字段条件对象(可含操作符或多字段)
-                let obj = value.as_object().ok_or_else(|| {
-                    FilterError::InvalidOperator("$not 需要一个对象".to_string())
-                })?;
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| FilterError::InvalidOperator("$not 需要一个对象".to_string()))?;
                 if obj.is_empty() {
                     return Err(FilterError::InvalidOperator(
                         "$not 的值不能是空对象".to_string(),
                     ));
                 }
-                if obj.keys().any(|k| matches!(k.as_str(), "$and" | "$or" | "$nor" | "$not")) {
+                if obj
+                    .keys()
+                    .any(|k| matches!(k.as_str(), "$and" | "$or" | "$nor" | "$not"))
+                {
                     return Err(FilterError::InvalidOperator(
                         "$not 在字段级不支持逻辑操作符,请使用顶层 $not".to_string(),
                     ));

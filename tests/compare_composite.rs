@@ -39,7 +39,11 @@ fn array_elementwise() {
     assert_eq!(cmp(json!([1, 2]), json!([1, 2])), Equal);
     assert_eq!(cmp(json!([1, 2]), json!([1, 3])), Less);
     assert_eq!(cmp(json!([1, 3]), json!([1, 2])), Greater);
-    assert_eq!(cmp(json!([2]), json!([1, 9, 9])), Greater, "首个元素即分胜负");
+    assert_eq!(
+        cmp(json!([2]), json!([1, 9, 9])),
+        Greater,
+        "首个元素即分胜负"
+    );
 }
 
 /// 数组:公共部分相等时,短者在前。
@@ -75,8 +79,14 @@ fn object_fewer_keys_first() {
 #[test]
 fn nested_composites() {
     use std::cmp::Ordering::*;
-    assert_eq!(cmp(json!({"a": [1, {"b": 2}]}), json!({"a": [1, {"b": 3}]})), Less);
-    assert_eq!(cmp(json!({"a": [1, {"b": 3}]}), json!({"a": [1, {"b": 2}]})), Greater);
+    assert_eq!(
+        cmp(json!({"a": [1, {"b": 2}]}), json!({"a": [1, {"b": 3}]})),
+        Less
+    );
+    assert_eq!(
+        cmp(json!({"a": [1, {"b": 3}]}), json!({"a": [1, {"b": 2}]})),
+        Greater
+    );
 }
 
 /// 类型序不变:array < object。

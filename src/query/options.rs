@@ -165,7 +165,11 @@ impl std::fmt::Display for ProjectionError {
         match self {
             ProjectionError::NotObject => write!(f, "projection 顶层必须是 JSON 对象"),
             ProjectionError::InvalidValue(field) => {
-                write!(f, "projection 字段值必须为 1/true 或 0/false,字段: {}", field)
+                write!(
+                    f,
+                    "projection 字段值必须为 1/true 或 0/false,字段: {}",
+                    field
+                )
             }
             ProjectionError::MixedIncludeExclude => {
                 write!(f, "projection 不能混用包含(1)与排除(0),仅 _id 可例外")

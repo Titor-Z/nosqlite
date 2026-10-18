@@ -72,11 +72,9 @@ impl std::fmt::Display for UpdateError {
                 "无法在标量值上创建字段: 路径 `{}` 的中间段不是对象或数组",
                 path
             ),
-            UpdateError::TypeMismatch {
-                op,
-                path,
-                expected,
-            } => write!(f, "{} 作用于字段 `{}` 失败: 需要{}", op, path, expected),
+            UpdateError::TypeMismatch { op, path, expected } => {
+                write!(f, "{} 作用于字段 `{}` 失败: 需要{}", op, path, expected)
+            }
             UpdateError::InvalidModifier(msg) => write!(f, "数组操作符修饰符错误: {}", msg),
         }
     }
@@ -285,7 +283,9 @@ impl Update {
         }
 
         // ---------- 数值类:$inc / $mul ----------
-        let number_map = |m: Option<&Map<String, Value>>, op: &str| -> Result<Vec<(Vec<String>, f64)>, UpdateError> {
+        let number_map = |m: Option<&Map<String, Value>>,
+                          op: &str|
+         -> Result<Vec<(Vec<String>, f64)>, UpdateError> {
             let mut out = Vec::new();
             for (key, value) in m.into_iter().flatten() {
                 let n = value.as_f64().ok_or_else(|| {
@@ -293,9 +293,7 @@ impl Update {
                 })?;
                 let path = parse_path(key)?;
                 if path.first().map(|s| s.as_str()) == Some("_id") {
-                    return Err(UpdateError::InvalidUpdate(
-                        "不允许修改主键 _id".to_string(),
-                    ));
+                    return Err(UpdateError::InvalidUpdate("不允许修改主键 _id".to_string()));
                 }
                 out.push((path, n));
             }
@@ -305,14 +303,14 @@ impl Update {
         let mul_fields = number_map(mul_map, "$mul")?;
 
         // ---------- 比较类:$min / $max ----------
-        let value_map = |m: Option<&Map<String, Value>>, op: &str| -> Result<Vec<(Vec<String>, Value)>, UpdateError> {
+        let value_map = |m: Option<&Map<String, Value>>,
+                         op: &str|
+         -> Result<Vec<(Vec<String>, Value)>, UpdateError> {
             let mut out = Vec::new();
             for (key, value) in m.into_iter().flatten() {
                 let path = parse_path(key)?;
                 if path.first().map(|s| s.as_str()) == Some("_id") {
-                    return Err(UpdateError::InvalidUpdate(
-                        "不允许修改主键 _id".to_string(),
-                    ));
+                    return Err(UpdateError::InvalidUpdate("不允许修改主键 _id".to_string()));
                 }
                 let _ = op;
                 out.push((path, value.clone()));
@@ -327,10 +325,7 @@ impl Update {
         for (from, to) in rename_map.into_iter().flatten() {
             let from_path = parse_path(from)?;
             let to_str = to.as_str().ok_or_else(|| {
-                UpdateError::InvalidUpdate(format!(
-                    "$rename 的目标路径必须是字符串,字段: {}",
-                    from
-                ))
+                UpdateError::InvalidUpdate(format!("$rename 的目标路径必须是字符串,字段: {}", from))
             })?;
             let to_path = parse_path(to_str)?;
             if from_path.first().map(|s| s.as_str()) == Some("_id")
@@ -360,9 +355,7 @@ impl Update {
         for (key, _) in current_date_map.into_iter().flatten() {
             let path = parse_path(key)?;
             if path.first().map(|s| s.as_str()) == Some("_id") {
-                return Err(UpdateError::InvalidUpdate(
-                    "不允许修改主键 _id".to_string(),
-                ));
+                return Err(UpdateError::InvalidUpdate("不允许修改主键 _id".to_string()));
             }
             current_date_fields.push(path);
         }
@@ -627,8 +620,7 @@ fn parse_push(key: &str, value: &Value) -> Result<PushSpec, UpdateError> {
     // 修饰符形式:必须带 $each
     let each = obj.get("$each").ok_or_else(|| {
         UpdateError::InvalidModifier(
-            "$push 使用修饰符时必须包含 $each(若想追加对象本身,请用 $each: [对象])"
-                .to_string(),
+            "$push 使用修饰符时必须包含 $each(若想追加对象本身,请用 $each: [对象])".to_string(),
         )
     })?;
     let values = each
@@ -683,8 +675,7 @@ fn parse_add_to_set(key: &str, value: &Value) -> Result<AddToSetSpec, UpdateErro
     }
     let each = obj.get("$each").ok_or_else(|| {
         UpdateError::InvalidModifier(
-            "$addToSet 使用修饰符时必须包含 $each(若想加入对象本身,请用 $each: [对象])"
-                .to_string(),
+            "$addToSet 使用修饰符时必须包含 $each(若想加入对象本身,请用 $each: [对象])".to_string(),
         )
     })?;
     let values = each

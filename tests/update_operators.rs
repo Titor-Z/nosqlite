@@ -59,7 +59,10 @@ fn inc_float() {
 /// 嵌套路径。
 #[test]
 fn inc_nested_path() {
-    let out = apply(json!({"stat": {"views": 1}}), json!({"$inc": {"stat.views": 2}}));
+    let out = apply(
+        json!({"stat": {"views": 1}}),
+        json!({"$inc": {"stat.views": 2}}),
+    );
     assert_eq!(out["stat"]["views"], json!(3));
 }
 
@@ -96,7 +99,10 @@ fn inc_rejects_id() {
 /// 乘法;字段缺失按 0(MongoDB 行为)。
 #[test]
 fn mul_basic_and_missing() {
-    assert_eq!(apply(json!({"n": 3}), json!({"$mul": {"n": 2}}))["n"], json!(6));
+    assert_eq!(
+        apply(json!({"n": 3}), json!({"$mul": {"n": 2}}))["n"],
+        json!(6)
+    );
     assert_eq!(apply(json!({}), json!({"$mul": {"n": 5}}))["n"], json!(0));
 }
 
@@ -105,7 +111,10 @@ fn mul_basic_and_missing() {
 /// 新值更小才写入。
 #[test]
 fn min_only_writes_when_smaller() {
-    assert_eq!(apply(json!({"n": 10}), json!({"$min": {"n": 5}}))["n"], json!(5));
+    assert_eq!(
+        apply(json!({"n": 10}), json!({"$min": {"n": 5}}))["n"],
+        json!(5)
+    );
     assert_eq!(
         apply(json!({"n": 10}), json!({"$min": {"n": 20}}))["n"],
         json!(10)
@@ -149,17 +158,17 @@ fn min_max_on_strings() {
 /// 字段改名,原字段消失。
 #[test]
 fn rename_basic() {
-    let out = apply(json!({"old": 1, "keep": 2}), json!({"$rename": {"old": "new"}}));
+    let out = apply(
+        json!({"old": 1, "keep": 2}),
+        json!({"$rename": {"old": "new"}}),
+    );
     assert_eq!(out, d(json!({"new": 1, "keep": 2})));
 }
 
 /// 嵌套路径改名。
 #[test]
 fn rename_nested() {
-    let out = apply(
-        json!({"a": {"b": 1}}),
-        json!({"$rename": {"a.b": "a.c"}}),
-    );
+    let out = apply(json!({"a": {"b": 1}}), json!({"$rename": {"a.b": "a.c"}}));
     assert_eq!(out, d(json!({"a": {"c": 1}})));
 }
 
@@ -303,8 +312,8 @@ fn push_non_array_fails() {
 /// 修饰符拼写错误报错(不静默失效)。
 #[test]
 fn push_unknown_modifier_fails() {
-    let err =
-        Update::from_value(&json!({"$push": {"t": {"$each": [1], "$positon": 0}}})).expect_err("应报错");
+    let err = Update::from_value(&json!({"$push": {"t": {"$each": [1], "$positon": 0}}}))
+        .expect_err("应报错");
     assert!(matches!(err, UpdateError::InvalidModifier(_)), "{:?}", err);
 }
 
@@ -422,7 +431,10 @@ fn multiple_operators_together() {
 /// `$set` 与 `$unset` 同时作用于同一路径时,删除生效(沿用 M10 语义)。
 #[test]
 fn set_and_unset_same_path() {
-    let out = apply(json!({"a": 1}), json!({"$set": {"a": 2}, "$unset": {"a": ""}}));
+    let out = apply(
+        json!({"a": 1}),
+        json!({"$set": {"a": 2}, "$unset": {"a": ""}}),
+    );
     assert!(!out.contains_key("a"));
 }
 

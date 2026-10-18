@@ -74,7 +74,9 @@ fn exclude_mode_can_drop_id() {
 #[test]
 fn include_mode_nested_path() {
     let proj = p(json!({"addr.city": 1}));
-    let out = proj.apply(&d(json!({"addr": {"city": "上海", "zip": "1"}, "_id": "x"})));
+    let out = proj.apply(&d(
+        json!({"addr": {"city": "上海", "zip": "1"}, "_id": "x"}),
+    ));
     assert_eq!(out, d(json!({"addr": {"city": "上海"}, "_id": "x"})));
 }
 
@@ -82,15 +84,16 @@ fn include_mode_nested_path() {
 #[test]
 fn exclude_mode_nested_path() {
     let proj = p(json!({"addr.zip": 0}));
-    let out = proj.apply(&d(json!({"addr": {"city": "上海", "zip": "1"}, "_id": "x"})));
+    let out = proj.apply(&d(
+        json!({"addr": {"city": "上海", "zip": "1"}, "_id": "x"}),
+    ));
     assert_eq!(out, d(json!({"addr": {"city": "上海"}, "_id": "x"})));
 }
 
 /// 包含与排除混用应报错。
 #[test]
 fn mixed_modes_rejected() {
-    let err = Projection::from_value(&json!({"name": 1, "age": 0}))
-        .expect_err("混用应报错");
+    let err = Projection::from_value(&json!({"name": 1, "age": 0})).expect_err("混用应报错");
     assert!(err.to_string().contains("不能混用"), "实际: {}", err);
 }
 
@@ -104,12 +107,12 @@ fn id_is_exempt_from_mixed_check() {
 /// 非 0/1 的值应报错。
 #[test]
 fn invalid_value_rejected() {
-    for bad in [json!({"name": 2}), json!({"name": "yes"}), json!({"name": null})] {
-        assert!(
-            Projection::from_value(&bad).is_err(),
-            "应报错: {}",
-            bad
-        );
+    for bad in [
+        json!({"name": 2}),
+        json!({"name": "yes"}),
+        json!({"name": null}),
+    ] {
+        assert!(Projection::from_value(&bad).is_err(), "应报错: {}", bad);
     }
 }
 
@@ -166,7 +169,14 @@ fn find_page_total_with_projection_and_sort() {
     let sort = SortSpec::from_value(&json!({"n": -1})).unwrap();
     let proj = p(json!({"n": 1}));
     let (total, page) = db
-        .find_page_total("items", &Filter::match_all(), Some(&sort), 0, Some(3), Some(&proj))
+        .find_page_total(
+            "items",
+            &Filter::match_all(),
+            Some(&sort),
+            0,
+            Some(3),
+            Some(&proj),
+        )
         .unwrap();
 
     assert_eq!(total, 10, "total 应是匹配总数而非页内条数");
