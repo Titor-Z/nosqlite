@@ -23,7 +23,8 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **列表页一次扫描**:`find_page_total` 同时返回「匹配总数 + 当页文档」,省掉一次全表 `count`;
 - **字段投影**:`Projection` / CLI `--fields`,列表页只取需要的字段;
 - **复合值可比较**:数组/对象按 BSON 风格递归比较,可排序,`$eq`/`$in` 为精确深度匹配;
-- **附带 CLI**:`nosqlite <file.nodb>` 进入 sqlite3 风格 REPL(点命令管理 + 无点 CRUD)。
+- **附带 CLI**:`nosqlite <file.nodb>` 进入 sqlite3 风格 REPL(点命令管理 + 无点 CRUD);
+- **导入导出与统计**:`.export`(JSON Lines)/`.import`(JSONL 或 JSON 数组,单事务)/`.stats`。
 
 底层是 [redb](https://crates.io/crates/redb)(纯 Rust 单文件 B+树 KV 存储),之上提供文档语义层。`.nodb` 格式版本 v1。
 
@@ -69,6 +70,13 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **Server / 协议**:无 MongoDB wire 协议,官方 driver 与 `mongosh` 无法直连
 - **其他**:`distinct`、`explain`、change stream、schema validation、`$regex` 的 `$options`
 
+### 数据导入导出
+
+- 格式是 **JSON Lines**(一行一条文档),便于 `wc -l`、`head`、增量追加与流式处理;
+- `.import` 同时兼容「整个文件是一个 JSON 数组」;
+- 导入**先全量校验再用单事务写入** —— 任一条格式错误或主键冲突,整批不写;
+- `.export` 默认覆盖,`--append` 追加;省略文件名则输出到 stdout(可管道)。
+
 ## 快速上手
 
 ```rust
@@ -107,6 +115,9 @@ $ nosqlite app.nodb
 nosqlite> insert users {"name": "张三", "age": 30}
 插入成功: 集合 `users`, _id = 6aaa...
 nosqlite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
+nosqlite> .stats
+nosqlite> .export users backup.jsonl
+nosqlite> .import users backup.jsonl
 ```
 
 ## 性能参考
@@ -136,7 +147,7 @@ nosqlite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
 ## 开发
 
 ```bash
-cargo test --all-targets     # 325 例测试
+cargo test --all-targets     # 335 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

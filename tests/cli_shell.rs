@@ -205,6 +205,35 @@ fn shell_reject_bare_management() {
     }
 }
 
+/// .export / .import / .stats 解析。
+#[test]
+fn shell_parse_io_commands() {
+    assert_eq!(
+        parse_line(".export users").unwrap(),
+        ShellCommand::Export {
+            collection: "users".to_string(),
+            file: None,
+            append: false,
+        }
+    );
+    assert_eq!(
+        parse_line(".export users /tmp/u.jsonl --append").unwrap(),
+        ShellCommand::Export {
+            collection: "users".to_string(),
+            file: Some("/tmp/u.jsonl".to_string()),
+            append: true,
+        }
+    );
+    assert_eq!(
+        parse_line(".import users /tmp/u.jsonl").unwrap(),
+        ShellCommand::Import {
+            collection: "users".to_string(),
+            file: "/tmp/u.jsonl".to_string(),
+        }
+    );
+    assert_eq!(parse_line(".stats").unwrap(), ShellCommand::Stats);
+}
+
 /// drop <collection>。
 #[test]
 fn shell_parse_drop() {

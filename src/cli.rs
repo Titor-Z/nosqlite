@@ -7,8 +7,9 @@
 //!
 //! shell 内命令(提示符 `nosqlite> `)不带文件路径:
 //! - 数据库管理:`open <file>`(不存在则创建)、`create <file>`(新建,已存在拒绝)、`databases`(显示当前绑定);
-//! - 集合操作:`insert/find/update/delete/count/drop <collection> ...`、`collections`(无参);
-//! - `help`/`?` 显示用法,`quit`/`exit` 退出。
+//! - 集合操作(无点):`insert/find/update/upsert/delete/count/drop <collection> ...`;
+//! - 导入导出与统计:`.export <collection> [file]`、`.import <collection> <file>`、`.stats`;
+//! - `.help` 显示用法,`.quit`/`.exit` 退出。
 
 use std::io::Write;
 use std::path::Path;
@@ -17,9 +18,9 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::database::Database;
+use crate::database::UpsertResult;
 use crate::document::Document;
 use crate::query::{Filter, FindOptions, Projection, SortSpec, Update};
-use crate::database::UpsertResult;
 
 /// shell 内的一条命令(不带文件路径参数)。
 ///
@@ -59,6 +60,24 @@ pub enum ShellCommand {
     Count(String, String),
     /// 删除整个集合及其全部文档(不可恢复)。
     Drop(String),
+    /// 导出集合为 JSON Lines(省略文件则输出到 stdout)。
+    Export {
+        /// 集合名。
+        collection: String,
+        /// 目标文件(省略则 stdout)。
+        file: Option<String>,
+        /// 追加而非覆盖(仅对文件有效)。
+        append: bool,
+    },
+    /// 从 JSON Lines(或 JSON 数组)导入集合。
+    Import {
+        /// 集合名。
+        collection: String,
+        /// 源文件。
+        file: String,
+    },
+    /// 显示数据库统计(文件大小、集合数、各集合文档数)。
+    Stats,
     /// 显示 shell 命令用法。
     Help,
     /// 退出 shell。
@@ -197,6 +216,36 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
             Ok(ShellCommand::Count(collection.clone(), filter.clone()))
         }
         [cmd, collection] if cmd == "drop" => Ok(ShellCommand::Drop(collection.clone())),
+        // .export <collection> [file] [--append]
+        [cmd, collection, rest @ ..] if cmd == ".export" => {
+            let mut file: Option<String> = None;
+            let mut append = false;
+            for arg in rest {
+                if arg == "--append" {
+                    append = true;
+                } else if file.is_none() {
+                    file = Some(arg.clone());
+                } else {
+                    return Err(format!(".export 参数过多: `{}`", arg));
+                }
+            }
+            Ok(ShellCommand::Export {
+                collection: collection.clone(),
+                file,
+                append,
+            })
+        }
+        [cmd] if cmd == ".export" => {
+            Err(".export 缺少参数: .export <collection> [file]".to_string())
+        }
+        [cmd, collection, file] if cmd == ".import" => Ok(ShellCommand::Import {
+            collection: collection.clone(),
+            file: file.clone(),
+        }),
+        [cmd, ..] if cmd == ".import" => {
+            Err(".import 缺少参数: .import <collection> <file>".to_string())
+        }
+        [cmd] if cmd == ".stats" => Ok(ShellCommand::Stats),
         [cmd, collection, filter] if cmd == "delete" => {
             Ok(ShellCommand::Delete(collection.clone(), filter.clone()))
         }
@@ -346,6 +395,17 @@ fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
             require_db(current, |db| exec_count(db, &collection, &filter))
         }
         ShellCommand::Drop(collection) => require_db(current, |db| exec_drop(db, &collection)),
+        ShellCommand::Export {
+            collection,
+            file,
+            append,
+        } => require_db(current, |db| {
+            exec_export(db, &collection, file.as_deref(), append)
+        }),
+        ShellCommand::Import { collection, file } => {
+            require_db(current, |db| exec_import(db, &collection, &file))
+        }
+        ShellCommand::Stats => require_db(current, exec_stats),
         ShellCommand::Help => {
             print_shell_help();
             ExitCode::SUCCESS
@@ -755,14 +815,212 @@ fn exec_drop(db: &Database, collection: &str) -> ExitCode {
     }
 }
 
+/// 导出集合为 JSON Lines。
+///
+/// 一行一条文档(含 `_id`),便于 `wc -l`/`head`/增量追加与流式处理。
+/// 为避免大集合一次性入内存,这里**逐条写出**(仅命中该集合的全部文档)。
+fn exec_export(db: &Database, collection: &str, file: Option<&str>, append: bool) -> ExitCode {
+    // 目标:stdout 或文件
+    let mut writer: Box<dyn Write> = match file {
+        Some(path) => match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(path)
+        {
+            Ok(f) => Box::new(std::io::BufWriter::new(f)),
+            Err(e) => {
+                eprintln!("无法写入 {}: {}", path, e);
+                return ExitCode::FAILURE;
+            }
+        },
+        None => Box::new(std::io::stdout()),
+    };
+
+    // 逐条遍历并写出(collection 不存在时自然导出 0 条)
+    let filter = match Filter::from_value(&Value::Null) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("内部错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    // 按批取页写出,避免大集合一次性把全部文档读进内存
+    const BATCH: usize = 1000;
+    let mut written = 0usize;
+    let mut skip = 0usize;
+    loop {
+        let page = match db.find_page(collection, &filter, None, skip, Some(BATCH)) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("导出失败: {}", e);
+                return ExitCode::FAILURE;
+            }
+        };
+        if page.is_empty() {
+            break;
+        }
+        for doc in &page {
+            let line = serde_json::to_string(doc).unwrap_or_default();
+            if let Err(e) = writeln!(writer, "{}", line) {
+                eprintln!("写入失败: {}", e);
+                return ExitCode::FAILURE;
+            }
+            written += 1;
+        }
+        if page.len() < BATCH {
+            break;
+        }
+        skip += page.len();
+    }
+
+    if let Err(e) = writer.flush() {
+        eprintln!("写入失败: {}", e);
+        return ExitCode::FAILURE;
+    }
+    match file {
+        Some(path) => println!("已导出 {} 条文档到 {}", written, path),
+        None => eprintln!("已导出 {} 条文档", written),
+    }
+    ExitCode::SUCCESS
+}
+
+/// 从 JSON Lines(或整个文件是一个 JSON 数组)导入集合。
+///
+/// 先全量解析校验,再用 `insert_many` **单事务**写入 ——
+/// 任一条格式错误则整批不写,不会留下半个集合。
+fn exec_import(db: &Database, collection: &str, path: &str) -> ExitCode {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("无法读取 {}: {}", path, e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut docs: Vec<Document> = Vec::new();
+    let trimmed = content.trim_start();
+    if trimmed.starts_with('[') {
+        // 整个文件是一个 JSON 数组
+        match serde_json::from_str::<Vec<Value>>(trimmed) {
+            Ok(items) => {
+                for (i, item) in items.into_iter().enumerate() {
+                    match Document::from_json(&item.to_string()) {
+                        Ok(d) => docs.push(d),
+                        Err(e) => {
+                            eprintln!("第 {} 条文档格式错误: {}", i + 1, e);
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("JSON 数组解析失败: {}", e);
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        // JSON Lines:逐行解析,忽略空行
+        for (i, line) in content.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match Document::from_json(line) {
+                Ok(d) => docs.push(d),
+                Err(e) => {
+                    eprintln!("第 {} 行格式错误: {}", i + 1, e);
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+
+    if docs.is_empty() {
+        println!("文件为空,未导入任何文档");
+        return ExitCode::SUCCESS;
+    }
+
+    // 单事务批量写入
+    match db.insert_many(collection, &mut docs) {
+        Ok(_) => {
+            println!("已导入 {} 条文档到集合 `{}`", docs.len(), collection);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("导入失败(整批未写入): {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// 显示数据库统计信息。
+fn exec_stats(db: &Database) -> ExitCode {
+    let path = db.path();
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let collections = match db.collections() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("读取集合列表失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("数据库: {}", path);
+    println!("文件大小: {}", format_size(size));
+    println!("集合数量: {}", collections.len());
+    if collections.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    println!();
+    let filter = match Filter::from_value(&Value::Null) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("内部错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut total = 0usize;
+    for name in &collections {
+        match db.count(name, &filter) {
+            Ok(n) => {
+                total += n;
+                println!("  {:<24} {:>10} 条", name, n);
+            }
+            Err(e) => {
+                eprintln!("统计集合 `{}` 失败: {}", name, e);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    println!("  {:<24} {:>10} 条", "合计", total);
+    ExitCode::SUCCESS
+}
+
+/// 把字节数格式化为人类可读形式。
+fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[0])
+    } else {
+        format!("{:.1} {}", value, UNITS[unit])
+    }
+}
+
 /// 打印 shell 内命令用法。
 fn print_shell_help() {
     println!("nosqlite shell 内命令(不带文件路径):");
     println!();
-    println!("数据库管理:");
-    println!("  open <file.nodb>        打开数据库(不存在则自动创建)");
-    println!("  create <file.nodb>      创建新数据库(已存在则拒绝)");
-    println!("  databases               显示当前绑定的数据库文件");
+    println!("数据库管理(点命令):");
+    println!("  .open <file.nodb>       打开数据库(不存在则自动创建);无参 = 关闭当前");
+    println!("  .databases              显示当前绑定的数据库文件");
     println!();
     println!("集合操作:");
     println!(
@@ -774,22 +1032,27 @@ fn print_shell_help() {
     println!(
         "  update <collection> <filter> <update> 更新匹配文档(单事务原子写回;{{\"_id\":…}} 走主键快速路径)"
     );
-    println!(
-        "  upsert <collection> <filter> <update> 更新或插入(未命中则按 filter 等值字段新建)"
-    );
+    println!("  upsert <collection> <filter> <update> 更新或插入(未命中则按 filter 等值字段新建)");
     println!(
         "  delete <collection> <filter>          删除匹配文档(单事务原子删除;{{\"_id\":…}} 走主键快速路径)"
     );
     println!("  count <collection> [filter]           统计匹配条数");
-    println!("  collections                           列出全部集合");
+    println!("  .collect                              列出全部集合");
     println!("  drop <collection>                     删除整个集合(不可恢复)");
     println!();
+    println!("导入导出与统计:");
+    println!(
+        "  .export <collection> [file] [--append]  导出为 JSON Lines(省略文件则输出到 stdout)"
+    );
+    println!("  .import <collection> <file>             从 JSON Lines(或 JSON 数组)导入(单事务)");
+    println!();
     println!("其他:");
-    println!("  help / ?                              显示本帮助");
-    println!("  quit / exit                           退出 shell");
+    println!("  .stats                                显示文件大小与各集合文档数");
+    println!("  .help                                 显示本帮助");
+    println!("  .quit / .exit                         退出 shell");
     println!();
     println!("示例:");
-    println!("  create data.nodb");
+    println!("  .open data.nodb");
     println!("  insert users '{{\"name\":\"张三\",\"age\":30}}'");
     println!("  insert users '[{{\"name\":\"张三\"}},{{\"name\":\"李四\"}}]'   批量插入(单事务)");
     println!("  find users '{{\"age\": {{\"$gte\": 18}}}}' --sort '{{\"age\": -1}}' --limit 10");
@@ -798,6 +1061,9 @@ fn print_shell_help() {
     println!("  upsert users '{{\"email\":\"a@b.c\"}}' '{{\"$set\":{{\"vip\":true}}}}'");
     println!("  update users '{{\"_id\":\"u1\"}}' '{{\"$inc\":{{\"views\":1}}}}'");
     println!("  delete users '{{\"age\": {{\"$lt\": 18}}}}'");
+    println!("  .export users /tmp/users.jsonl     导出为 JSON Lines");
+    println!("  .import users /tmp/users.jsonl     单事务导入");
+    println!("  .stats                             看文件大小与各集合条数");
 }
 
 /// 打印顶层用法。

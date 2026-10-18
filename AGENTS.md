@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.1.5 M16 完成 —— CLI `.export`(JSON Lines,分批写出)/`.import`(JSONL 或 JSON 数组,单事务整批)/`.stats`(文件大小 + 各集合条数);+10 例共 **335 例全绿**;顺带修正 `.help` 里残留的旧命令名。参见 [taolun #35](#35-v015-m16-设计cli-export--import--stats) / [taolun #36](#36-v015-m16-执行cli-export--import--stats) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.4 M15 完成 —— 更新操作符 `$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate`(数组支持 `$each/$position/$slice/$sort`)+ upsert(`update_or_insert`);+50 例共 **325 例全绿**。参见 [taolun #33](#33-v014-m15-设计更新操作符扩展--upsert) / [taolun #34](#34-v014-m15-执行更新操作符扩展--upsert) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.3 M14 完成 —— Date 类型:`{"$date": "ISO-8601"}` / 毫秒时间戳,按时间戳比较排序、时区偏移归一,存储仍是普通 JSON(`.nodb` 格式 v1 不变);+17 例共 **275 例全绿**。参见 [taolun #31](#31-v013-m14-设计date-类型优先级-2) / [taolun #32](#32-v013-m14-执行date-类型) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.2 M13 完成 —— 查询语义与 MongoDB 对齐 6 项:同层条件改 AND、数组字段的 `$eq`/`$in` 按元素展开、点号路径穿透数组、缺失字段匹配 `null`、字段级 `$not`;+23 例共 **258 例全绿**。**含 4 项破坏性变更**,详见 README「与 MongoDB 的差异」。参见 [taolun #29](#29-v012-m13-设计查询语义与-mongodb-对齐优先级-1) / [taolun #30](#30-v012-m13-执行查询语义与-mongodb-对齐) / [项目进度-已完成](#已完成)。
@@ -558,6 +559,29 @@
 - **修掉一个自己引入的缺陷**:`$inc` 初版用 `get_number(...).unwrap_or(0.0)`,字段非数值时被当作「缺失按 0」而**静默覆盖原值**;改为 `number_at` 返回 `Result<Option<f64>>`,非数值报 `TypeMismatch`(由测试 `inc_non_numeric_fails` 抓到)。
 - 测试:新增 `tests/update_operators.rs` **38 例** + `tests/upsert.rs` **11 例** + `tests/cli_shell.rs` 1 例;`tests/update_validation.rs` 的 `unknown_operator_rejected` 因 `$inc` 已支持而改用仍不支持的 `$pull`。合计 **325 例全绿**,clippy 零警告。
 
+### 35. v0.1.5 M16 设计:CLI `.export` / `.import` / `.stats`
+
+- 动机:数据进得去出不来 —— 没有导出导入,用户不敢把真数据放进来;也没有任何体积/规模观测手段。
+- 设计:
+  - **`.export <collection> [file]`**:把集合导出为 **JSON Lines**(一行一条文档,含 `_id`)。省略文件则输出到 stdout。默认覆盖,`--append` 追加。
+  - **`.import <collection> <file>`**:从 JSON Lines 导入;也兼容「整个文件是一个 JSON 数组」。先全量解析校验,**再用 `insert_many` 单事务写入** —— 任一条格式错误则整批不写。
+  - **`.stats`**:输出数据库文件路径、文件大小、集合数、每集合文档数。
+- 纪律:
+  - JSONL 而非单一大数组 —— 便于 `wc -l`、`head`、流式处理与增量追加;
+  - 导入复用 `insert_many`(单事务),不逐条写;
+  - 不引入新依赖(不引 serde 的流式反序列化,按行读 + `serde_json::from_str`);
+  - `.nodb` 格式不变。
+
+### 36. v0.1.5 M16 执行:CLI `.export` / `.import` / `.stats`
+
+- **`.export <collection> [file] [--append]`**:输出 **JSON Lines**(一行一条,含 `_id`);省略文件写 stdout;默认覆盖,`--append` 追加。**按 1000 条一批经 `find_page` 取页写出**,不把整个集合读进内存。
+  - 实现注记:起初想用 `Database::for_each`,但门面层没有该流式接口(只有 `Storage::for_each`),故改用 `find_page` 分批 —— 同样避免全量物化,且复用了已验证的两遍法。
+- **`.import <collection> <file>`**:支持 JSON Lines 与「整个文件是一个 JSON 数组」两种格式;先**全量解析校验**,再用 `insert_many` **单事务**写入 —— 任一条格式错误则整批不写(测试覆盖「第 2 行非法」与「主键冲突」两种回滚场景)。
+- **`.stats`**:文件路径、文件大小(人类可读)、集合数、各集合文档数 + 合计。
+- **顺带修正帮助文本**:`.help` 里仍残留 M8 之前的有点/无点混排(写了 `open/create/databases/collections` 与 `quit/exit`),以及与代码不符的 `collections`;统一为 `.open`/`.databases`/`.collect`/`.help`/`.quit`/`.exit`,并补上导入导出段与 `.stats`。
+- 测试:新增 `tests/cli_io.rs` **9 例**(往返、JSON 数组导入、非法 JSON 整批不写、主键冲突回滚、`--append`、默认覆盖、空集合导出、`.stats` 输出、缺参提示;通过 `CARGO_BIN_EXE_nosqlite` + stdin 注入驱动真实二进制)+ `tests/cli_shell.rs` 1 例解析;合计 **335 例全绿**,clippy 零警告。
+- 冒烟:建库 → 插入两个集合 → `.stats` → `.export` → 新库 `.import` → `count`/`.stats` 全部正确。
+
 ## Agents
 
 ### 规范
@@ -590,6 +614,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M16(v0.1.5):CLI `.export`/`.import`/`.stats`;335 例全绿。
 - M15(v0.1.4):更新操作符扩展(8 个)+ upsert;325 例全绿。
 - M14(v0.1.3):Date 类型 —— `{"$date": ...}` 按时间戳比较排序(时区归一),格式仍 v1;275 例全绿。
 - M13(v0.1.2):查询语义与 MongoDB 对齐 —— 同层 AND、数组等值/`$in` 展开、点号路径穿透数组、缺失匹配 null、字段级 `$not`;258 例全绿。
