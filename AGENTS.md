@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.3.0 M20 完成(阶段 2) —— **nosqlite-server 落地**:MongoDB wire 协议(OP_MSG + BSON 编解码 + 命令分发),**Go 官方驱动 9 项验收全通过**;367 例全绿。踩坑三条(section 1 / cursor.id 必须 int64 / OP_REPLY 长度)已写入认知修正。参见 [taolun #43](#43-v030-m20-设计阶段-2--nosqlite-servermongodb-wire-协议) / [taolun #44](#44-v030-m20-执行阶段-2--nosqlite-servermongodb-wire-协议) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.2 M19 完成(阶段 1.5) —— C ABI 收尾:新增 `open_ex`(兑现 `struct_size` 版本化)、`release.yml` 产出 `nosqlite-ffi-<platform>` 库包(动态库+静态库+头文件+SHA256)、README 补「获取库」「各语言接入」;**354 例全绿**。参见 [taolun #41](#41-v022-m19-设计阶段-15--c-abi-收尾可用性而非功能) / [taolun #42](#42-v022-m19-执行阶段-15--c-abi-收尾) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.1 M18 完成(阶段 1) —— **C ABI 落地**:`src/ffi.rs` + `include/nosqlite.h`,产出 cdylib/staticlib;骨架照搬 SQLite(不透明句柄 + 错误码 + 游标),现代化三点(arena 结果 / 结构化错误 / 版本化 options);真实 C 程序冒烟 + Python ctypes 实证;**354 例全绿**。参见 [taolun #39](#39-v021-m18-设计阶段-1--nosqlite-ffic-abi) / [taolun #40](#40-v021-m18-执行阶段-1--nosqlite-ffic-abi) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.0 M17 完成(阶段 0) —— 跨语言契约冻结:字段序保持(`preserve_order`,实测修复静默重排)、稳定错误码 `ErrorCode`(12 码,C ABI 整数 + wire 字符串)、Extended JSON 扩展(`$oid`/`$numberLong`/`$numberDouble`);+16 例共 **351 例全绿**。同时写入「双形态路线」总纲与「尽可能完整支持最新 MongoDB」的长期目标。参见 [taolun #37](#37-v020-m17-设计阶段-0--跨语言契约冻结双形态前置) / [taolun #38](#38-v020-m17-执行阶段-0-契约冻结) / [项目进度-已完成](#已完成)。
@@ -687,6 +688,53 @@
 - **明确暂不做**(理由记于此,避免反复纠结):macOS 代码签名/notarization 需要开发者账号与证书,在无真实下游前是纯成本;npm/go module 分发元数据同理。预编译包 + SHA256 已覆盖自用与早期采用者。
 - 合计 **354 例全绿**,clippy 零警告;Python ctypes 示例回归通过。
 
+### 43. v0.3.0 M20 设计:阶段 2 —— `nosqlite-server`(MongoDB wire 协议)
+
+- 目标:用 **Go 官方驱动** `go.mongodb.org/mongo-driver/v2` 连上,让 `nosqlite-server` 可替代 mongodb-server。
+- 第一步目标(本里程碑):**驱动能连上 + 核心 CRUD 跑通**,不是全协议。
+- 协议事实(决定实现顺序):
+  - 传输:TCP,消息 = 标准头部(16 字节,含 `messageLength`/`requestID`/`responseTo`/`opCode`)+ 体;
+  - 现代驱动只用 **OP_MSG**(opCode 2013),`section 0` 为单文档 BSON;带 `$db`、`$readPreference` 等;
+  - 握手:驱动首发的命令是 **`hello`**(老驱动可能是 `isMaster`/`ismaster`),响应必须含 `maxWireVersion`;
+  - **`maxWireVersion` 给低了驱动会直接拒连**:以驱动 v2.5+ 要求为准,先给 **17**;
+  - 驱动关闭连接时会发 `endSessions`,**必须能回应**(空 ok),否则挂起。
+- 必须实现的命令(按此顺序落地):
+  1. `hello` / `isMaster`、`ping`
+  2. `insert`、`find`、`update`、`delete`
+  3. `findAndModify`(Mongoose `findOneAndUpdate` 的底层)
+  4. `count`、`distinct`、`listCollections`、`listDatabases`、`createIndexes`、`drop`、`dropDatabase`
+  5. `getMore` / `killCursors`(游标必需)
+  6. `aggregate`(可先只支持 `$match/$sort/$limit/$skip`,其余明确报错)
+- **BSON 编解码是独立难题**:需自行实现(不引 crate 以保持依赖精简?→ 评估后定,优先正确性)。
+  - 需支持类型:double、string、document、array、binary、ObjectId(12 字节)、bool、UTC datetime、null、int32、int64、timestamp、minkey/maxkey;
+  - 与内部 JSON 的映射借助 M14/M17 的 **Extended JSON** 契约:
+    `ObjectId` ↔ `{"$oid": "..."}`、`Date` ↔ `{"$date": ...}`、`int64` ↔ `{"$numberLong": "..."}`;
+  - `_id` 在协议层必须是 **BSON ObjectId**,存储里是 24 位 hex 字符串 —— **翻译在 server 层完成**,存储不变。
+- 架构:`nosqlite-server` 为**同一个 crate 的 bin**(`src/bin/nosqlite-server.rs`),复用 `Database`,不另建 crate,避免跨 crate 重复依赖。
+- 进程模型:**单进程独占 `.nodb`**,因此 redb 的单写者约束天然满足;连接多线程共享一个 `Database`(`Send + Sync` 已保证)。
+- 不做(本里程碑):认证(先不做/或做最简 SCRAM 跳过)、副本集、分片、事务会话、`changeStream`、压缩。
+
+### 44. v0.3.0 M20 执行:阶段 2 —— nosqlite-server(MongoDB wire 协议)
+
+- **结果:Go 官方驱动 `go.mongodb.org/mongo-driver/v2` 全部 9 项验收通过**(Ping/插入查询/批量+游标/更新/删除/findAndModify/upsert/Date/主键冲突)。
+- 新增模块:
+  - `src/server/bson.rs` —— BSON ↔ JSON 编解码,零新依赖。类型映射见模块文档;`ObjectId` ↔ 24 位 hex 字符串、`datetime` ↔ `{"$date": ms}`、`int64`/`int32`、binary/regex/decimal128/minKey/maxKey 等。
+  - `src/server/wire.rs` —— OP_MSG/OP_QUERY 帧编解码;`Request` 含 `command` + `sequences`。
+  - `src/server/serve.rs` —— TCP 监听(每连接一线程)+ 命令分发(模块名由 `server` 改为 `serve`,否则 `server::server` 触发 clippy `module_inception`)。
+  - `src/bin/nosqlite-server.rs` —— 独立入口,`--addr` 默认 `127.0.0.1:27017`。
+- **三个关键坑(都是真实 driver 打出来的,不实测根本发现不了)**:
+  1. **OP_MSG section 1**:驱动把批量文档放在 section 1(带 identifier:`documents`/`updates`/`deletes`),命令文档里**没有**这些字段。只读 section 0 表现为「插入 0 条 / 更新 0 条」。`Request.sequences` 按 identifier 分组解决了这一点。
+  2. **`cursor.id` 必须是 BSON int64**:用普通数字 `0` 会被编码成 int32,驱动报 `id should be an int64 but it is a BSON 32-bit integer` 并拒绝整个响应。必须写 `{"$numberLong": "0"}` 触发 int64 编码。
+  3. **OP_REPLY 头部漏算 4 字节**:旧驱动握手走 OP_QUERY/OP_REPLY,`numberReturned` 字段前还有个 `startingFrom`;长度算错会得到 `number of documents returned does not match numberReturned`。
+- **集合名取法**:MongoDB 约定集合名在**命令名对应的键值**里(`{insert: "users"}`),不是 `collection` 字段。初版搞错导致全部报「集合名不能为空」。
+- **`countDocuments` 走聚合**:底层是 `aggregate` + `{$group: {_id: null, n: {$sum: 1}}}`,不实现 `$group` 就无法 count。已实现该形态(以及 `$project/$addFields` 的简化版)。
+- **已实现命令**:`hello/isMaster`、`ping`、`endSessions`、`killCursors`、`insert`、`find`、`update`、`delete`、`findAndModify`、`count`、`distinct`、`listCollections`、`listDatabases`、`createIndexes`(接受不报错)、`drop`、`dropDatabase`、`buildInfo`、`aggregate`(`$match/$sort/$skip/$limit/$group/$project`)。
+- 测试:
+  - `tests/mongo_wire.rs` 2 例 —— 自动拉起服务 + **用 Go 官方驱动跑 9 项**;另有不依赖 Go 的裸 `hello` OP_MSG 握手校验(防协议字段被误删)。无 Go 工具链时自动跳过。
+  - `src/server/bson.rs` 8 例单测(标量/嵌套/`_id`→objectId/Date/ISO 输入/int64/空容器/损坏输入)。
+  - 合计 **367 例全绿**,clippy 零警告。
+- 未做(留待后续):认证、副本集、分片、changeStream、真实游标(`getMore` 分批,当前一次性返回并置 `id=0`)、完整 `$group` 累加器、索引。
+
 ## Agents
 
 ### 规范
@@ -728,7 +776,8 @@
 
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
-- **阶段 2:`nosqlite-server`(wire 协议)** —— OP_MSG + BSON + `hello` 握手 + CRUD 命令 + 游标(`getMore`/`killCursors`),用官方 Node/Go driver 实测。
+- **阶段 2 已完成**(v0.3.0)。后续按需:真实游标(`getMore` 分批)、认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容。
+- **阶段 3(未排期)**:二级索引(非 `_id` 查询全表扫)、语义向 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - **语义长期目标**:向最新 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - crates.io 发布:干跑已通过,**按用户决定暂缓**(GitHub Release v0.1.0 已发);待需要 crates.io 分发时 `cargo login` 后 `cargo publish` 即可。
 - CMS 项目启动后进入维护模式:真实场景验收(CMS 作为第一个真实用户)优先于新功能。
@@ -748,6 +797,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M20(v0.3.0,阶段 2):nosqlite-server(MongoDB wire 协议),Go 官方驱动验收通过;367 例全绿。
 - M19(v0.2.2,阶段 1.5):C ABI 收尾 —— `open_ex` + 三平台库产物 + 分发文档;354 例全绿。
 - M18(v0.2.1,阶段 1):C ABI(`nosqlite-ffi`)—— 句柄/错误码/游标 + arena 结果 + 结构化错误;真实 C 与 Python 双验证;354 例全绿。
 - M17(v0.2.0,阶段 0):跨语言契约冻结 —— 字段序 / 错误码 / Extended JSON;351 例全绿。
@@ -789,5 +839,8 @@
 - sqlite3 CLI 语义:默认直接进入 TTY,且不依赖数据库文件是否存在——不管有没有库都能进入,在 TTY 内用 `.open` 等命令创建/加载数据库;对齐目标是「无参数进 REPL、带路径打开(不存在即建)、移除单命令子命令」。
 - **写性能的归因结论(不要重复踩坑)**:nosqlite 逐条插入的耗时 ≈ 一次 fsync 的物理成本(A/D = 1.08x @1,000 条、0.76x @10,000 条),**不是引擎实现缺陷**。且 fsync 成本随数据文件增大而恶化(3.87 ms @1,000 条 → 30.20 ms @10,000 条),所以逐条写事务的吞吐会随数据库增长而下降(238.8 → 43.7 条/秒)。修法是**批量单事务**(收益 314x～1562x),不是换引擎。
 - **压测方法**:单次测量会被机器负载污染 —— 同一「1,000 条逐条插入」曾测出 4.19 s 与 23.1 s 两种结果。压测必须**预热 + 重复多次取中位数并报极差**,否则数据不可用于决策。
+- **MongoDB 驱动把批量数据放在 OP_MSG section 1,不在命令文档里**:`insert` 的文档在 identifier 为 `documents` 的 section 1,`update`/`delete` 分别是 `updates`/`deletes`。只解析 section 0 会表现为「操作成功但影响 0 条」,且驱动不报错,极难排查。
+- **wire 协议里 `cursor.id` 必须是 BSON int64**:写成普通数字会被编码成 int32,驱动直接拒绝整个响应(`id should be an int64 but it is a BSON 32-bit integer`)。用 `{"$numberLong": "0"}` 强制 int64。
+- **`maxWireVersion` 给低了驱动直接拒连**:当前给 17。改小前务必用真实驱动验证。
 - **ctypes 不声明 `argtypes` 会导致 64 位指针截断**:`ctypes.CDLL` 默认把未声明的参数当 `int` 传递,`nosqlite_db*` 句柄被截断成 32 位后必然段错误。凡是接受句柄的函数,必须显式 `fn.argtypes = [ctypes.c_void_p, ...]`。排查时表现为「单独调用正常,组合调用崩溃」。
 - **读路径的真问题是内存不是延迟**:`find` 全量延迟严格线性(7.3–8.8 µs/条,可预期),但 `scan` 返回 `Vec<(String, Vec<u8>)>` 导致 RSS 增量稳定为文档总字节的 **10–12 倍**(50 万条达 819 MiB)。优化优先级应为**内存 > 写入吞吐 > 读延迟**。

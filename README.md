@@ -35,7 +35,7 @@ nosqlite 有两个形态,共用同一套查询语义:
 | 形态 | 形态说明 | 状态 |
 |---|---|---|
 | **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程;适合本地 GUI/App、CLI、桌面软件 | ✅ **已实现**(`include/nosqlite.h`) |
-| **服务端(wire 协议)** | `nosqlite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连,可替换 mongodb-server | 计划中 |
+| **服务端(wire 协议)** | `nosqlite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连,可替换 mongodb-server | ✅ **已实现**(Go 驱动验收通过) |
 
 当前已完成端侧全部能力(Rust 内嵌 API + CLI)。
 
@@ -177,6 +177,27 @@ let db = nosqlite::Database::open(Path::new("app.nodb"))?;
 
 > ⚠️ 用 ctypes 调用时**必须声明 `argtypes`**,否则句柄的 64 位指针会被当成 `int` 截断而段错误。
 
+## 作为 MongoDB 服务端(nosqlite-server)
+
+```bash
+./nosqlite-server app.nodb                      # 默认监听 127.0.0.1:27017
+./nosqlite-server --addr 0.0.0.0:27018 app.nodb
+```
+
+然后用**任意 MongoDB 官方驱动**直连,无需 nosqlite 专属 SDK:
+
+```go
+client, _ := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:27017"))
+coll := client.Database("app").Collection("users")
+coll.InsertOne(ctx, bson.M{"name": "张三", "age": 30})
+```
+
+已实现命令:`hello`、`ping`、`insert`、`find`、`update`、`delete`、`findAndModify`、`count`、`distinct`、`listCollections`、`listDatabases`、`createIndexes`、`drop`、`dropDatabase`、`buildInfo`、`aggregate`(`$match/$sort/$skip/$limit/$group/$project`)、`endSessions`、`killCursors`。
+
+验收方式:`tests/go_compat/` 用 **Go 官方驱动 `mongo-driver/v2`** 跑 9 项端到端测试(插入/查询/游标/更新/删除/findAndModify/upsert/Date/主键冲突)。
+
+尚未支持:认证、副本集、分片、changeStream、真实游标分批(`getMore`,当前一次返回)。
+
 ## 快速上手
 
 ```rust
@@ -247,7 +268,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 354 例测试
+cargo test --all-targets     # 367 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

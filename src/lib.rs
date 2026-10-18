@@ -21,6 +21,7 @@ pub mod engine;
 pub mod error;
 pub mod ffi;
 pub mod query;
+pub mod server;
 
 pub use database::{Database, DatabaseError, UpsertResult};
 pub use document::{Document, DocumentError};
