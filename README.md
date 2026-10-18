@@ -34,7 +34,7 @@ nosqlite 有两个形态,共用同一套查询语义:
 
 | 形态 | 形态说明 | 状态 |
 |---|---|---|
-| **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程;适合本地 GUI/App、CLI、桌面软件 | 计划中(`nosqlite-ffi`) |
+| **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程;适合本地 GUI/App、CLI、桌面软件 | ✅ **已实现**(`include/nosqlite.h`) |
 | **服务端(wire 协议)** | `nosqlite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连,可替换 mongodb-server | 计划中 |
 
 当前已完成端侧全部能力(Rust 内嵌 API + CLI)。
@@ -99,6 +99,43 @@ nosqlite 有两个形态,共用同一套查询语义:
 - `.import` 同时兼容「整个文件是一个 JSON 数组」;
 - 导入**先全量校验再用单事务写入** —— 任一条格式错误或主键冲突,整批不写;
 - `.export` 默认覆盖,`--append` 追加;省略文件名则输出到 stdout(可管道)。
+
+## 嵌入到任意语言(C ABI)
+
+构建后得到 `libnosqlite.dylib` / `.so` / `.dll`,配合 `include/nosqlite.h` 即可被任何语言**进程内**调用 —— 没有服务进程,没有网络。
+
+```c
+#include "nosqlite.h"
+
+NosqliteDb *db = nosqlite_open("app.nodb", 1);
+NosqliteResult *r = nosqlite_insert(db, "users", "{\"name\":\"张三\"}");
+char id[64];
+snprintf(id, sizeof(id), "%.*s", (int)r->value.len, r->value.ptr);
+nosqlite_result_free(r);            // 整块释放,只需一次
+
+/* 游标:大结果集逐条取,内存 O(批大小) */
+NosqliteCursor *cur = nosqlite_find_cursor(db, "users", NULL, NULL, NULL, 0, 0, 1);
+const char *doc;
+while ((doc = nosqlite_cursor_next(cur)) != NULL) {
+    puts(doc);
+}
+nosqlite_cursor_close(cur);
+
+nosqlite_close(db);
+```
+
+设计上**骨架照搬 SQLite**(不透明句柄 + `int` 错误码 + 游标),但修掉它因 2004 年 ABI 冻结而做不到的三件事:
+
+| 现代化点 | SQLite | nosqlite |
+|---|---|---|
+| 结果释放 | 每个返回值单独 `sqlite3_free` | **arena,一次 `nosqlite_result_free`** |
+| 错误信息 | 一个笼统错误码 | **结构化**:`{code, code_str, message, op}` |
+| 接口演进 | 只能堆 `_v2`/`_v3` | **`struct_size` 版本化 options** |
+
+- 完整 Python 示例(纯标准库 `ctypes`,无第三方依赖):[`examples/python/nosqlite.py`](examples/python/nosqlite.py)
+- 错误码表见 `include/nosqlite.h` 顶部宏定义;程序化判断请用 `code`,不要匹配消息文本
+
+> ⚠️ 用 ctypes 调用时**必须声明 `argtypes`**,否则句柄的 64 位指针会被当成 `int` 截断而段错误。
 
 ## 快速上手
 
@@ -170,7 +207,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 351 例测试
+cargo test --all-targets     # 354 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

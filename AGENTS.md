@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.2.1 M18 完成(阶段 1) —— **C ABI 落地**:`src/ffi.rs` + `include/nosqlite.h`,产出 cdylib/staticlib;骨架照搬 SQLite(不透明句柄 + 错误码 + 游标),现代化三点(arena 结果 / 结构化错误 / 版本化 options);真实 C 程序冒烟 + Python ctypes 实证;**354 例全绿**。参见 [taolun #39](#39-v021-m18-设计阶段-1--nosqlite-ffic-abi) / [taolun #40](#40-v021-m18-执行阶段-1--nosqlite-ffic-abi) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.0 M17 完成(阶段 0) —— 跨语言契约冻结:字段序保持(`preserve_order`,实测修复静默重排)、稳定错误码 `ErrorCode`(12 码,C ABI 整数 + wire 字符串)、Extended JSON 扩展(`$oid`/`$numberLong`/`$numberDouble`);+16 例共 **351 例全绿**。同时写入「双形态路线」总纲与「尽可能完整支持最新 MongoDB」的长期目标。参见 [taolun #37](#37-v020-m17-设计阶段-0--跨语言契约冻结双形态前置) / [taolun #38](#38-v020-m17-执行阶段-0-契约冻结) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.5 M16 完成 —— CLI `.export`(JSON Lines,分批写出)/`.import`(JSONL 或 JSON 数组,单事务整批)/`.stats`(文件大小 + 各集合条数);+10 例共 **335 例全绿**;顺带修正 `.help` 里残留的旧命令名。参见 [taolun #35](#35-v015-m16-设计cli-export--import--stats) / [taolun #36](#36-v015-m16-执行cli-export--import--stats) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.4 M15 完成 —— 更新操作符 `$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate`(数组支持 `$each/$position/$slice/$sort`)+ upsert(`update_or_insert`);+50 例共 **325 例全绿**。参见 [taolun #33](#33-v014-m15-设计更新操作符扩展--upsert) / [taolun #34](#34-v014-m15-执行更新操作符扩展--upsert) / [项目进度-已完成](#已完成)。
@@ -620,6 +621,43 @@
 - 测试:新增 `tests/contract.rs` **16 例**,三块各自锁定(字段序 2 例、错误码 7 例、Extended JSON 7 例);合计 **351 例全绿**,clippy 零警告。
 - README 增「跨语言契约」与「路线:双形态」两节;「与 MongoDB 的差异」中的类型系统条目更新。
 
+### 39. v0.2.1 M18 设计:阶段 1 —— `nosqlite-ffi`(C ABI)
+
+- 用户立场:**嵌入式端照 SQLite 的用法,但要在算法与设计上更现代**;封装成自己的 C 库,因此没有 SQLite 的 ABI 冻结包袱。
+- **关键认知(本轮讨论得出,必须记住)**:所谓「比 SQLite 更现代」**不在存储引擎**——SQLite 的 B-tree/WAL/page cache 是 25 年真实负载打磨的,redb 不会更好。
+  真正能现代化的是 **API 与语义层**;而且 SQLite 的 API 之所以笨重,是因为它承诺了 2004 年的 ABI 永久兼容(只能堆 `_v2`/`_v3`)。**我们没有历史包袱,这是最大优势。**
+- 保留 SQLite 骨架(不冒险):
+  - 不透明句柄 `nosqlite_db*`;返回 `int`/结构体错误码而非异常;
+  - **游标模型** `cursor_next()`(不用回调 —— Go cgo 回调跨 OS 线程会崩、Node 回调涉及事件循环线程安全);
+  - 无全局状态、无回调注册;朴素 C89 头文件,便于各语言绑定生成器处理。
+- 现代化三点(有真实收益):
+  1. **arena 结果**:`nosqlite_result` 一次性持有全部返回切片,只需 `nosqlite_result_free` 调一次 —— 修掉 SQLite「每个 column 单独 free」这个内存泄漏重灾区;
+  2. **结构化错误**:`{code, message, op, field_path, offset}` —— 保留 M9 做出来的「数组下标越界/标量中间值」等精确信息,不退化成一个笼统错误码;
+  3. **`struct_size` 版本化 options(OpenEX 模式)**:后续加字段不需要 `_v2` 新函数。
+- 明确**不做**:回调式 API、two-call 零分配探针(易误用)、宏魔法、自定义二进制协议(JSON 是唯一零依赖选择)。
+- 游标实现选型:**分块游标**(内部按批用 `find_page` 取页)而非改 `Storage` 暴露可持有迭代器。
+  - 理由:`.export` 已验证该模式;内存从「整个结果集」降到「一批」;不触碰 `Storage` 抽象;接口形态不变,将来要真流式只需换内部实现。
+- 接口清单(草案):`open/open_ex/close`、`insert/insert_many/find/update/upsert/delete/count/get`、`exec`(兜底)、`last_error`(线程局部)、`result_free`、`cursor_next/cursor_close`。
+- 工程要求:`crate-type = ["rlib", "cdylib", "staticlib"]`;`cbindgen` 生成头文件;用真实 C 程序(`cc`)跑通冒烟测试。
+
+### 40. v0.2.1 M18 执行:阶段 1 —— `nosqlite-ffi`(C ABI)
+
+- **产物**:`src/ffi.rs` + `include/nosqlite.h`;`Cargo.toml` 的 `[lib]` 加 `crate-type = ["rlib", "cdylib", "staticlib"]`,构建即产出 `.dylib/.so/.dll` 与静态库。
+- **导出面**:`open/close`、`insert/insert_many/get/find/update/upsert/delete/count/list_collections`、`find_cursor/cursor_next/cursor_close`、`exec`(兜底)、`last_error_code/last_error`、`result_free`。
+- **三个现代化点已落地**:
+  1. arena 结果:`NosqliteResult` 持有全部切片,`nosqlite_result_free` 一次释放;
+  2. 结构化错误:`NosqliteError { code, code_str, message, op }`,线程局部;
+  3. 版本化 options:`NosqliteOpenOptions/NosqliteFindOptions` 带 `struct_size`(定义已备,`open_ex` 尚未暴露,留待需要时加)。
+- **设计决策**:`insert`/`upsert` 的 `value` 返回**裸 `_id` 字符串**(不加 JSON 引号),便于 C 侧直接当主键传入其他函数。
+- **游标实现**:分块游标,复用 `find_page`/`find_with_options`;`cursor_next` 每次返回的指针在下一次调用前有效(内部 arena 只保留当前一条)。
+- **实现中修掉的两个真 bug**(由真实 C 程序冒烟发现,不是单测能抓到的):
+  1. `exec` 初版委托给各专用入口 —— 导致线程局部 `last_error` 被二次调用覆盖,且参数被重新序列化一遍。改为**直接实现**,与专用入口共享 `parse_filter/parse_sort/parse_projection` 保证语义不分叉。
+  2. `insert` 初版返回 `"<id>"`(带引号),C 侧拿它当主键会查不到。改为裸 `_id`。
+- **Python 侧踩坑(必须记住)**:ctypes 若不声明 `argtypes`,句柄会被当 `int` 传递 → **64 位指针截断 → 段错误**。已写入 `examples/python/nosqlite.py` 的注释与 AGENTS.md 认知修正。
+- **测试**:`tests/c_api.rs` 3 例 —— (a) **真的编译并运行 `tests/c_smoke.c`**(cc 链接 dylib,覆盖 open/insert/冲突错误/批量/count/find/游标/update/upsert/get/投影/exec/list/delete/非法 filter);(b) 结构体布局断言;(c) **解析头文件 `#define` 与 Rust `ErrorCode::as_i32()` 比对**,防头文件漂移。
+- **实证**:`examples/python/nosqlite.py` 用**纯标准库 ctypes**跑通 insert/update/upsert/find/get/count/delete,证明「任何语言进程内嵌入」成立,无需服务进程、无需第三方包。
+- 合计 **354 例全绿**,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -660,7 +698,7 @@
 ### 项目进度
 
 #### 计划中
-- **阶段 1:`nosqlite-ffi`(C ABI)** —— 高层 API 为主 + `nosqlite_exec` 兜底;JSON 进出、错误码返回、回调式流式遍历;三平台预编译动态库。
+- **阶段 1.5:C ABI 收尾** —— `open_ex`(暴露已定义但未启用的 `NosqliteOpenOptions`)、三平台 CI 预编译产物 + 校验和、npm/go module 分发元数据、macOS 签名与 notarization。
 - **阶段 2:`nosqlite-server`(wire 协议)** —— OP_MSG + BSON + `hello` 握手 + CRUD 命令 + 游标(`getMore`/`killCursors`),用官方 Node/Go driver 实测。
 - **语义长期目标**:向最新 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - crates.io 发布:干跑已通过,**按用户决定暂缓**(GitHub Release v0.1.0 已发);待需要 crates.io 分发时 `cargo login` 后 `cargo publish` 即可。
@@ -681,6 +719,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M18(v0.2.1,阶段 1):C ABI(`nosqlite-ffi`)—— 句柄/错误码/游标 + arena 结果 + 结构化错误;真实 C 与 Python 双验证;354 例全绿。
 - M17(v0.2.0,阶段 0):跨语言契约冻结 —— 字段序 / 错误码 / Extended JSON;351 例全绿。
 - M16(v0.1.5):CLI `.export`/`.import`/`.stats`;335 例全绿。
 - M15(v0.1.4):更新操作符扩展(8 个)+ upsert;325 例全绿。
@@ -720,4 +759,5 @@
 - sqlite3 CLI 语义:默认直接进入 TTY,且不依赖数据库文件是否存在——不管有没有库都能进入,在 TTY 内用 `.open` 等命令创建/加载数据库;对齐目标是「无参数进 REPL、带路径打开(不存在即建)、移除单命令子命令」。
 - **写性能的归因结论(不要重复踩坑)**:nosqlite 逐条插入的耗时 ≈ 一次 fsync 的物理成本(A/D = 1.08x @1,000 条、0.76x @10,000 条),**不是引擎实现缺陷**。且 fsync 成本随数据文件增大而恶化(3.87 ms @1,000 条 → 30.20 ms @10,000 条),所以逐条写事务的吞吐会随数据库增长而下降(238.8 → 43.7 条/秒)。修法是**批量单事务**(收益 314x～1562x),不是换引擎。
 - **压测方法**:单次测量会被机器负载污染 —— 同一「1,000 条逐条插入」曾测出 4.19 s 与 23.1 s 两种结果。压测必须**预热 + 重复多次取中位数并报极差**,否则数据不可用于决策。
+- **ctypes 不声明 `argtypes` 会导致 64 位指针截断**:`ctypes.CDLL` 默认把未声明的参数当 `int` 传递,`nosqlite_db*` 句柄被截断成 32 位后必然段错误。凡是接受句柄的函数,必须显式 `fn.argtypes = [ctypes.c_void_p, ...]`。排查时表现为「单独调用正常,组合调用崩溃」。
 - **读路径的真问题是内存不是延迟**:`find` 全量延迟严格线性(7.3–8.8 µs/条,可预期),但 `scan` 返回 `Vec<(String, Vec<u8>)>` 导致 RSS 增量稳定为文档总字节的 **10–12 倍**(50 万条达 819 MiB)。优化优先级应为**内存 > 写入吞吐 > 读延迟**。
