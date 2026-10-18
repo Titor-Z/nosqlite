@@ -132,6 +132,33 @@ impl Filter {
         }
     }
 
+    /// 若本 filter 的顶层全是「字段: 普通值」的隐式 `$eq`,返回这些等值字段。
+    ///
+    /// 用于 **upsert**(v0.1.4):未命中时需要用 filter 反推新文档的初始字段。
+    /// 含操作符或逻辑组合的条件无法反推初始值,一律返回 `None`。
+    pub fn eq_fields(&self) -> Option<Vec<(String, Value)>> {
+        let conds: Vec<&Condition> = match &self.root {
+            Condition::MatchAll => Vec::new(),
+            Condition::And(list) => list.iter().collect(),
+            other => vec![other],
+        };
+        let mut out = Vec::new();
+        for cond in conds {
+            match cond {
+                Condition::Field(field)
+                    if field.path.len() == 1 && field.ops.len() == 1 =>
+                {
+                    match &field.ops[0] {
+                        Operator::Eq(v) => out.push((field.path[0].clone(), v.clone())),
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
     /// 从 JSON 值解析 filter。
     ///
     /// 顶层必须为对象或空(`Null` 视作匹配全部);省略时由调用方传入 `Filter::match_all()`。

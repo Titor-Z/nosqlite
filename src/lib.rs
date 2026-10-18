@@ -20,5 +20,5 @@ pub mod document;
 pub mod engine;
 pub mod query;
 
-pub use database::{Database, DatabaseError};
+pub use database::{Database, DatabaseError, UpsertResult};
 pub use document::{Document, DocumentError};

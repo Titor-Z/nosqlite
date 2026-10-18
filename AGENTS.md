@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.1.4 M15 完成 —— 更新操作符 `$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate`(数组支持 `$each/$position/$slice/$sort`)+ upsert(`update_or_insert`);+50 例共 **325 例全绿**。参见 [taolun #33](#33-v014-m15-设计更新操作符扩展--upsert) / [taolun #34](#34-v014-m15-执行更新操作符扩展--upsert) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.3 M14 完成 —— Date 类型:`{"$date": "ISO-8601"}` / 毫秒时间戳,按时间戳比较排序、时区偏移归一,存储仍是普通 JSON(`.nodb` 格式 v1 不变);+17 例共 **275 例全绿**。参见 [taolun #31](#31-v013-m14-设计date-类型优先级-2) / [taolun #32](#32-v013-m14-执行date-类型) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.2 M13 完成 —— 查询语义与 MongoDB 对齐 6 项:同层条件改 AND、数组字段的 `$eq`/`$in` 按元素展开、点号路径穿透数组、缺失字段匹配 `null`、字段级 `$not`;+23 例共 **258 例全绿**。**含 4 项破坏性变更**,详见 README「与 MongoDB 的差异」。参见 [taolun #29](#29-v012-m13-设计查询语义与-mongodb-对齐优先级-1) / [taolun #30](#30-v012-m13-执行查询语义与-mongodb-对齐) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.1 M12 完成(A 组) —— 批量 `update`/`delete` 单事务化(1000 条 7.69 s → **24.75 ms,310.7x**)、字段投影 `--fields`、`find_page_total()` 一次扫描给「总数+当页」、array/object 递归比较(可排序、`$eq` 精确);+41 例共 **235 例全绿**。参见 [taolun #27](#27-v011-m12-设计补齐能上-cms-的最小闭环a-组) / [taolun #28](#28-v011-m12-执行a-组四项落地批量单事务--projection--一次扫描--复合比较) / [项目进度-已完成](#已完成)。
@@ -516,6 +517,47 @@
 - 测试:新增 `tests/date.rs` **17 例**(ISO 解析含闰年/小数秒/时区/非法输入、字面量识别与误判、跨时区比较与相等、类型序、范围查询、`$in`/`$elemMatch`、排序体现时间序、端到端持久化);合计 **275 例全绿**,clippy 零警告。
 - 一处测试自身的错误(非代码缺陷):手算的毫秒常数写错(`1757988000000` 应为 `1789524000000`),已用 Python 核对修正。
 
+### 33. v0.1.4 M15 设计:更新操作符扩展 + upsert
+
+- 需求来源:CMS 里「阅读数 +1」「追加标签」「不存在则创建」是高频操作。现状只能读-改-写,既慢(两次 fsync)又有丢失更新风险。
+- 新增更新操作符(语义对齐 MongoDB):
+
+| 操作符 | 行为 |
+|---|---|
+| `$inc` | 数值原子增减;字段缺失视为 `0`;非数值报错 |
+| `$mul` | 数值乘法;字段缺失视为 `0`(MongoDB 行为) |
+| `$min` / `$max` | 字段缺失则直接写入;否则仅在更小/更大时更新 |
+| `$rename` | 字段改名,值必须是字符串路径;新路径走 `$set` 的赋值逻辑 |
+| `$push` | 数组追加元素;字段缺失自动建数组;非数组报错;支持 `$each`/`$position`/`$slice`/`$sort` |
+| `$addToSet` | 数组去重追加;字段缺失自动建数组;支持 `$each` |
+| `$currentDate` | 写入当前 UTC 时间(统一用 `{"$date": 毫秒}` 表示,复用 M14) |
+
+- upsert:新增 `Database::update_or_insert(collection, filter, update) -> UpsertResult`。
+  - 命中 → 正常更新(返回 `Updated(n)`);
+  - 未命中 → 用 filter 的**顶层等值字段**构造新文档,再应用 `update`(返回 `Inserted(id)`);
+  - filter 含操作符/逻辑组合时,这些条件**不能**作为初始值(无法反推),忽略它们并只取顶层隐式 `$eq`;
+  - `_id` 自动生成(除非 filter 里给了 `_id`)。
+- 不做的:`$pull`/`$pop`(删除类,可读-改-写;等真实需求)、数组过滤器 `$[]`/`$[id]`、`$each` 之外的复杂修饰符。
+- 纪律:`.nodb` 格式仍 v1;既有 275 例必须全绿。
+
+### 34. v0.1.4 M15 执行:更新操作符扩展 + upsert
+
+- **新操作符**(`query/update.rs`):`$inc`/`$mul`/`$min`/`$max`/`$rename`/`$push`/`$addToSet`/`$currentDate`;`Update` 结构体新增 8 组字段,`apply` 固定执行顺序 `$rename → $inc → $mul → $min → $max → $set → $unset → $push → $addToSet → $currentDate`。
+  - `$inc`/`$mul`:缺失按 0;存在但非数值**报错**(不静默覆盖);整数结果保持整数(`number_value` 用 `fract()==0` 判整)。
+  - `$min`/`$max`:缺失直接写入,否则按 `compare_values` 决定是否写(支持字符串与 Date)。
+  - `$rename`:取旧值 → 删旧键 → 按 `$set` 路径写新键;源不存在时无操作。
+  - `$push`:缺失自动建数组;支持 `$each`/`$position`/`$slice`/`$sort`(整体 1/-1 或字段对象);未知修饰符报错防拼写静默失效。
+  - `$addToSet`:按 `compare_values` 去重(对象用 M13 的递归比较,深度相等才算重复);支持 `$each`。
+  - `$currentDate`:写 `{"$date": 毫秒}`(复用 M14 的表示),时间在 apply 时实时取。
+  - 新增错误变体 `TypeMismatch`(操作符作用于错误类型)与 `InvalidModifier`(数组修饰符非法)。
+- **upsert**:`Database::update_or_insert` + `pub enum UpsertResult { Updated(usize), Inserted(String) }`。
+  - 先 `update`;若 `modified == 0` 再用 `count` 区分「命中但无变化 → `Updated(0)`」与「未命中 → 插入」。
+  - 未命中时用 `Filter::eq_fields()` 反推初始字段;filter 含操作符/逻辑组合时**明确报错**(不静默忽略),避免造出意料之外的文档。
+  - 新增 `Document::as_map_mut()`(供插入前应用 update)与 `Filter::eq_fields()`。
+- CLI:新增 `upsert <collection> <filter> <update>`,输出区分「更新成功 N 条」/「插入成功 _id」;`.help` 与顶层 `help` 补充新操作符说明与示例。
+- **修掉一个自己引入的缺陷**:`$inc` 初版用 `get_number(...).unwrap_or(0.0)`,字段非数值时被当作「缺失按 0」而**静默覆盖原值**;改为 `number_at` 返回 `Result<Option<f64>>`,非数值报 `TypeMismatch`(由测试 `inc_non_numeric_fails` 抓到)。
+- 测试:新增 `tests/update_operators.rs` **38 例** + `tests/upsert.rs` **11 例** + `tests/cli_shell.rs` 1 例;`tests/update_validation.rs` 的 `unknown_operator_rejected` 因 `$inc` 已支持而改用仍不支持的 `$pull`。合计 **325 例全绿**,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -548,6 +590,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M15(v0.1.4):更新操作符扩展(8 个)+ upsert;325 例全绿。
 - M14(v0.1.3):Date 类型 —— `{"$date": ...}` 按时间戳比较排序(时区归一),格式仍 v1;275 例全绿。
 - M13(v0.1.2):查询语义与 MongoDB 对齐 —— 同层 AND、数组等值/`$in` 展开、点号路径穿透数组、缺失匹配 null、字段级 `$not`;258 例全绿。
 - M12(v0.1.1):A 组四项 —— 批量 `update`/`delete` 单事务(310x)、字段投影、`find_page_total` 一次扫描、array/object 递归比较;235 例全绿。

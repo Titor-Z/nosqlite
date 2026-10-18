@@ -13,7 +13,8 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **单文件存储**:整个数据库就是 一个 `.nodb` 文件,复制即迁移、备份即拷贝;
 - **文档模型**:JSON 文档 + 自动主键 `_id`,集合隔离,无需建表;
 - **MongoDB 风格查询**:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch` + 字段级/顶层 `$not`,顶层 `$and/$or/$nor`;数组包含与点号路径穿透数组(语义见下方「与 MongoDB 的差异」);
-- **更新操作符**:`$set`(点号路径赋值,嵌套自动创建)、`$unset`(删除字段);
+- **更新操作符**:`$set`/`$unset`/`$inc`/`$mul`/`$min`/`$max`/`$rename`/`$push`/`$addToSet`/`$currentDate`(`$push`/`$addToSet` 支持 `$each`,另有 `$position`/`$slice`/`$sort`);
+- **upsert**:`update_or_insert` —— 命中则更新,未命中按 filter 等值字段新建;
 - **内存友好**:流式扫描与过滤,内存 O(命中数) 而非 O(集合大小);排序分页走两遍法(仅底层 `scan` 会全量物化,文档已警示仅限小集合)。
 - **主键直查**:按 `_id` 的读/改/删走 B+树直达,不经全表扫描;
 - **批量写入**:`insert_many` 单事务批量,一次提交摊薄落盘成本;
@@ -59,8 +60,8 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 ### 仍未支持
 
 - **检测/元操作符**:`$exists`、`$type`、`$size`、`$all`
-- **更新操作符**:仅 `$set`/`$unset`;无 `$inc`/`$push`/`$pull`/`$addToSet`/`$rename`/`$currentDate`
-- **upsert**:`update` 只更新已存在的文档
+- **更新操作符**:无 `$pull`/`$pop`/`$addToSet` 之外的复杂修饰符,无数组过滤器 `$[]`/`$[id]`
+- **upsert 的初始值**:仅能由 filter 的**顶层等值字段**反推;filter 含 `$gt` 等操作符时报错(不猜)
 - **聚合管道**:`aggregate` 整体未实现(`$match`/`$group`/`$lookup`/`$unwind`/`$facet`…)
 - **索引**:仅 `_id` 主键索引;无二级/复合/唯一/TTL 索引,所有非 `_id` 查询都是全表扫描
 - **事务**:仅单集合内的写事务;无跨集合/跨文档显式事务会话
@@ -89,6 +90,14 @@ for doc in db.find("users", &filter)? {
 // 按 _id 更新(主键直达,不经扫描)
 let update = nosqlite::query::Update::from_value(&json!({"$set": {"vip": true}}))?;
 db.update_by_id("users", &id, &update)?;
+
+// 计数自增 / 去重追加
+let inc = nosqlite::query::Update::from_value(&json!({"inc": {"views": 1}}))?;
+db.update_by_id("users", &id, &inc)?;
+
+// upsert:命中则更新,未命中按 filter 等值字段新建
+let filter = Filter::from_value(&json!({"email": "a@b.c"}))?;
+db.update_or_insert("users", &filter, &update)?;
 ```
 
 CLI:
@@ -127,7 +136,7 @@ nosqlite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
 ## 开发
 
 ```bash
-cargo test --all-targets     # 275 例测试
+cargo test --all-targets     # 325 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

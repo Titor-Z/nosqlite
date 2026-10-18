@@ -93,6 +93,11 @@ impl Document {
     pub fn as_map(&self) -> &Map<String, Value> {
         &self.inner
     }
+
+    /// 取文档内部对象的可变引用(供 upsert 在插入前应用更新操作)。
+    pub fn as_map_mut(&mut self) -> &mut Map<String, Value> {
+        &mut self.inner
+    }
 }
 
 impl Default for Document {

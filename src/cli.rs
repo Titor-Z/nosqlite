@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::database::Database;
 use crate::document::Document;
 use crate::query::{Filter, FindOptions, Projection, SortSpec, Update};
+use crate::database::UpsertResult;
 
 /// shell 内的一条命令(不带文件路径参数)。
 ///
@@ -50,6 +51,8 @@ pub enum ShellCommand {
     },
     /// 更新集合内满足 filter 的文档。
     Update(String, String, String),
+    /// 更新或插入(upsert):命中则更新,未命中则按 filter 等值字段新建。
+    Upsert(String, String, String),
     /// 删除集合内满足 filter 的文档。
     Delete(String, String),
     /// 统计集合内满足 filter 的文档条数。
@@ -202,12 +205,18 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
             filter.clone(),
             update.clone(),
         )),
+        [cmd, collection, filter, update] if cmd == "upsert" => Ok(ShellCommand::Upsert(
+            collection.clone(),
+            filter.clone(),
+            update.clone(),
+        )),
         // find <collection> [filter] [--sort json] [--skip n] [--limit n]
         [cmd, collection, rest @ ..] if cmd == "find" => parse_shell_find(collection, rest),
         [cmd]
             if cmd == "insert"
                 || cmd == "find"
                 || cmd == "update"
+                || cmd == "upsert"
                 || cmd == "delete"
                 || cmd == "count"
                 || cmd == "drop" =>
@@ -326,6 +335,9 @@ fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
         }),
         ShellCommand::Update(collection, filter, update) => {
             require_db(current, |db| exec_update(db, &collection, &filter, &update))
+        }
+        ShellCommand::Upsert(collection, filter, update) => {
+            require_db(current, |db| exec_upsert(db, &collection, &filter, &update))
         }
         ShellCommand::Delete(collection, filter) => {
             require_db(current, |db| exec_delete(db, &collection, &filter))
@@ -613,6 +625,50 @@ fn exec_update(db: &Database, collection: &str, filter_json: &str, update_json: 
     }
 }
 
+/// 在已打开的数据库上执行 upsert。
+fn exec_upsert(db: &Database, collection: &str, filter_json: &str, update_json: &str) -> ExitCode {
+    // 解析 filter
+    let filter = match parse_filter(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("filter 错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 解析 update
+    let update_value: Value = match serde_json::from_str(update_json) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("update JSON 解析失败: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let update = match Update::from_value(&update_value) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("update 错误: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 执行 upsert
+    match db.update_or_insert(collection, &filter, &update) {
+        Ok(UpsertResult::Updated(n)) => {
+            println!("更新成功: 集合 `{}` 共修改 {} 条文档", collection, n);
+            ExitCode::SUCCESS
+        }
+        Ok(UpsertResult::Inserted(id)) => {
+            println!("插入成功: 集合 `{}`, _id = {}", collection, id);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("upsert 失败: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// 在已打开的数据库上执行 delete。
 fn exec_delete(db: &Database, collection: &str, filter_json: &str) -> ExitCode {
     // 解析 filter
@@ -719,6 +775,9 @@ fn print_shell_help() {
         "  update <collection> <filter> <update> 更新匹配文档(单事务原子写回;{{\"_id\":…}} 走主键快速路径)"
     );
     println!(
+        "  upsert <collection> <filter> <update> 更新或插入(未命中则按 filter 等值字段新建)"
+    );
+    println!(
         "  delete <collection> <filter>          删除匹配文档(单事务原子删除;{{\"_id\":…}} 走主键快速路径)"
     );
     println!("  count <collection> [filter]           统计匹配条数");
@@ -736,6 +795,8 @@ fn print_shell_help() {
     println!("  find users '{{\"age\": {{\"$gte\": 18}}}}' --sort '{{\"age\": -1}}' --limit 10");
     println!("  find users '{{}}' --fields '{{\"name\": 1}}'   列表页只取需要的字段");
     println!("  update users '{{\"_id\":\"u1\"}}' '{{\"$set\":{{\"vip\":true}}}}'");
+    println!("  upsert users '{{\"email\":\"a@b.c\"}}' '{{\"$set\":{{\"vip\":true}}}}'");
+    println!("  update users '{{\"_id\":\"u1\"}}' '{{\"$inc\":{{\"views\":1}}}}'");
     println!("  delete users '{{\"age\": {{\"$lt\": 18}}}}'");
 }
 
@@ -760,8 +821,9 @@ fn print_help() {
     );
     println!("  - 顶层逻辑:$and/$or/$nor/$not;字段支持点号路径(a.b.c)");
     println!(
-        "  - update 操作符:$set(点号路径赋值)/$unset(点号路径删除,数组元素置 null);主键 _id 不可修改或删除"
+        "  - update 操作符:$set/$unset/$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate;主键 _id 不可修改"
     );
+    println!("    $push/$addToSet 支持 $each(以及 $push 的 $position/$slice/$sort)");
     println!("  - 日期:写成 {{\"$date\": \"2026-09-16T10:00:00Z\"}} 或 {{\"$date\": 毫秒时间戳}},");
     println!("    按时间戳比较与排序(时区偏移自动归一),存储仍是普通 JSON");
 }

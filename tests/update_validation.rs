@@ -62,11 +62,13 @@ fn empty_update_object_rejected() {
 }
 
 /// 只有未知操作符的更新被拒绝。
+///
+/// 注:`$inc`/`$push` 等已在 v0.1.4 支持,这里改用仍未实现的 `$pull`。
 #[test]
 fn unknown_operator_rejected() {
-    let err = try_update(r#"{"$inc":{"age":1}}"#).expect_err("未知操作符应被拒绝");
+    let err = try_update(r#"{"$pull":{"tags":"x"}}"#).expect_err("未知操作符应被拒绝");
     assert!(
-        matches!(err, UpdateError::InvalidUpdate(ref m) if m.contains("$inc")),
+        matches!(err, UpdateError::InvalidUpdate(ref m) if m.contains("$pull")),
         "应报不支持的操作符并回显操作符名,实际: {:?}",
         err
     );

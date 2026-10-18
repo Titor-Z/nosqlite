@@ -93,6 +93,15 @@ impl From<SortError> for DatabaseError {
     }
 }
 
+/// upsert 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpsertResult {
+    /// 命中了已有文档并更新,返回实际修改条数。
+    Updated(usize),
+    /// 未命中,已按 filter 的等值字段新建文档,返回新文档主键。
+    Inserted(String),
+}
+
 impl Database {
     /// 创建新的 `.nodb` 数据库文件(目标文件必须不存在)。
     pub fn create(path: &Path) -> Result<Self, DatabaseError> {
@@ -426,6 +435,60 @@ impl Database {
     /// **O(log n) 直接定位**,不经全表扫描;主键不存在返回 `false`。
     pub fn delete_by_id(&self, collection: &str, doc_id: &str) -> Result<bool, DatabaseError> {
         self.engine.delete(collection, doc_id).map_err(Into::into)
+    }
+
+    /// 更新或插入(**upsert**,v0.1.4 新增)。
+    ///
+    /// 语义对齐 MongoDB `updateOne(filter, update, {upsert: true})`:
+    ///
+    /// - **命中**(至少一条满足 filter)→ 与 [`Database::update`](Self::update) 完全一致,
+    ///   返回 [`UpsertResult::Updated`](UpsertResult::Updated)(可能为 0,表示内容无变化);
+    /// - **未命中** → 用 filter 的**顶层等值字段**构造新文档,再应用 `update`,
+    ///   返回 [`UpsertResult::Inserted`](UpsertResult::Inserted)(新主键)。
+    ///
+    /// 说明:
+    /// - filter 里含操作符(`$gt` 等)或逻辑组合(`$or` 等)时,这些条件**无法**反推成
+    ///   初始值,只取顶层的隐式等值字段(如 `{"name": "x", "age": {"$gt": 1}}` →
+    ///   新文档只带 `name`)。
+    /// - `_id` 缺省时自动生成;filter 里给了 `_id` 则沿用。
+    /// - 写操作为单事务,失败不会留下半成品。
+    pub fn update_or_insert(
+        &self,
+        collection: &str,
+        filter: &Filter,
+        update: &Update,
+    ) -> Result<UpsertResult, DatabaseError> {
+        // 1. 先尝试更新;命中则直接返回
+        let modified = self.update(collection, filter, update)?;
+        if modified > 0 {
+            return Ok(UpsertResult::Updated(modified));
+        }
+        // 「命中但无变化」也要判定为 Updated:用 count 区分「没命中」与「命中未改」
+        if self.count(collection, filter)? > 0 {
+            return Ok(UpsertResult::Updated(0));
+        }
+
+        // 2. 未命中:用 filter 的等值字段构造初始文档
+        let eq_fields = filter.eq_fields().ok_or_else(|| {
+            DatabaseError::Update(UpdateError::InvalidUpdate(
+                "upsert 要求 filter 的顶层字段全部是等值条件,才能反推新文档的初始值".to_string(),
+            ))
+        })?;
+        let mut map = Map::new();
+        for (key, value) in eq_fields {
+            map.insert(key, value);
+        }
+        let mut doc = Document::new();
+        for (k, v) in map {
+            doc.insert(k, v);
+        }
+
+        // 3. 应用 update(可能再次失败,如对缺失字段做非法操作)
+        update.apply(doc.as_map_mut())?;
+
+        // 4. 插入
+        let id = self.insert(collection, &mut doc)?;
+        Ok(UpsertResult::Inserted(id))
     }
 
     /// 单事务批量插入(M11 新增),返回全部文档的主键列表(与入参顺序一致)。

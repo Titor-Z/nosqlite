@@ -149,6 +149,21 @@ fn shell_parse_update() {
     );
 }
 
+/// upsert <collection> <filter> <update>。
+#[test]
+fn shell_parse_upsert() {
+    assert_eq!(
+        parse_line(r#"upsert users {"email":"a@b.c"} {"$set":{"vip":true}}"#).unwrap(),
+        ShellCommand::Upsert(
+            "users".to_string(),
+            r#"{"email":"a@b.c"}"#.to_string(),
+            r#"{"$set":{"vip":true}}"#.to_string(),
+        )
+    );
+    // 缺参数报错
+    assert!(parse_line("upsert users {}").is_err());
+}
+
 /// delete <collection> <filter>。
 #[test]
 fn shell_parse_delete() {
