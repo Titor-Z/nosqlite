@@ -54,8 +54,8 @@ fn doc_form_object_array() {
 
 /// 文档形态:元素内嵌套路径与逻辑组合。
 ///
-/// 注:本引擎同层字段条件与 `$or` 为 OR 关系(见 `combine_conditions` 文档),
-/// 要表达 AND 需显式 `$and`。
+/// v0.1.2 起同层字段条件与 `$or` 为 AND 关系(与 MongoDB 一致),
+/// 这里显式写 `$and` 依然等价,仅作回归保留。
 #[test]
 fn doc_form_nested_and_logic() {
     let filter = f(json!({"users": {"$elemMatch": {"$and": [

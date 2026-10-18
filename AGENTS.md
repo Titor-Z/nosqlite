@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.1.2 M13 完成 —— 查询语义与 MongoDB 对齐 6 项:同层条件改 AND、数组字段的 `$eq`/`$in` 按元素展开、点号路径穿透数组、缺失字段匹配 `null`、字段级 `$not`;+23 例共 **258 例全绿**。**含 4 项破坏性变更**,详见 README「与 MongoDB 的差异」。参见 [taolun #29](#29-v012-m13-设计查询语义与-mongodb-对齐优先级-1) / [taolun #30](#30-v012-m13-执行查询语义与-mongodb-对齐) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.1 M12 完成(A 组) —— 批量 `update`/`delete` 单事务化(1000 条 7.69 s → **24.75 ms,310.7x**)、字段投影 `--fields`、`find_page_total()` 一次扫描给「总数+当页」、array/object 递归比较(可排序、`$eq` 精确);+41 例共 **235 例全绿**。参见 [taolun #27](#27-v011-m12-设计补齐能上-cms-的最小闭环a-组) / [taolun #28](#28-v011-m12-执行a-组四项落地批量单事务--projection--一次扫描--复合比较) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M10 完成 —— `$elemMatch`(操作符/文档双形态)+ `$unset`(对象删除/数组置 null/路径缺失无操作);+15 例测试共 **194 例全绿**;顺带在 CLI 暴露 M11 能力(find --sort 走 find_page、insert 数组批量)。参见 [taolun #26](#26-20260916-m10-执行elemmatch--unset) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M11 完成 —— 内存优先改造：`find/count/update/delete` 流式化（内存从 O(集合) 降到 O(命中数)/O(1)）；新增 `find_page` 两遍法（500k 档 RSS 819 MiB → **30.2 MiB**，27x）、`get/update/delete_by_id` 主键寻址（2.6 s → **20.7 ms**，Linux 0.82 ms）、`insert_many` 单事务（**4.4 万条/秒** macOS、29.9 万 Linux）；+28 例测试共 179 例全绿；首次建立跨平台基准（macOS 被 `F_FULLFSYNC` 放大 **66x**）与 GitHub Actions CI。参见 [taolun #25](#25-20260916-m11-执行流式化--主键寻址--跨平台基准) / [项目进度-已完成](#已完成)。
@@ -416,7 +417,7 @@
 - **`$unset`**(update.rs):`Update` 增 `unset_fields`;语义对齐 MongoDB —— 对象字段直接移除;数组元素置 `null`(占位保留);路径不存在/中间为标量 → 静默无操作;下标格式非法 → 报错(与 `$set` 一致,防拼写错误静默生效);`_id` 不可删除;`$set`/`$unset` 同时出现先赋值后删除(同一路径以删除生效);两者均空/缺失时报错(不静默当作无操作)。
 - 测试:+15 例(`tests/elem_match.rs` 8、`tests/unset.rs` 7),合计 **194 例全绿**,clippy 零警告。
 - CLI:`.help`/`help` 补充两个操作符的说明与示例。
-- **发现既有语义细节**(非缺陷,已文档化):同层的字段条件与 `$or` 分支是 **OR 关系**(`combine_conditions`:字段条件 AND 层整体与 `$or` 各项做 OR)。要表达「字段 AND $or」须显式 `$and`。这与 MongoDB 顶层语义不同,发布文档需写明。
+- **发现既有语义细节**(**已于 v0.1.2 修正,见 taolun #29/#30**):同层的字段条件与 `$or` 分支曾是 **OR 关系**(`combine_conditions`:字段条件 AND 层整体与 `$or` 各项做 OR),与 MongoDB 的 AND 不符。v0.1.2 已改为 AND。
 ### 27. v0.1.1 M12 设计:补齐「能上 CMS」的最小闭环(A 组)
 
 - 背景:v0.1.0 发布后按「能否上 CMS」重新审代码,结论是有四块短板必须先修 —— 都属于「CMS 一跑就必然撞上」,且都不改变 `.nodb` 格式 v1。
@@ -447,6 +448,48 @@
 - CLI 同步:`find` 新增 `--fields <json>`、输出改为「匹配总数 + 本页条数」;`.help` 更新。
 - 测试:新增 4 个模块共 **41 例** —— `tests/update_many_batch.rs` 8、`tests/projection.rs` 13、`tests/page_total.rs` 6、`tests/compare_composite.rs` 12,`tests/cli_shell.rs` +2(`--fields`)。合计 **235 例全绿**,`clippy --all-targets -D warnings` 零警告。
 - 冒烟:CLI 全链路(`.open` → insert ×2 → find `--fields` → 批量 update → count → delete → count → `.collect`)输出正确。
+
+### 29. v0.1.2 M13 设计:查询语义与 MongoDB 对齐(优先级 1)
+
+- 背景:v0.1.1 后逐项对照 MongoDB,发现 6 处**语义不一致**(不是缺功能,是同一句 JSON 两边结果不同)。这类问题会让迁移方**静默错数据**,优先级高于任何新功能。
+- 逐项决策:
+
+| # | 现状 | MongoDB | 决策 |
+|---|---|---|---|
+| 1 | 同层字段条件与 `$or` 是 **OR** | **AND** | 改为 AND(破坏性变更,changelog 必须写明) |
+| 2 | `$in` 不展开数组字段 | 数组字段「任一元素命中任一候选」 | `$in` 按数组元素展开 |
+| 3 | 隐式 `$eq` 对数组只做整体相等 | 标量可匹配「数组包含该标量」 | `$eq` 展开数组元素 |
+| 4 | 点号路径遇数组返回 `None` | `a.b` 遍历 `a` 数组每个元素的 `b` | `resolve_path` 改为 `resolve_paths` 返回多值 |
+| 5 | 缺失字段不匹配 `null` | 缺失匹配 `null` | `$eq: null` 匹配缺失;`$ne: null` 不匹配缺失 |
+| 6 | `$not` 只能顶层 | 字段级 `{"a": {"$not": {...}}}` 合法 | `Operator::Not` 支持字段级 |
+
+- 实现要点:
+  - 字段匹配从「单值 × 全部操作符」改为「**值列表 × 每个操作符**」:`resolve_paths` 返回 `Vec<&Value>`(穿透数组),每个操作符在值列表上求值。非数组路径最多 1 个值,行为与原实现一致。
+  - 相等关系抽出 `value_matches(actual, expected)`:**先比整体,再递归展开 actual 的数组元素**。`$eq`/`$ne`/`$in`/`$nin` 统一走它,因此数组语义自然一致。
+  - `$ne`/`$nin` 定义为 `$eq`/`$in` 的**逻辑取反** —— 这同时修好了 `$ne: null` 对缺失字段的处理。
+  - `$gt/$gte/$lt/$lte`/`$regex` 为「值列表中任一值满足」(MongoDB 行为:多个元素可分别满足不同操作符)。
+  - `$elemMatch` 的操作符形态改走同一条 `matches_values` 路径。
+- 破坏性变更清单(需写入 README 差异表与 changelog):
+  1. `{"a": 1, "$or": [...]}` 由 OR 变 AND;
+  2. 数组字段上的标量等值/`$in` 现在会命中(以前不命中);
+  3. 缺失字段现在匹配 `{"a": null}`;
+  4. 点号路径现在穿透数组(以前返回空)。
+- 验收:现有 235 例必须全绿(若有用例固化了旧语义,按 MongoDB 语义修正并注明);新增 `tests/mongo_parity.rs` 覆盖 6 项;`clippy -D warnings` 零警告。
+
+### 30. v0.1.2 M13 执行:查询语义与 MongoDB 对齐
+
+- **#1 同层条件改 AND**:`combine_conditions` 重写 —— 字段条件、`$and`、`$or`、`$nor`、`$not` 一律按 AND 汇总;`$or` 只在其子条件之间做 OR。旧实现是 `OR(AND层, $or各项)`,与 MongoDB 相反。
+- **#2/#3 数组语义**:新增 `value_matches(actual, expected)` —— 先比整体,不等时**递归展开 `actual` 的数组元素**再比。`$eq`/`$ne`/`$in`/`$nin` 全部走它,因此「数组包含某标量」与「嵌套数组」自然一致。`$ne`/`$nin` 定义为 `$eq`/`$in` 的**逻辑取反**(顺带修好 #5)。
+- **#4 点号路径穿透数组**:`resolve_path`(返回 `Option<&Value>`)替换为 `resolve_paths` + `resolve_segments`,返回 `Vec<&Value>`;路径遇数组时对每个元素继续解析。字段匹配从「单值 × 全部操作符」改为「**值列表 × 每个操作符**」(`Operator::matches_values`)。
+- **#5 缺失匹配 null**:`values_match` 在候选值列表为空(字段缺失)时,仅当期望值为 `null` 才判等。
+- **#6 字段级 `$not`**:新增 `Operator::Not(Box<Condition>)` 与 `Condition::matches_field`(在已解析候选值上求值,路径为空表示「当前值」)。只接受操作符对象;空对象或含逻辑操作符时明确报错。
+- **兼容性**:非数组路径的候选值列表恒为 1 个元素,故标量字段的全部既有行为不变 —— 现有 235 例**无一需要修改**(唯一改动是 `tests/elem_match.rs` 里过时的注释)。
+- 测试:新增 `tests/mongo_parity.rs` **23 例**,逐条覆盖 6 项语义;合计 **258 例全绿**,`clippy --all-targets -D warnings` 零警告。
+- 破坏性变更(已写入 README「与 MongoDB 的差异」):
+  1. `{"a": 1, "$or": [...]}` 由 OR 变 AND;
+  2. 数组字段上的标量等值 / `$in` 现在会命中(以前不命中);
+  3. 缺失字段现在匹配 `{"a": null}`;
+  4. 点号路径现在穿透数组(以前返回空)。
 
 ## Agents
 
@@ -480,6 +523,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M13(v0.1.2):查询语义与 MongoDB 对齐 —— 同层 AND、数组等值/`$in` 展开、点号路径穿透数组、缺失匹配 null、字段级 `$not`;258 例全绿。
 - M12(v0.1.1):A 组四项 —— 批量 `update`/`delete` 单事务(310x)、字段投影、`find_page_total` 一次扫描、array/object 递归比较;235 例全绿。
 - M10:`$elemMatch`(操作符/文档双形态)+ `$unset`(对齐 MongoDB,数组置 null),+15 例共 194 例全绿;CLI 同步 M11 能力(`find --sort` → `find_page`、`insert` 数组 → `insert_many`)。
 - M11:内存优先改造 —— `find/count/update/delete` 流式化;`find_page` 两遍法;`get/update/delete_by_id` 主键寻址 + `{"_id":等值}` 自动快速路径;`insert_many` 单事务批量;`Storage` trait 增 `for_each/get/insert_many`;179 例全绿;跨平台基准确认 macOS `F_FULLFSYNC` 放大 66x;GitHub Actions CI 建立。

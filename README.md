@@ -12,7 +12,7 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 
 - **单文件存储**:整个数据库就是 一个 `.nodb` 文件,复制即迁移、备份即拷贝;
 - **文档模型**:JSON 文档 + 自动主键 `_id`,集合隔离,无需建表;
-- **MongoDB 风格查询**:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch`,顶层 `$and/$or/$nor/$not`,点号路径(`a.b.c`);
+- **MongoDB 风格查询**:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch` + 字段级/顶层 `$not`,顶层 `$and/$or/$nor`;数组包含与点号路径穿透数组(语义见下方「与 MongoDB 的差异」);
 - **更新操作符**:`$set`(点号路径赋值,嵌套自动创建)、`$unset`(删除字段);
 - **内存友好**:流式扫描与过滤,内存 O(命中数) 而非 O(集合大小);排序分页走两遍法(仅底层 `scan` 会全量物化,文档已警示仅限小集合)。
 - **主键直查**:按 `_id` 的读/改/删走 B+树直达,不经全表扫描;
@@ -36,6 +36,35 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **需要丰富的类型系统**:文档值即 JSON 值(比较遵循 BSON 风格类型序)。
 
 适合的:小工具、CLI、原型、桌面应用、单机 CMS/后台 —— 一个文件解决存储,不想要数据库服务器。
+
+## 与 MongoDB 的差异
+
+查询语义与更新操作符**以 MongoDB 为准**。v0.1.2 修正了 6 处曾经的语义偏差;仍存在下列差异,迁移前请扫一眼:
+
+### 已与 MongoDB 对齐(v0.1.2)
+
+| 语义 | 说明 |
+|---|---|
+| 同层条件 AND | `{"status":"ok","$or":[...]}` 中字段条件与 `$or` 是 **AND**(旧版误为 OR) |
+| 数组包含 | `{"tags":"rust"}` 可命中 `{"tags":["rust","db"]}` |
+| `$in` 展开 | `{"tags":{"$in":["rust"]}}` 命中任何含 `rust` 的数组字段 |
+| 点号穿透数组 | `{"items.name":"x"}` 会遍历 `items` 数组元素的 `name` |
+| 缺失 = null | `{"deleted_at":null}` 匹配**字段缺失**的文档;`{"$ne":null}` 不匹配 |
+| 字段级 `$not` | `{"age":{"$not":{"$gt":18}}}` |
+
+> ⚠️ **升级提示**:前四条是破坏性变更 —— v0.1.1 及更早版本上,`$or` 与字段条件为 OR 关系、数组字段的标量等值不命中、点号路径不穿透数组。若你在旧版上依赖这些行为,升级后查询结果会变化。
+
+### 仍未支持
+
+- **检测/元操作符**:`$exists`、`$type`、`$size`、`$all`
+- **更新操作符**:仅 `$set`/`$unset`;无 `$inc`/`$push`/`$pull`/`$addToSet`/`$rename`/`$currentDate`
+- **upsert**:`update` 只更新已存在的文档
+- **聚合管道**:`aggregate` 整体未实现(`$match`/`$group`/`$lookup`/`$unwind`/`$facet`…)
+- **索引**:仅 `_id` 主键索引;无二级/复合/唯一/TTL 索引,所有非 `_id` 查询都是全表扫描
+- **事务**:仅单集合内的写事务;无跨集合/跨文档显式事务会话
+- **类型系统**:文档值即 JSON(无 `Date`/`ObjectId`/`Binary`/`Decimal128`;`_id` 是 24 位十六进制字符串)
+- **Server / 协议**:无 MongoDB wire 协议,官方 driver 与 `mongosh` 无法直连
+- **其他**:`distinct`、`explain`、change stream、schema validation、`$regex` 的 `$options`
 
 ## 快速上手
 
@@ -96,7 +125,7 @@ nosqlite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
 ## 开发
 
 ```bash
-cargo test --all-targets     # 235 例测试
+cargo test --all-targets     # 258 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```
