@@ -695,6 +695,57 @@ func TestDescendingIndexOverWire(t *testing.T) {
 	}
 }
 
+// 新过滤操作符经 wire 层验证(M28)。
+func TestNewFilterOperatorsOverWire(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("newops")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	docs := []interface{}{
+		bson.M{"tag": "missing"},
+		bson.M{"tag": "nullval", "a": nil},
+		bson.M{"tag": "zero", "a": 0},
+		bson.M{"tag": "arr", "a": []string{"x", "y"}},
+		bson.M{"tag": "arr1", "a": []string{"x"}},
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	count := func(filter bson.M) int64 {
+		n, err := coll.CountDocuments(ctx, filter)
+		if err != nil {
+			t.Fatalf("count(%v) 失败: %v", filter, err)
+		}
+		return n
+	}
+
+	// $exists:true 命中 null/0/数组,但不命中缺失
+	if got := count(bson.M{"a": bson.M{"$exists": true}}); got != 4 {
+		t.Fatalf("$exists:true 应为 4,实际 %d", got)
+	}
+	// $exists:false 只命中缺失
+	if got := count(bson.M{"a": bson.M{"$exists": false}}); got != 1 {
+		t.Fatalf("$exists:false 应为 1,实际 %d", got)
+	}
+	// $type:string 命中数组元素(点号穿透) + 无
+	if got := count(bson.M{"a": bson.M{"$type": "array"}}); got != 2 {
+		t.Fatalf("$type:array 应为 2,实际 %d", got)
+	}
+	// $all
+	if got := count(bson.M{"a": bson.M{"$all": []string{"x", "y"}}}); got != 1 {
+		t.Fatalf("$all:[x,y] 应为 1,实际 %d", got)
+	}
+	// $size
+	if got := count(bson.M{"a": bson.M{"$size": 1}}); got != 1 {
+		t.Fatalf("$size:1 应为 1,实际 %d", got)
+	}
+}
+
 // keyDirection 从索引规格文档里取某字段的索引方向(兼容 bson.M / bson.D)。
 func keyDirection(v interface{}, field string) int64 {
 	switch doc := v.(type) {

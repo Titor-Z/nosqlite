@@ -5,7 +5,7 @@
 //! - 顶层为 JSON 对象;每个字段的值若是普通 Value 则视为隐式 `$eq`;
 //! - 值若是对象且键以 `$` 开头,则视为操作符对象,同一字段多个操作符按 AND 组合;
 //! - 操作符子集:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex`(M10 新增 `$elemMatch`,
-//!   v0.1.2 新增字段级 `$not`);
+//!   v0.1.2 新增字段级 `$not`,v0.6.0 新增 `$exists/$type/$all/$size`);
 //! - 支持点号路径(如 `a.b.c`),**路径遇数组会遍历其元素的同名子字段**;
 //! - 顶层支持 `$and/$or/$nor/$not` 逻辑组合,语义与 MongoDB 一致:
 //!   **同层字段条件与 `$or` 是 AND 关系**(v0.1.2 修正,旧版误为 OR);
@@ -16,7 +16,9 @@ use std::cmp::Ordering;
 
 use serde_json::{Map, Value};
 
-use super::compare::{as_date, as_number_double, as_number_long, as_oid, compare_values};
+use super::compare::{
+    as_date, as_number_double, as_number_long, as_oid, as_timestamp, compare_values,
+};
 
 /// 查询条件错误。
 #[derive(Debug)]
@@ -42,7 +44,7 @@ impl std::fmt::Display for FilterError {
 impl std::error::Error for FilterError {}
 
 /// 单个字段的查询条件。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldCondition {
     /// 字段点号路径(如 `["a","b","c"]` 表示 `a.b.c`)。
     path: Vec<String>,
@@ -51,7 +53,7 @@ pub struct FieldCondition {
 }
 
 /// 逻辑条件节点。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Condition {
     /// 匹配所有文档(空 filter)。
     MatchAll,
@@ -68,7 +70,7 @@ pub enum Condition {
 }
 
 /// 查询操作符。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Operator {
     /// 等于。
     Eq(Value),
@@ -92,10 +94,114 @@ pub enum Operator {
     ElemMatch(Box<ElemMatchSpec>),
     /// `$not`:字段条件取反(v0.1.2 新增,用于字段级 `{"a": {"$not": {...}}}`)。
     Not(Box<Condition>),
+    /// `$exists`:字段是否存在(v0.6.0 新增)。
+    ///
+    /// 只判断「路径能否解析出值」,与 `$eq: null` 语义不同 ——
+    /// 字段显式为 `null` 时 `$exists: true` 成立,而**字段缺失**时 `$exists: false` 成立。
+    Exists(bool),
+    /// `$type`:字段的 BSON 类型是否属于给定集合(v0.6.0 新增)。
+    Type(Vec<TypeName>),
+    /// `$all`:数组字段须**同时包含**全部元素(v0.6.0 新增)。
+    All(Vec<Value>),
+    /// `$size`:数组长度必须**恰好**等于该值(v0.6.0 新增)。
+    Size(usize),
+}
+
+/// `$type` 认可的类型名(对齐 MongoDB 的别名)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeName {
+    /// `double` / `number`
+    Double,
+    /// `string`
+    String,
+    /// `object`
+    Object,
+    /// `array`
+    Array,
+    /// `objectId`
+    ObjectId,
+    /// `bool`
+    Bool,
+    /// `date`
+    Date,
+    /// `null`
+    Null,
+    /// `int` / `number`
+    Int,
+    /// `long` / `number`
+    Long,
+    /// `minKey`
+    MinKey,
+    /// `maxKey`
+    MaxKey,
+    /// `timestamp`
+    Timestamp,
+    /// `regex`
+    Regex,
+}
+
+impl TypeName {
+    /// 解析 `$type` 的字符串写法(不区分大小写,接受 MongoDB 常用别名)。
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "double" => TypeName::Double,
+            "string" => TypeName::String,
+            "object" => TypeName::Object,
+            "array" => TypeName::Array,
+            "objectid" => TypeName::ObjectId,
+            "bool" | "boolean" => TypeName::Bool,
+            "date" => TypeName::Date,
+            "null" => TypeName::Null,
+            "int" => TypeName::Int,
+            "long" => TypeName::Long,
+            "minkey" => TypeName::MinKey,
+            "maxkey" => TypeName::MaxKey,
+            "timestamp" => TypeName::Timestamp,
+            "regex" | "regexp" => TypeName::Regex,
+            // `number` 是 MongoDB 的聚合别名:int/long/double 都算
+            "number" => TypeName::Double,
+            _ => return None,
+        })
+    }
+
+    /// 判断一个 JSON 值是否属于该类型。
+    fn matches_value(self, v: &Value) -> bool {
+        // `number` 别名需要额外接受整数,单独处理
+        match self {
+            TypeName::Double => match v {
+                Value::Number(_) => true,
+                Value::Object(m) => is_number_literal(m),
+                _ => false,
+            },
+            TypeName::Int | TypeName::Long => match v {
+                Value::Number(n) => n.as_i64().is_some(),
+                Value::Object(m) => is_number_literal(m),
+                _ => false,
+            },
+            TypeName::String => v.is_string(),
+            TypeName::Object => v
+                .as_object()
+                .is_some_and(|m| !is_extended_json_literal(v) || m.contains_key("$date")),
+            TypeName::Array => v.is_array(),
+            TypeName::Bool => v.is_boolean(),
+            TypeName::Null => v.is_null(),
+            TypeName::ObjectId => as_oid(v).is_some() || v.as_str().is_some_and(|s| s.len() == 24),
+            TypeName::Date => as_date(v).is_some(),
+            TypeName::MinKey => v.get("$minKey").is_some(),
+            TypeName::MaxKey => v.get("$maxKey").is_some(),
+            TypeName::Timestamp => as_timestamp(v).is_some(),
+            TypeName::Regex => false, // 存储层不保留正则字面量
+        }
+    }
+}
+
+/// 判断扩展 JSON 的数字字面量(`$numberLong` / `$numberDouble` / `$numberInt`)。
+fn is_number_literal(m: &Map<String, Value>) -> bool {
+    m.contains_key("$numberLong") || m.contains_key("$numberDouble") || m.contains_key("$numberInt")
 }
 
 /// `$elemMatch` 的两种内部条件形态。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ElemMatchSpec {
     /// 操作符形态(如 `{"$gte": 10, "$lt": 20}`):对每个元素直接应用操作符,
     /// 适用于标量数组,也可用于对象数组的整体比较(如 `$eq` 整个对象)。
@@ -184,7 +290,7 @@ impl Filter {
 
 impl Condition {
     /// 判断文档是否满足本条件节点。
-    fn matches(&self, doc: &Map<String, Value>) -> bool {
+    pub fn matches(&self, doc: &Map<String, Value>) -> bool {
         match self {
             Condition::MatchAll => true,
             Condition::Field(field) => {
@@ -267,8 +373,35 @@ impl Operator {
             ),
             // $not:字段级取反(对整组候选值取反)
             Operator::Not(cond) => !cond.matches_field(values),
+            // $exists:候选值非空即存在(字段缺失 → 列表为空)
+            Operator::Exists(want) => values.is_empty() != *want,
+            // $type:任一候选值的类型命中即可;字段缺失时不匹配任何类型
+            Operator::Type(names) => values
+                .iter()
+                .any(|v| names.iter().any(|t| t.matches_value(v))),
+            // $all:数组须同时包含全部元素
+            Operator::All(required) => values_match_all(values, required),
+            // $size:数组长度恰好相等
+            Operator::Size(n) => values
+                .iter()
+                .any(|v| matches!(v, Value::Array(arr) if arr.len() == *n)),
         }
     }
+}
+
+/// `$all` 的判定:数组字段须**同时包含**全部元素。
+///
+/// - 字段值是数组:每个期望值都要能在数组里找到(元素级递归,支持嵌套数组);
+/// - 字段值是标量:期望值须全部等于该标量(MongoDB 的退化语义);
+/// - **期望列表为空时不匹配任何文档**(MongoDB 语义)。
+fn values_match_all(values: &[&Value], required: &[Value]) -> bool {
+    if required.is_empty() {
+        return false;
+    }
+    values.iter().any(|actual| match actual {
+        Value::Array(_) => required.iter().all(|want| value_matches(actual, want)),
+        other => required.iter().all(|want| value_matches(other, want)),
+    })
 }
 
 /// 判断 `$elemMatch` 的单个数组元素是否满足内部条件。
@@ -301,6 +434,16 @@ impl Condition {
                 false
             }
         }
+    }
+}
+
+impl Condition {
+    /// 把「字段名 → 条件」的对象解析成一条完整条件(v0.6.0,供投影 `$elemMatch` 复用)。
+    ///
+    /// 与顶层 filter 的解析规则完全一致:值若是含 `$` 键的对象则按操作符解释,
+    /// 否则视为隐式 `$eq`;支持逻辑组合。
+    pub fn from_field_object(map: &Map<String, Value>) -> Result<Self, FilterError> {
+        parse_condition_object(map)
     }
 }
 
@@ -446,6 +589,63 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
                     .as_array()
                     .ok_or_else(|| FilterError::InvalidOperator("$nin 需要一个数组".to_string()))?;
                 Operator::Nin(arr.clone())
+            }
+            "$exists" => {
+                let b = value.as_bool().ok_or_else(|| {
+                    FilterError::InvalidOperator("$exists 需要 true 或 false".to_string())
+                })?;
+                Operator::Exists(b)
+            }
+            "$type" => {
+                // 接受单个类型名或类型名数组
+                let names: Vec<&str> = match value {
+                    Value::String(s) => vec![s.as_str()],
+                    Value::Array(arr) => arr
+                        .iter()
+                        .map(|v| {
+                            v.as_str().ok_or_else(|| {
+                                FilterError::InvalidOperator(
+                                    "$type 数组元素必须是字符串".to_string(),
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    _ => {
+                        return Err(FilterError::InvalidOperator(
+                            "$type 需要字符串或字符串数组".to_string(),
+                        ));
+                    }
+                };
+                let mut parsed = Vec::with_capacity(names.len());
+                for n in names {
+                    let t = TypeName::parse(n).ok_or_else(|| {
+                        FilterError::InvalidOperator(format!("$type 不支持的类型: {}", n))
+                    })?;
+                    // "number" 别名展开成 int/long/double 三选一
+                    if n.eq_ignore_ascii_case("number") {
+                        parsed.push(TypeName::Double);
+                        parsed.push(TypeName::Int);
+                        parsed.push(TypeName::Long);
+                    } else {
+                        parsed.push(t);
+                    }
+                }
+                Operator::Type(parsed)
+            }
+            "$all" => {
+                let arr = value
+                    .as_array()
+                    .ok_or_else(|| FilterError::InvalidOperator("$all 需要一个数组".to_string()))?;
+                Operator::All(arr.clone())
+            }
+            "$size" => {
+                let n = value.as_i64().ok_or_else(|| {
+                    FilterError::InvalidOperator("$size 需要一个整数".to_string())
+                })?;
+                if n < 0 {
+                    return Err(FilterError::InvalidOperator("$size 不能为负数".to_string()));
+                }
+                Operator::Size(n as usize)
             }
             "$regex" => {
                 let pattern = value.as_str().ok_or_else(|| {

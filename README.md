@@ -12,7 +12,7 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 
 - **单文件存储**:整个数据库就是 一个 `.nodb` 文件,复制即迁移、备份即拷贝;
 - **文档模型**:JSON 文档 + 自动主键 `_id`,集合隔离,无需建表;
-- **MongoDB 风格查询**:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch` + 字段级/顶层 `$not`,顶层 `$and/$or/$nor`;数组包含与点号路径穿透数组(语义见下方「与 MongoDB 的差异」);
+- **MongoDB 风格查询**:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch/$exists/$type/$all/$size` + 字段级/顶层 `$not`,顶层 `$and/$or/$nor`;数组包含与点号路径穿透数组(语义见下方「与 MongoDB 的差异」);
 - **更新操作符**:`$set`/`$unset`/`$inc`/`$mul`/`$min`/`$max`/`$rename`/`$push`/`$addToSet`/`$currentDate`(`$push`/`$addToSet` 支持 `$each`,另有 `$position`/`$slice`/`$sort`);
 - **upsert**:`update_or_insert` —— 命中则更新,未命中按 filter 等值字段新建;
 - **二级索引**:`create_index(collection, name, field, unique, sparse)` —— 唯一/稀疏/multikey/嵌套路径,写入同事务维护;索引键用 **order-preserving 编码**,字节序即 BSON 值序;
@@ -73,11 +73,11 @@ nosqlite 有两个形态,共用同一套查询语义:
 
 ### 仍未支持
 
-- **检测/元操作符**:`$exists`、`$type`、`$size`、`$all`
-- **更新操作符**:无 `$pull`/`$pop`/`$addToSet` 之外的复杂修饰符,无数组过滤器 `$[]`/`$[id]`
+- **更新操作符**:无 `$pull`/`$pop`,无数组过滤器 `$[]`/`$[id]`
+- **投影**:有 `$slice`/`$elemMatch`,无位置运算符 `{"arr.$": 1}`
 - **upsert 的初始值**:仅能由 filter 的**顶层等值字段**反推;filter 含 `$gt` 等操作符时报错(不猜)
-- **聚合管道**:`aggregate` 整体未实现(`$match`/`$group`/`$lookup`/`$unwind`/`$facet`…)
-- **索引**:二级索引(唯一 / 稀疏 / multikey / 嵌套路径 / **复合索引**,遵循 MongoDB 前缀原则),写入时同事务维护,**查询自动选索引**(等值/范围/**降序**/`$or` 并集/多索引交集),`find_planned` 与 `explain` 可观测,wire 层 `createIndexes`/`listIndexes`/`dropIndexes` 齐备;尚无 TTL 索引
+- **聚合管道**:仅 `$match`/`$sort`/`$limit`/`$skip`/`$project`/`$group`/`$addFields`;无 `$unwind`/`$lookup`/`$facet`
+- **索引**:无 TTL 索引;规划器是纯规则的,无区分度估算
 - **事务**:仅单集合内的写事务;无跨集合/跨文档显式事务会话
 - **类型系统**:文档值即 JSON,**富类型用 MongoDB Extended JSON 表示** —— `{"$date": ...}`(按时间戳比较排序)、`{"$oid": ...}` ≡ 24 位 hex 字符串、`{"$numberLong": ...}`/`{"$numberDouble": ...}` ≡ 数字;存储仍是普通 JSON。无 `Binary`/`Decimal128`/`Timestamp`/`MinKey` 等剩余 BSON 类型
 - **Server / 协议**:无 MongoDB wire 协议,官方 driver 与 `mongosh` 无法直连
@@ -273,7 +273,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 466 例测试
+cargo test --all-targets     # 493 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.6.0 M28 完成 —— 第一档语义补齐:`$exists`/`$type`/`$all`/`$size` + 投影运算符 `$slice`/`$elemMatch`;**493 例全绿**。参见 [taolun #61](#61-v060-m28-设计第一档语义补齐existsallsize--投影运算符) / [taolun #62](#62-v060-m28-执行第一档语义补齐existsallsize--投影运算符) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.4 M27 完成 —— 降序索引(`directions` 随定义持久化,条目编码不变、仅扫描方向相反);修正 `sortedByIndex` 未比对方向导致**返回顺序错**的缺口;**466 例全绿**。参见 [taolun #59](#59-v054-m27-设计降序索引修正--1-被静默当升序) / [taolun #60](#60-v054-m27-执行降序索引) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.3 M26 完成 —— `$or` 走索引(并集)+ 多索引交集(AND 计划)+ wire 层 `createIndexes`/`listIndexes`/`dropIndexes` 真正落地(Go 驱动可建索引);`drop_collection` 补清索引;修掉计划构造的无限递归与复合索引被交集抢占两个缺陷;**457 例全绿**。参见 [taolun #57](#57-v053-m26-设计or-走索引--索引交集计划--wire-createindexes) / [taolun #58](#58-v053-m26-执行or-走索引--索引交集--wire-createindexes) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.2 M25 完成 —— 复合索引(前缀原则 + multikey 笛卡尔积)+ wire 层 `explain`;条目 key 全面改为「编码值在前、长度后缀在后」;**449 例全绿**。参见 [taolun #55](#55-v052-m25-设计复合索引--wire-层-explain) / [taolun #56](#56-v052-m25-执行复合索引--wire-层-explain) / [项目进度-已完成](#已完成)。
@@ -1057,6 +1058,47 @@
   - 合计 **466 例全绿**,Go **16 项**全通过,clippy 零警告。
 - 踩坑记录:Go 侧 `listIndexes` 的 `key` 嵌套类型同样是 `bson.M` / `bson.D` 二义,直接 `m["key"].(bson.M)` 会得到 `nil`;改为递归查找 + `toInt64` 兼容 int32/int64。**跨语言测试不要假设嵌套 BSON 的具体表示类型**(M26 已在 `stage` 上踩过一次,这是第二次)。
 
+### 61. v0.6.0 M28 设计:第一档语义补齐($exists/$type/$all/$size + 投影运算符)
+
+- 背景:功能盘点(taolun #61 前)确认骨架完整,剩下的是**语义缺口**。第一档四项是 CMS 绕不过去的:字段存在性判断、数组完整包含、数组长度、投影里的元素级选取。
+- **`$exists`**:`{f: {$exists: true|false}}`。语义:路径解析出**至少一个候选值**即「存在」;`false` 表示路径缺失。注意与 `$eq: null` 的区别——字段值为 `null` 时 `$exists: true` 成立而 `$eq: null` 也成立,但**字段缺失**时 `$exists: false` 成立、`$eq: null` 也成立(Mongo 的坑,需测试锁死)。
+- **`$type`**:`{f: {$type: "string"|"objectId"|"date"|...}}` 或 `{f: {$type: ["string","null"]}}`。类型名对齐 MongoDB 别名(`double/string/object/array/binData/objectId/bool/date/null/int/long/decimal/minKey/maxKey/timestamp/regex`)。**`$type: "number"` 接受 int/long/double**;`$type` 对**缺失字段**不匹配(任何类型都不匹配)。
+- **`$all`**:`{f: {$all: [v1, v2]}}`。语义:数组字段须**同时包含**全部元素(与 `$in` 的「任一」相反);若字段是标量则等价于「全部元素都等于该标量」;空数组 `$all: []` **不匹配任何文档**(MongoDB 语义)。
+- **`$size`**:`{f: {$size: n}}`。语义:字段值须是**恰好**长度为 `n` 的数组;非数组或长度不等均不匹配。`n` 必须是**非负整数**,否则解析期报错。
+- **投影运算符**(`src/query/projection.rs` 扩展,现有仅字段取舍):
+  - `$slice`:`{"arr": {"$slice": n}}` 取前 n / 后 n;`{"arr": {"$slice": [skip, limit]}}`;
+  - `$elemMatch`:`{"arr": {"$elemMatch": {...}}}` 只保留**第一个**匹配的元素(单元素数组);
+  - 位置运算符 `$`:`{"arr.$": 1}` —— 需配合 filter 使用,**本期不做**(要回传 filter 匹配的下标,涉及投影与过滤的耦合,留 M29)。
+- 纪律:全部改动只在 `filter.rs` / `projection.rs`,不动存储格式;`.nodb` 仍 v1;新增操作符必须与既有 `resolve_paths`(点号穿透数组)语义一致。
+- 验收:`tests/filter_operators.rs` 逐操作符边界覆盖 + `tests/projection_operators.rs`;所有新操作符与「全表扫 vs 索引路径」结果一致(索引路径必须把新操作符算进候选集后二次过滤)。
+
+### 62. v0.6.0 M28 执行:第一档语义补齐($exists/$type/$all/$size + 投影运算符)
+
+- **`$exists`**:`Operator::Exists(bool)`。语义判据是「路径能否解析出候选值」——`values.is_empty() != want`。
+  - **与 `$eq: null` 的关键区别**(测试锁死):字段**显式为 `null`** 时 `$exists: true` 成立、`$eq: null` 也成立;字段**缺失**时 `$exists: false` 成立,而 `$eq: null` **同样成立**(MongoDB 把缺失当 null 参与相等比较)。两者不等价,是 CMS 里最容易写错的地方。
+  - 支持点号路径;参数必须是布尔值,否则解析期报错。
+- **`$type`**:`Operator::Type(Vec<TypeName>)` + `TypeName` 枚举(14 个变体,对齐 MongoDB 别名,大小写不敏感)。
+  - **`"number"` 别名展开为 Int/Long/Double 三项**,由 `parse_operator_object` 里显式展开(因为 `TypeName::parse` 是单射,别名需要在调用处展开)。
+  - 接受单个字符串或字符串数组;非法类型名解析期报错。
+  - **对缺失字段不匹配任何类型**(与 `$exists` 的行为差异,测试锁死)。
+  - `object` 类型排除扩展 JSON 字面量(`$numberLong` 等),避免把数字字面量误判成对象。
+- **`$all`**:`Operator::All(Vec<Value>)`,语义「数组须同时包含全部元素」(`$in` 的反面)。
+  - **`$all: []` 不匹配任何文档**(MongoDB 语义,`required.is_empty()` 直接返回 false)。
+  - 字段是标量时退化为「全部期望值都等于该标量」。
+  - 复用 `value_matches` 做元素级比较,自动获得嵌套数组的递归语义。
+- **`$size`**:`Operator::Size(usize)`,精确长度匹配;**非数组不匹配**(不是「长度等于」);负数/非整数解析期报错。
+- **投影运算符**(`src/query/options.rs`,此前只有字段取舍):
+  - `Projection` 新增 `operators: Vec<(path, ProjectionOp)>`;含 `$` 键的对象值**先于普通标志解析**,并自动加入包含字段列表(运算符天然属于包含模式);
+  - `ProjectionOp::Slice { skip, limit }`:单值 `n`(负数为从尾部取 `|n|`)、双值 `[skip, limit]`;越界安全截断;**非数组原样返回**(不报错);
+  - `ProjectionOp::ElemMatch(Box<Condition>)`:只保留**第一个**匹配的元素(单元素数组);无匹配返回空数组;内部条件**直接复用过滤器的 `Condition`**,语义与查询完全一致。
+  - 为此 `Condition` / `Operator` / `ElemMatchSpec` / `FieldCondition` 全部加 `derive(Clone)`,`Condition::matches` 改 `pub`,并新增 `Condition::from_field_object`(把字段对象解析成完整条件,供投影复用)。
+- 测试:
+  - `tests/filter_operators.rs` **16 例** —— `$exists` 与 `$eq:null` 的区别(核心)、true 含 null/false/0/空串、false 只命中缺失、点号路径、参数校验;`$type` 六种基本类型、`number` 别名、**对缺失字段不匹配**、非法类型名;`$all` 全集包含、空数组不匹配、参数校验;`$size` 精确长度、非数组不匹配、非法参数;组合条件;**新操作符在索引路径与全表扫路径结果一致**。
+  - `tests/projection_operators.rs` **11 例** —— `$slice` 四种形态(正/负/区间/越界)、保留 `_id`、非数组透传;`$elemMatch` 取首个/无匹配/多字段;非法参数;与普通字段混用。
+  - Go 驱动 **+1 例**(`TestNewFilterOperatorsOverWire`):四个新操作符经 wire 协议逐一验证。
+  - 合计 **493 例全绿**,Go **17 项**全通过,clippy 零警告。
+- 明确未做:MongoDB 的位置运算符 `{"arr.$": 1}` —— 它需要回传 filter 匹配的**数组下标**,涉及过滤与投影的耦合,留 M29。
+
 ## Agents
 
 ### 规范
@@ -1110,7 +1152,7 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M28(下一里程碑)**:索引统计/区分度估算(让规划器在「索引扫描 vs 全表扫」之间做成本比较)、TTL 索引。
+- **M29(下一里程碑)**:`$pull`/`$pop`(数组更新操作符)、投影位置运算符 `{"arr.$": 1}`、索引统计/区分度估算。
 - **待补**:`drop_collection` 应同时清理该集合的索引定义与条目(当前只在重建索引时对齐)。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
@@ -1134,6 +1176,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M28(v0.6.0):`$exists`/`$type`/`$all`/`$size` + 投影 `$slice`/`$elemMatch`;493 例全绿。
 - M27(v0.5.4):降序索引;修正 sortedByIndex 未比对方向的顺序错缺口;466 例全绿。
 - M26(v0.5.3):`$or` 并集计划、多索引交集计划、wire createIndexes/listIndexes/dropIndexes;457 例全绿。
 - M25(v0.5.2):复合索引 + wire explain;449 例全绿。
