@@ -45,6 +45,17 @@ fn c_abi_smoke_test() {
     } else {
         target.join("libnosqlite.so")
     };
+    // cdylib 不参与 `cargo test` 的构建(crate-type 里 rlib 优先),
+    // 因此在干净环境下动态库可能还不存在 —— 这里按需构建一次,
+    // 而不是依赖「碰巧之前 build 过」。CI 首次跑就是栽在这里。
+    if !lib.exists() {
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "--lib"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("应能执行 cargo build --lib");
+        assert!(status.success(), "构建 cdylib 失败");
+    }
     assert!(lib.exists(), "动态库应存在: {}", lib.display());
 
     // 2. 编译 C 程序
