@@ -66,7 +66,7 @@ nav:
       - 查询: guide/query.md
       - 更新: guide/update.md
       - 投影: guide/projection.md
-      - 索引: guide/index.md
+      - 索引: guide/indexes.md
       - 聚合: guide/aggregate.md
   - 参考:
       - 与 MongoDB 的差异: reference/compatibility.md

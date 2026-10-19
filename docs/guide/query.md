@@ -134,4 +134,4 @@ let plan = db.explain("users", &json!({"age": {"$gte": 18}}), None)?;
 - `IXSCAN` —— 走了索引
 - `COLLSCAN` —— 全表扫
 
-详见 [索引](index.md)。
+详见 [索引](indexes.md)。
