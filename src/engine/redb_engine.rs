@@ -37,6 +37,23 @@ pub(crate) const DOCS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::ne
 /// 集合名与 doc_id 的分隔符(集合名不允许包含该字节)。
 const KEY_SEPARATOR: u8 = 0x00;
 
+/// 索引定义表:key = `集合名\0索引名`,value = 索引定义 JSON。
+///
+/// 定义形如 `{"field": "age", "unique": false, "sparse": false, "encoding_version": 1}`。
+pub(crate) const INDEX_META_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("nosqlite_index_meta");
+
+/// 索引数据表:key = `集合名\0字段路径\0编码值\0doc_id`,value = 空。
+///
+/// - `doc_id` 拼在末尾:保证 key 唯一,且相同索引值下天然按 doc_id 有序
+///   (这是「索引条目必须有唯一后缀」的传统做法);
+/// - multikey 索引:数组字段的每个元素各生成一条,key 结构不变。
+pub(crate) const INDEX_DATA_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("nosqlite_index_data");
+
+/// 索引编码版本:编码规则变更时递增,用于检测并重建索引。
+pub(crate) const INDEX_ENCODING_VERSION: u32 = 1;
+
 /// 校验集合名:非空,且不包含分隔符 `\0`。
 fn validate_collection(collection: &str) -> Result<(), StorageError> {
     if collection.is_empty() {
@@ -155,6 +172,286 @@ impl RedbEngine {
     }
 }
 
+impl RedbEngine {
+    /// 列出指定集合的全部索引定义。
+    pub fn list_indexes(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<crate::index::def::IndexDef>, StorageError> {
+        use crate::index::def::{IndexDef, build_meta_prefix};
+        let read_tx = self
+            .db
+            .begin_read()
+            .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
+        let table = match read_tx.open_table(INDEX_META_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(StorageError::Other(format!("打开索引定义表失败: {}", e))),
+        };
+        let prefix = build_meta_prefix(collection);
+        let range = table
+            .range(prefix.as_slice()..)
+            .map_err(|e| StorageError::Other(format!("遍历索引定义失败: {}", e)))?;
+        let mut out = Vec::new();
+        for entry in range {
+            let (k, v) =
+                entry.map_err(|e| StorageError::Other(format!("读取索引定义失败: {}", e)))?;
+            let key = k.value();
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            let name = String::from_utf8_lossy(&key[prefix.len()..]).into_owned();
+            if let Some(def) = IndexDef::from_json(collection, &name, v.value()) {
+                out.push(def);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 创建索引:写定义 + 为既有文档批量回填条目(同一写事务,原子)。
+    ///
+    /// 若同名索引已存在,先删除旧定义与旧条目再重建(幂等)。
+    pub fn create_index(&self, def: &crate::index::def::IndexDef) -> Result<(), StorageError> {
+        use crate::index::def::{build_entry_key, build_meta_key, entry_values};
+        validate_collection(&def.collection)?;
+
+        // 1. 先读出既有文档(读事务独立,避免与写事务互相阻塞)
+        let docs = self.scan(&def.collection)?;
+        // 解析为 (doc_id, JSON 对象)
+        let mut parsed: Vec<(String, serde_json::Map<String, serde_json::Value>)> = Vec::new();
+        for (doc_id, bytes) in docs {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                && let Some(map) = v.as_object()
+            {
+                parsed.push((doc_id, map.clone()));
+            }
+        }
+
+        // 2. 唯一索引前置检查:重复值直接拒绝(不写任何东西)
+        if def.unique {
+            let mut seen: Vec<Vec<u8>> = Vec::new();
+            for (_, doc) in &parsed {
+                for val in entry_values(def, doc) {
+                    if seen.contains(&val) {
+                        return Err(StorageError::UniqueViolation {
+                            collection: def.collection.clone(),
+                            index: def.name.clone(),
+                        });
+                    }
+                    seen.push(val);
+                }
+            }
+        }
+
+        // 3. 单写事务:清旧条目 → 写定义 → 回填条目
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        {
+            let mut meta = write_tx
+                .open_table(INDEX_META_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开索引定义表失败: {}", e)))?;
+            let mut data = write_tx
+                .open_table(INDEX_DATA_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+
+            // 清掉该集合该字段的旧条目
+            let prefix = crate::index::def::build_entry_prefix(&def.collection, &def.field);
+            let mut stale: Vec<Vec<u8>> = Vec::new();
+            {
+                let range = data
+                    .range(prefix.as_slice()..)
+                    .map_err(|e| StorageError::Other(format!("遍历索引条目失败: {}", e)))?;
+                for entry in range {
+                    let (k, _) = entry
+                        .map_err(|e| StorageError::Other(format!("读取索引条目失败: {}", e)))?;
+                    let key = k.value();
+                    if !key.starts_with(&prefix) {
+                        break;
+                    }
+                    stale.push(key.to_vec());
+                }
+            }
+            for key in &stale {
+                data.remove(key.as_slice())
+                    .map_err(|e| StorageError::Other(format!("删除旧索引条目失败: {}", e)))?;
+            }
+
+            // 写定义
+            meta.insert(
+                build_meta_key(&def.collection, &def.name).as_slice(),
+                def.to_json().as_slice(),
+            )
+            .map_err(|e| StorageError::Other(format!("写入索引定义失败: {}", e)))?;
+
+            // 回填条目
+            for (doc_id, doc) in &parsed {
+                for val in entry_values(def, doc) {
+                    let key = build_entry_key(&def.collection, &def.field, &val, doc_id);
+                    data.insert(key.as_slice(), b"".as_slice())
+                        .map_err(|e| StorageError::Other(format!("写入索引条目失败: {}", e)))?;
+                }
+            }
+        }
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交索引创建失败: {}", e)))
+    }
+
+    /// 删除索引(定义 + 全部条目)。
+    pub fn drop_index(&self, collection: &str, name: &str) -> Result<bool, StorageError> {
+        use crate::index::def::{IndexDef, build_meta_key};
+        // 先查定义,拿到字段路径
+        let defs = self.list_indexes(collection)?;
+        let Some(def) = defs.iter().find(|d| d.name == name) else {
+            return Ok(false);
+        };
+        let field = def.field.clone();
+
+        let write_tx = self
+            .db
+            .begin_write()
+            .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        {
+            let mut meta = write_tx
+                .open_table(INDEX_META_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开索引定义表失败: {}", e)))?;
+            let mut data = write_tx
+                .open_table(INDEX_DATA_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+
+            meta.remove(build_meta_key(collection, name).as_slice())
+                .map_err(|e| StorageError::Other(format!("删除索引定义失败: {}", e)))?;
+
+            let prefix = crate::index::def::build_entry_prefix(collection, &field);
+            let mut stale: Vec<Vec<u8>> = Vec::new();
+            {
+                let range = data
+                    .range(prefix.as_slice()..)
+                    .map_err(|e| StorageError::Other(format!("遍历索引条目失败: {}", e)))?;
+                for entry in range {
+                    let (k, _) = entry
+                        .map_err(|e| StorageError::Other(format!("读取索引条目失败: {}", e)))?;
+                    let key = k.value();
+                    if !key.starts_with(&prefix) {
+                        break;
+                    }
+                    stale.push(key.to_vec());
+                }
+            }
+            for key in &stale {
+                data.remove(key.as_slice())
+                    .map_err(|e| StorageError::Other(format!("删除索引条目失败: {}", e)))?;
+            }
+            let _ = IndexDef::new(collection, name, &field, false, false);
+        }
+        write_tx
+            .commit()
+            .map_err(|e| StorageError::Other(format!("提交索引删除失败: {}", e)))?;
+        Ok(true)
+    }
+}
+
+/// 在写事务内**删除**某条文档的全部索引条目(基于旧文档内容)。
+///
+/// 找不到旧文档(新增场景)时无操作。
+fn remove_index_entries(
+    data: &mut redb::Table<'_, &[u8], &[u8]>,
+    defs: &[crate::index::def::IndexDef],
+    collection: &str,
+    doc_id: &str,
+    old_bytes: Option<&[u8]>,
+) -> Result<(), StorageError> {
+    use crate::index::def::{build_entry_key, entry_values};
+    let Some(bytes) = old_bytes else {
+        return Ok(());
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return Ok(());
+    };
+    let Some(map) = v.as_object() else {
+        return Ok(());
+    };
+    for def in defs {
+        for val in entry_values(def, map) {
+            let key = build_entry_key(collection, &def.field, &val, doc_id);
+            data.remove(key.as_slice())
+                .map_err(|e| StorageError::Other(format!("删除索引条目失败: {}", e)))?;
+        }
+    }
+    Ok(())
+}
+
+/// 在写事务内**写入**某条文档的全部索引条目(基于新文档内容)。
+fn write_index_entries(
+    data: &mut redb::Table<'_, &[u8], &[u8]>,
+    defs: &[crate::index::def::IndexDef],
+    collection: &str,
+    doc_id: &str,
+    new_bytes: &[u8],
+) -> Result<(), StorageError> {
+    use crate::index::def::{build_entry_key, entry_values};
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(new_bytes) else {
+        return Ok(());
+    };
+    let Some(map) = v.as_object() else {
+        return Ok(());
+    };
+    for def in defs {
+        for val in entry_values(def, map) {
+            let key = build_entry_key(collection, &def.field, &val, doc_id);
+            // 唯一索引:同字段同值已存在其他文档 → 冲突
+            if def.unique {
+                let prefix = crate::index::def::build_entry_prefix(collection, &def.field);
+                let _ = prefix;
+                // 精确判断:该 key 排除了自身 doc_id 后是否已存在
+                let self_key = build_entry_key(collection, &def.field, &val, doc_id);
+                if data
+                    .get(self_key.as_slice())
+                    .map_err(|e| StorageError::Other(format!("查询索引条目失败: {}", e)))?
+                    .is_none()
+                {
+                    // 检查是否有同值的其他条目(前缀匹配到该编码值)
+                    let mut probe = Vec::new();
+                    probe.extend_from_slice(collection.as_bytes());
+                    probe.push(0);
+                    probe.extend_from_slice(def.field.as_bytes());
+                    probe.push(0);
+                    probe.extend_from_slice(&(val.len() as u32).to_be_bytes());
+                    probe.extend_from_slice(&val);
+                    let range = data
+                        .range(probe.as_slice()..)
+                        .map_err(|e| StorageError::Other(format!("扫描索引条目失败: {}", e)))?;
+                    let mut conflict = false;
+                    for entry in range {
+                        let (k, _) = entry
+                            .map_err(|e| StorageError::Other(format!("读取索引条目失败: {}", e)))?;
+                        let k2 = k.value();
+                        if !k2.starts_with(&probe) {
+                            break;
+                        }
+                        // 前缀之后的是 doc_id;若是别的文档 → 冲突
+                        if &k2[probe.len()..] != doc_id.as_bytes() {
+                            conflict = true;
+                            break;
+                        }
+                    }
+                    if conflict {
+                        return Err(StorageError::UniqueViolation {
+                            collection: collection.to_string(),
+                            index: def.name.clone(),
+                        });
+                    }
+                }
+            }
+            data.insert(key.as_slice(), b"".as_slice())
+                .map_err(|e| StorageError::Other(format!("写入索引条目失败: {}", e)))?;
+        }
+    }
+    Ok(())
+}
+
 impl Storage for RedbEngine {
     fn create(path: &Path) -> Result<Self, StorageError> {
         // 1. 后缀校验:非 .nodb 一律拒绝
@@ -219,6 +516,8 @@ impl Storage for RedbEngine {
             .db
             .begin_write()
             .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        // 索引定义(在事务外读,避免同事务内重复加锁)
+        let defs = self.list_indexes(collection)?;
         {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
@@ -232,6 +531,14 @@ impl Storage for RedbEngine {
                     collection: collection.to_string(),
                     id: doc_id.to_string(),
                 });
+            }
+
+            // 维护索引:新增场景没有旧条目,只要写新条目
+            if !defs.is_empty() {
+                let mut data = write_tx
+                    .open_table(INDEX_DATA_TABLE)
+                    .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+                write_index_entries(&mut data, &defs, collection, doc_id, doc_bytes)?;
             }
         }
         write_tx
@@ -341,6 +648,7 @@ impl Storage for RedbEngine {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            let defs = self.list_indexes(collection)?;
             for (doc_id, bytes) in docs {
                 let key = build_doc_key(collection, doc_id);
                 let existing = table
@@ -352,6 +660,12 @@ impl Storage for RedbEngine {
                         collection: collection.to_string(),
                         id: doc_id.clone(),
                     });
+                }
+                if !defs.is_empty() {
+                    let mut data = write_tx
+                        .open_table(INDEX_DATA_TABLE)
+                        .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+                    write_index_entries(&mut data, &defs, collection, doc_id, bytes)?;
                 }
             }
         }
@@ -377,13 +691,28 @@ impl Storage for RedbEngine {
             .db
             .begin_write()
             .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        let defs = self.list_indexes(collection)?;
         let updated = {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            // 必须先拿到旧文档内容,才能删掉它对应的旧索引条目
+            let old_bytes = table
+                .get(&key[..])
+                .map_err(|e| StorageError::Other(format!("读取旧文档失败: {}", e)))?
+                .map(|g| g.value().to_vec());
             let old = table
                 .insert(&key[..], doc_bytes)
                 .map_err(|e| StorageError::Other(format!("更新文档失败: {}", e)))?;
+
+            if !defs.is_empty() {
+                let mut data = write_tx
+                    .open_table(INDEX_DATA_TABLE)
+                    .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+                // 先删旧条目,再写新条目 —— 顺序不能反,否则会留下垃圾
+                remove_index_entries(&mut data, &defs, collection, doc_id, old_bytes.as_deref())?;
+                write_index_entries(&mut data, &defs, collection, doc_id, doc_bytes)?;
+            }
             old.is_some()
         };
         write_tx
@@ -404,13 +733,26 @@ impl Storage for RedbEngine {
             .db
             .begin_write()
             .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
+        let defs = self.list_indexes(collection)?;
         let deleted = {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            // 先取旧文档内容,用于删除其索引条目
+            let old_bytes = table
+                .get(&key[..])
+                .map_err(|e| StorageError::Other(format!("读取旧文档失败: {}", e)))?
+                .map(|g| g.value().to_vec());
             let removed = table
                 .remove(&key[..])
                 .map_err(|e| StorageError::Other(format!("删除文档失败: {}", e)))?;
+
+            if !defs.is_empty() {
+                let mut data = write_tx
+                    .open_table(INDEX_DATA_TABLE)
+                    .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+                remove_index_entries(&mut data, &defs, collection, doc_id, old_bytes.as_deref())?;
+            }
             removed.is_some()
         };
         write_tx
@@ -441,11 +783,29 @@ impl Storage for RedbEngine {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            let defs = self.list_indexes(collection)?;
             for (doc_id, bytes) in docs {
                 let key = build_doc_key(collection, doc_id);
+                let old_bytes = table
+                    .get(&key[..])
+                    .map_err(|e| StorageError::Other(format!("读取旧文档失败: {}", e)))?
+                    .map(|g| g.value().to_vec());
                 table
                     .insert(&key[..], &bytes[..])
                     .map_err(|e| StorageError::Other(format!("更新文档失败: {}", e)))?;
+                if !defs.is_empty() {
+                    let mut data = write_tx
+                        .open_table(INDEX_DATA_TABLE)
+                        .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+                    remove_index_entries(
+                        &mut data,
+                        &defs,
+                        collection,
+                        doc_id,
+                        old_bytes.as_deref(),
+                    )?;
+                    write_index_entries(&mut data, &defs, collection, doc_id, bytes)?;
+                }
             }
         }
         write_tx
@@ -471,11 +831,28 @@ impl Storage for RedbEngine {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
+            let defs = self.list_indexes(collection)?;
             for doc_id in doc_ids {
                 let key = build_doc_key(collection, doc_id);
+                let old_bytes = table
+                    .get(&key[..])
+                    .map_err(|e| StorageError::Other(format!("读取旧文档失败: {}", e)))?
+                    .map(|g| g.value().to_vec());
                 table
                     .remove(&key[..])
                     .map_err(|e| StorageError::Other(format!("删除文档失败: {}", e)))?;
+                if !defs.is_empty() {
+                    let mut data = write_tx
+                        .open_table(INDEX_DATA_TABLE)
+                        .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+                    remove_index_entries(
+                        &mut data,
+                        &defs,
+                        collection,
+                        doc_id,
+                        old_bytes.as_deref(),
+                    )?;
+                }
             }
         }
         write_tx

@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.5.0 M23b 完成 —— 索引框架:order-preserving 编码(复用 `rank` 单一真相源)、独立索引表、**multikey/稀疏/唯一**、写路径同事务维护;**核心验收「编码序 == 比较序」两两穷举通过**(并抓到 `$oid` 分叉);+35 例共 **427 例全绿**。参见 [taolun #51](#51-v050-m23b-设计索引框架order-preserving-编码--独立索引表) / [taolun #52](#52-v050-m23b-执行索引框架编码--独立索引表--写路径维护) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.4.1 M23a 完成 —— 类型序修正为 **MongoDB 官方 BSON 序**(MinKey<Null<Number<String<Object<Array<Binary<ObjectId<Bool<Date<Timestamp<Regex<MaxKey),补 MinKey/MaxKey/Timestamp;**破坏性变更**(跨类型比较);+10 例共 **392 例全绿**。参见 [taolun #49](#49-v041-m23a-设计类型序修正为-bson-官方序破坏性) / [taolun #50](#50-v041-m23a-执行类型序修正为-bson-官方序) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.4.0 M22 完成 —— `ScanSession` 真流式(会话自持读事务,`next_batch` 续取);`for_each` 改为其封装;+10 例共 **382 例全绿**。同时确立定位:**部署形态学 SQLite,数据模型/索引/游标语义 100% 学 MongoDB**。参见 [taolun #47](#47-v040-m22-设计scansession活游标--索引总方案) / [taolun #48](#48-v040-m22-执行scansession活游标) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.3.1 M21 完成 —— 真实游标:`getMore`/`killCursors` 落地,`batchSize` 分批生效,`limit` 语义修正(只约束总结果数);`aggregate` 同步接入游标;Go 驱动 13 项全通过,总 **372 例全绿**。参见 [taolun #45](#45-v031-m21-设计真实游标getmore--killcursors) / [taolun #46](#46-v031-m21-执行真实游标getmore--killcursors) / [项目进度-已完成](#已完成)。
@@ -849,6 +850,62 @@
   - 修正 3 处固化了旧序的既有用例:`query::compare::tests::type_order`、`tests/compare_composite.rs::type_order_still_holds`、`tests/date.rs::date_type_rank`。
   - 合计 **392 例全绿**;Go 驱动验收(M22 后)仍全通过,**wire 层未受影响**。
 
+### 51. v0.5.0 M23b 设计:索引框架(order-preserving 编码 + 独立索引表)
+
+- **前提**:M23a 已把 `type_rank` 对齐 MongoDB 官方 BSON 序,并抽成 `query::compare::rank` 常量作为单一真相源。
+- **编码方案(用户已确认不复用 BSON 字节)**:order-preserving encoding。
+  - 不复用 BSON 直接当 key 的原因:BSON 的 int32/int64 是**小端序**,字节序 ≠ 数值序(负数尤其错乱),无法直接做 range 扫描。
+  - 编码规则(与 `rank` 常量严格对应):
+    | 类型 | 首字节 | 后续 |
+    |---|---|---|
+    | MinKey | `0x00` | 无 |
+    | Null | `0x01` | 无 |
+    | Number | `0x02` | **IEEE754 位翻转**:负数整体取反,正数翻最高位 → 大端字节序即数值序 |
+    | String | `0x03` | UTF-8 原字节(字典序正确) |
+    | Object | `0x04` | 键值对序列 |
+    | Array | `0x05` | 元素序列 |
+    | Binary | `0x06` | 子类型 + 数据 |
+    | ObjectId | `0x07` | 12 字节 |
+    | Bool | `0x08` | 0/1 |
+    | Date | `0x09` | i64 大端(偏移 +2^63 使负数可排) |
+    | Timestamp | `0x0A` | (t,i) 大端 |
+    | Regex | `0x0B` | pattern + options |
+    | MaxKey | `0x0C` | 无 |
+- **索引表布局**:`(集合名\0 字段路径\0 编码值\0 doc_id) -> ()`,独立 B+树(`nosqlite_indexes` 存定义、`nosqlite_index_data` 存条目)。
+  - doc_id 拼在末尾(学 SQLite 的 rowid 拼接):保证 key 唯一,且相同索引值下天然按 doc_id 有序。
+  - **multikey 进模型**:数组字段展开为多条条目(同一 doc 写 N 条),存储格式不变;本期先只处理标量,数组按 multikey 展开一起做。
+- **索引定义表** `nosqlite_index_meta`:`(集合\0索引名) -> {字段, 唯一, sparse, encoding_version}`。
+  - **`encoding_version`**:编码一旦落盘,升级编码需重建索引。现在存版本号成本为 0,以后补要处理存量数据。
+- **写路径维护**:`insert/insert_many/update/update_many/delete/delete_many` 在**同一写事务**内同步更新索引。
+  更新时必须**先取旧文档算出旧索引键 → 删旧条目 → 插新条目**,否则留垃圾。
+  - 这一步要求 `redb_engine` 的写路径能读到旧值(现有 `update` 已用 `insert` 返回旧值,但索引需要旧文档内容,故需在事务内先 `get` 再写)。
+- **验收铁律**:测试必须锁死「**对任意两个值,`compare_values` 的结果 == 编码字节的比较结果**」。
+  这是整个索引正确性的根基:两者不一致,范围查询走索引就会静默返回错误结果。
+- 本期**不改查询路径**(不实现查询规划器),只建索引与维护;规划器留到 M24。
+
+### 52. v0.5.0 M23b 执行:索引框架(编码 + 独立索引表 + 写路径维护)
+
+- **`src/index/key.rs` —— order-preserving 编码**:
+  - 首字节 = [`rank`] 等级(**直接复用 M23a 的单一真相源**,保证索引序与比较序不分叉);
+  - Number 用 **IEEE754 位翻转**(负数整体取反、正数翻最高位)+ 大端 —— 这是 BSON 小端字节做不到的关键;
+  - Date 用 `ms ^ 2^63` 偏移后大端;Timestamp `(t,i)` 各 32 位大端;
+  - 数组/对象用**长度前缀**拼接子编码,避免歧义;数组末尾补 `0` 使短数组排在前(与 `compare_values` 一致)。
+- **`src/index/def.rs` —— 定义与条目 key**:
+  - 条目 key `集合名\0字段路径\0[编码值长度][编码值]doc_id`:编码值可能含 `0x00`,故用**长度前缀**而非分隔符;
+  - `doc_id` 拼在末尾保证唯一 + 同值条目按 doc_id 有序;
+  - `entry_values` 实现 **multikey**(数组每元素一条)、**稀疏**(null/缺失不入)、嵌套路径。
+- **存储表**:`nosqlite_index_meta`(定义)、`nosqlite_index_data`(条目);`INDEX_ENCODING_VERSION = 1`。
+- **写路径维护**:`insert/insert_many/update/update_many/delete/delete_many` 全部在**同一写事务**内维护索引。
+  - **update/delete 必须先 `get` 旧文档**才能算出旧索引条目;更新顺序严格为「删旧条目 → 写新条目」。
+  - 唯一索引在 `write_index_entries` 内做**同值前缀扫描**,排除自身 doc_id 后若还有其他文档 → `UniqueViolation`。
+- **新错误变体** `StorageError::UniqueViolation { collection, index }`,映射到 `ErrorCode::DuplicateKey`(wire 层即 `11000 DuplicateKey`)。
+- **暴露接口**:`Database::{create_index, list_indexes, drop_index}`。`create_index` 幂等(同名先清旧条目再回填),回填在单事务内,失败整体回滚。
+- **测试**:
+  - `tests/index_encoding.rs` **11 例** —— 核心是 **`encoding_order_matches_comparison`:36 个样本两两穷举,断言 `compare_values(a,b) == encode_key(a).cmp(encode_key(b))`**。这条测试立刻抓到一个真实分叉:`$oid` 在比较层归一为字符串、在编码层却按 OBJECT_ID 排位。已统一为「`$oid` ≡ 字符串」(与存储层主键即 hex 字符串的契约一致)。
+  - `tests/index_basic.rs` **18 例** —— 定义增删/幂等、唯一索引拒绝既有与新增重复、同文档自更新不冲突、稀疏跳过 null、**更新移动索引条目(旧值释放)**、删除清理条目、批量删改维护、multikey(数组元素/自重复/删除清理)、回填、持久化重开、嵌套路径、无索引回归。
+  - `src/index/def.rs` 6 例单测(0x00 编码值可无歧义解析、JSON 往返、multikey、稀疏、嵌套路径、重复检测)。
+  - 合计 **427 例全绿**;Go 驱动验收仍全通过(clippy 零警告)。
+
 ## Agents
 
 ### 规范
@@ -902,7 +959,8 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M23b(下一里程碑)**:索引框架 —— order-preserving 编码(复用 `query::compare::rank` 作为单一真相源)+ 独立索引表 + 写路径维护(含 multikey 模型)+ 编码版本化。
+- **M24(下一里程碑)**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain` 显示是否命中。
+- **待补**:`drop_collection` 应同时清理该集合的索引定义与条目(当前只在重建索引时对齐)。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
 - **阶段 3**:语义向 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
@@ -925,6 +983,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M23b(v0.5.0):索引框架 —— 编码 + 独立索引表 + multikey/稀疏/唯一 + 写路径维护;427 例全绿。
 - M23a(v0.4.1):类型序对齐 MongoDB 官方 BSON 序 + MinKey/MaxKey/Timestamp;392 例全绿。
 - M22(v0.4.0):ScanSession 真流式(活游标,自持读事务);382 例全绿。
 - M21(v0.3.1):真实游标 —— `getMore`/`killCursors`/`batchSize`,`limit` 语义修正;372 例全绿。

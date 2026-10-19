@@ -28,6 +28,13 @@ pub enum StorageError {
     InvalidCollection(String),
     /// 主键冲突:集合中已存在相同 `_id`。
     DuplicateKey { collection: String, id: String },
+    /// 唯一索引冲突。
+    UniqueViolation {
+        /// 集合名。
+        collection: String,
+        /// 索引名。
+        index: String,
+    },
     /// 其他未知错误。
     Other(String),
 }
@@ -56,6 +63,13 @@ impl fmt::Display for StorageError {
             StorageError::InvalidCollection(msg) => write!(f, "{}", msg),
             StorageError::DuplicateKey { collection, id } => {
                 write!(f, "主键冲突:集合 `{}` 中已存在 _id = `{}`", collection, id)
+            }
+            StorageError::UniqueViolation { collection, index } => {
+                write!(
+                    f,
+                    "唯一索引冲突: 集合 `{}` 的索引 `{}` 出现重复值",
+                    collection, index
+                )
             }
             StorageError::Other(msg) => write!(f, "{}", msg),
         }

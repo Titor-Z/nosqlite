@@ -101,6 +101,7 @@ impl DatabaseError {
                 crate::engine::StorageError::VersionMismatch { .. } => ErrorCode::VersionMismatch,
                 crate::engine::StorageError::InvalidCollection(_) => ErrorCode::InvalidCollection,
                 crate::engine::StorageError::DuplicateKey { .. } => ErrorCode::DuplicateKey,
+                crate::engine::StorageError::UniqueViolation { .. } => ErrorCode::DuplicateKey,
                 crate::engine::StorageError::Io(_) => ErrorCode::IoError,
                 crate::engine::StorageError::Other(_) => ErrorCode::Internal,
             },

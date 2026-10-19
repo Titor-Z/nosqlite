@@ -415,6 +415,40 @@ impl Database {
 
     // ==================== M11 新增:主键直接寻址与批量写入 ====================
 
+    /// 创建索引(M23b)。已存在同名索引则重建(幂等)。
+    ///
+    /// - `field` 支持点号路径;
+    /// - `unique`:唯一索引,重复值会被拒绝;
+    /// - `sparse`:稀疏索引,缺失/null 不入索引;
+    /// - 数组字段按 **multikey** 语义展开(每个元素一条条目)。
+    ///
+    /// 建索引会在**单写事务**内回填既有文档,失败则整体回滚。
+    pub fn create_index(
+        &self,
+        collection: &str,
+        name: &str,
+        field: &str,
+        unique: bool,
+        sparse: bool,
+    ) -> Result<(), DatabaseError> {
+        let def = crate::index::def::IndexDef::new(collection, name, field, unique, sparse);
+        self.engine.create_index(&def)?;
+        Ok(())
+    }
+
+    /// 列出集合的索引定义。
+    pub fn list_indexes(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<crate::index::def::IndexDef>, DatabaseError> {
+        Ok(self.engine.list_indexes(collection)?)
+    }
+
+    /// 删除索引,返回是否确实存在。
+    pub fn drop_index(&self, collection: &str, name: &str) -> Result<bool, DatabaseError> {
+        Ok(self.engine.drop_index(collection, name)?)
+    }
+
     /// 开一个**流式扫描会话**(M22 新增,内存 O(一批))。
     ///
     /// 与 [`find`](Self::find) 的区别:会话持有读事务,可跨多次
