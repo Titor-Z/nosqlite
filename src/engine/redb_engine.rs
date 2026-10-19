@@ -1,15 +1,15 @@
 //! 基于 redb 的存储引擎实现。
 //!
 //! redb 是纯 Rust 实现的单文件 B+树数据库(自带 ACID 事务),非常适合作为
-//! nosqlite 的底层存储:整个数据库就是一个 `.nodb` 文件,可直接复制粘贴迁移。
+//! nodblite 的底层存储:整个数据库就是一个 `.nodb` 文件,可直接复制粘贴迁移。
 //!
 //! # 魔数与版本校验
 //!
 //! redb 文件头本身有它自己的校验;在此基础上,我们在数据库内维护一个元数据表
-//! (`nosqlite_meta`),写入 nosqlite 的魔数串与格式版本号。
+//! (`nosqlite_meta`),写入 nodblite 的魔数串与格式版本号。
 //! 打开数据库时读取并校验:
-//! - 魔数不匹配 → 说明文件虽然可能是 redb 数据库,但不是 nosqlite 创建的;
-//! - 版本不兼容 → 说明文件由其他版本的 nosqlite 创建。
+//! - 魔数不匹配 → 说明文件虽然可能是 redb 数据库,但不是 nodblite 创建的;
+//! - 版本不兼容 → 说明文件由其他版本的 nodblite 创建。
 
 use std::path::Path;
 
@@ -17,7 +17,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use super::storage::{Storage, StorageError};
 
-/// 魔数串:用于标识数据库确实是 nosqlite 创建。
+/// 魔数串:用于标识数据库确实是 nodblite 创建。
 const MAGIC: &str = "NOSQLITE";
 /// 当前文件格式版本号。
 const VERSION: u32 = 1;
@@ -187,7 +187,7 @@ impl RedbEngine {
             .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
         let table = read_tx.open_table(META_TABLE).map_err(|_| {
             StorageError::InvalidFormat(
-                "文件缺少 nosqlite 元数据,不是 nosqlite 创建的数据库".to_string(),
+                "文件缺少 nodblite 元数据,不是 nodblite 创建的数据库".to_string(),
             )
         })?;
 
@@ -199,7 +199,7 @@ impl RedbEngine {
             Some(guard) if guard.value() == MAGIC.as_bytes() => {}
             _ => {
                 return Err(StorageError::InvalidFormat(
-                    "文件魔数不匹配,不是 nosqlite 创建的数据库".to_string(),
+                    "文件魔数不匹配,不是 nodblite 创建的数据库".to_string(),
                 ));
             }
         }
@@ -222,7 +222,7 @@ impl RedbEngine {
             }
         } else {
             return Err(StorageError::InvalidFormat(
-                "文件缺少版本信息,不是 nosqlite 创建的数据库".to_string(),
+                "文件缺少版本信息,不是 nodblite 创建的数据库".to_string(),
             ));
         }
         Ok(())
@@ -655,7 +655,7 @@ impl Storage for RedbEngine {
         if let Ok(meta) = std::fs::metadata(path) {
             if meta.len() < MIN_VALID_FILE_LEN {
                 return Err(StorageError::InvalidFormat(format!(
-                    "{} 文件过短({} 字节),疑似被截断,不是有效的 nosqlite 数据库",
+                    "{} 文件过短({} 字节),疑似被截断,不是有效的 nodblite 数据库",
                     path.display(),
                     meta.len()
                 )));
@@ -675,7 +675,7 @@ impl Storage for RedbEngine {
         // 2. 打开 redb 数据库(文件不存在或非 redb 格式都会失败)
         let db = Database::open(path).map_err(|_| {
             StorageError::InvalidFormat(format!(
-                "无法打开 {}:文件不存在或不是有效的 nosqlite 数据库",
+                "无法打开 {}:文件不存在或不是有效的 nodblite 数据库",
                 path.display()
             ))
         })?;

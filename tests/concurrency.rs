@@ -1,6 +1,6 @@
 //! 并发访问测试(M9 压测基线)。
 //!
-//! 目标:确认 nosqlite 可作为多线程 HTTP 服务的存储层 ——
+//! 目标:确认 nodblite 可作为多线程 HTTP 服务的存储层 ——
 //! `Database` 能跨线程共享(`Send + Sync`),并发读写不丢数据、不返回错误,
 //! 主键冲突在竞争下仍能被正确检测。
 
@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use nosqlite::engine::StorageError;
-use nosqlite::query::{Filter, Update};
-use nosqlite::{Database, DatabaseError, Document};
+use nodblite::engine::StorageError;
+use nodblite::query::{Filter, Update};
+use nodblite::{Database, DatabaseError, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -20,7 +20,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 fn temp_nodb(name: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "nosqlite_test_{}_{}_{}.nodb",
+        "nodblite_test_{}_{}_{}.nodb",
         name,
         std::process::id(),
         n

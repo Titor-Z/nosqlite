@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nosqlite::query::Filter;
-use nosqlite::{Database, Document};
+use nodblite::query::Filter;
+use nodblite::{Database, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -18,7 +18,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 fn temp_nodb(name: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "nosqlite_test_{}_{}_{}.nodb",
+        "nodblite_test_{}_{}_{}.nodb",
         name,
         std::process::id(),
         n
@@ -125,7 +125,7 @@ fn copy_paste_copy_is_fully_usable() {
 
         // 更新副本上的文档,不影响原库
         let upd = serde_json::from_str::<serde_json::Value>(r#"{"$set":{"v":99}}"#).unwrap();
-        let up = nosqlite::query::Update::from_value(&upd).unwrap();
+        let up = nodblite::query::Update::from_value(&upd).unwrap();
         db2.update("t", &filter(r#"{"_id":"a"}"#), &up)
             .expect("副本更新应成功");
         let docs = db2.find("t", &filter(r#"{"_id":"a"}"#)).unwrap();

@@ -11,7 +11,7 @@
 //! | 5 | 缺失字段匹配 `null` |
 //! | 6 | 字段级 `$not` |
 
-use nosqlite::query::{Filter, FilterError};
+use nodblite::query::{Filter, FilterError};
 use serde_json::{Map, Value, json};
 
 /// 构造 filter。

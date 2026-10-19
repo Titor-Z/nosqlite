@@ -13,15 +13,15 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use nosqlite::query::{Filter, FindOptions};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, FindOptions};
+use nodblite::{Database, Document};
 use serde_json::json;
 
 const COLLECTION: &str = "items";
 
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!("nosqlite_bi_{}_{}.nodb", tag, std::process::id()));
+    path.push(format!("nodblite_bi_{}_{}.nodb", tag, std::process::id()));
     let _ = std::fs::remove_file(&path);
     path
 }
@@ -71,7 +71,7 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(100_000);
 
-    println!("=== nosqlite 索引基准(文档数 {}) ===\n", n);
+    println!("=== nodblite 索引基准(文档数 {}) ===\n", n);
 
     let path = temp_nodb("bench");
     let db = Database::create(&path).unwrap();

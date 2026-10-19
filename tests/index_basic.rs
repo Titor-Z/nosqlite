@@ -9,15 +9,15 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{Filter, Update};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, Update};
+use nodblite::{Database, Document};
 use serde_json::json;
 
 /// 生成本次测试独占的临时 `.nodb` 路径。
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_idx_{}_{}_{}.nodb",
+        "nodblite_idx_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -448,10 +448,10 @@ fn unique_index_build_is_not_quadratic() {
     use std::time::Instant;
 
     let path = temp_nodb("unique_perf");
-    let db = nosqlite::Database::create(&path).unwrap();
+    let db = nodblite::Database::create(&path).unwrap();
 
-    let mut docs: Vec<nosqlite::Document> = (0..10_000)
-        .map(|i| nosqlite::Document::from_json(&format!(r#"{{"uid": "u{:06}"}}"#, i)).unwrap())
+    let mut docs: Vec<nodblite::Document> = (0..10_000)
+        .map(|i| nodblite::Document::from_json(&format!(r#"{{"uid": "u{:06}"}}"#, i)).unwrap())
         .collect();
     db.insert_many("items", &mut docs).unwrap();
 
@@ -469,7 +469,7 @@ fn unique_index_build_is_not_quadratic() {
     );
 
     // 唯一性仍然生效
-    let mut dup = nosqlite::Document::from_json(r#"{"uid": "u000000"}"#).unwrap();
+    let mut dup = nodblite::Document::from_json(r#"{"uid": "u000000"}"#).unwrap();
     assert!(db.insert("items", &mut dup).is_err(), "重复值仍应被拒绝");
 
     drop(db);

@@ -3,7 +3,7 @@
 //! 覆盖:操作符形态(标量数组)、文档形态(对象数组)、嵌套路径、
 //! 非数组字段/缺失字段不匹配、与其它条件组合。
 
-use nosqlite::query::Filter;
+use nodblite::query::Filter;
 use serde_json::json;
 
 /// 辅助:从 JSON 构造 filter。

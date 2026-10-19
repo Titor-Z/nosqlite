@@ -3,7 +3,7 @@
 //! 覆盖:顶层/嵌套字段删除、数组元素置 null、路径不存在静默无操作、
 //! `_id` 不可删、与 `$set` 组合、空操作/非法参数报错。
 
-use nosqlite::query::Update;
+use nodblite::query::Update;
 use serde_json::json;
 
 /// 辅助:从 JSON 构造 update。
@@ -95,24 +95,24 @@ fn invalid_forms_rejected() {
 /// 经 Database::update 走 `$unset` 的端到端验证。
 #[test]
 fn end_to_end_via_database() {
-    let path = std::env::temp_dir().join(format!("nosqlite_unset_{}.nodb", std::process::id()));
+    let path = std::env::temp_dir().join(format!("nodblite_unset_{}.nodb", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let db = nosqlite::Database::create(&path).expect("创建库应成功");
+    let db = nodblite::Database::create(&path).expect("创建库应成功");
 
     db.insert(
         "users",
-        &mut nosqlite::Document::from_json(r#"{"_id":"u1","name":"张三","tmp":"待删","age":30}"#)
+        &mut nodblite::Document::from_json(r#"{"_id":"u1","name":"张三","tmp":"待删","age":30}"#)
             .unwrap(),
     )
     .unwrap();
 
-    let filter = nosqlite::query::Filter::from_value(&json!({"_id": "u1"})).unwrap();
+    let filter = nodblite::query::Filter::from_value(&json!({"_id": "u1"})).unwrap();
     let update = Update::from_value(&json!({"$unset": {"tmp": ""}})).unwrap();
     let changed = db.update("users", &filter, &update).unwrap();
     assert_eq!(changed, 1, "应更新 1 条");
 
     let doc = db
-        .find("users", &nosqlite::query::Filter::match_all())
+        .find("users", &nodblite::query::Filter::match_all())
         .unwrap();
     assert_eq!(doc.len(), 1);
     let map = &doc[0];

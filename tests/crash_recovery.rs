@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_crash_{}_{}_{}.nodb",
+        "nodblite_crash_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -31,8 +31,8 @@ fn temp_nodb(tag: &str) -> PathBuf {
 fn truncated_file_rejected() {
     let path = temp_nodb("truncated");
     {
-        let db = nosqlite::Database::create(&path).unwrap();
-        let mut d = nosqlite::Document::from_json(r#"{"a": 1}"#).unwrap();
+        let db = nodblite::Database::create(&path).unwrap();
+        let mut d = nodblite::Document::from_json(r#"{"a": 1}"#).unwrap();
         db.insert("items", &mut d).unwrap();
     }
 
@@ -42,7 +42,7 @@ fn truncated_file_rejected() {
     f.set_len(len / 2).unwrap();
     drop(f);
 
-    let err = nosqlite::Database::open(&path);
+    let err = nodblite::Database::open(&path);
     assert!(err.is_err(), "截断文件必须被拒绝,实际却成功打开了");
 
     let _ = std::fs::remove_file(&path);
@@ -53,8 +53,8 @@ fn truncated_file_rejected() {
 fn corrupted_bytes_rejected_or_consistent() {
     let path = temp_nodb("corrupt");
     {
-        let db = nosqlite::Database::create(&path).unwrap();
-        let mut d = nosqlite::Document::from_json(r#"{"a": 1}"#).unwrap();
+        let db = nodblite::Database::create(&path).unwrap();
+        let mut d = nodblite::Document::from_json(r#"{"a": 1}"#).unwrap();
         db.insert("items", &mut d).unwrap();
     }
 
@@ -67,13 +67,13 @@ fn corrupted_bytes_rejected_or_consistent() {
     std::fs::write(&path, &bytes).unwrap();
 
     // 要么打不开,要么打开后读不到损坏的数据;绝不能返回错乱结果
-    match nosqlite::Database::open(&path) {
+    match nodblite::Database::open(&path) {
         Err(_) => {} // 正确:拒绝损坏文件
         Ok(db) => {
             // 若仍能打开,查询结果必须是「要么有正确数据、要么为空」,
             // 不能是序列化失败后的残缺文档
             let docs = db
-                .find("items", &nosqlite::query::Filter::match_all())
+                .find("items", &nodblite::query::Filter::match_all())
                 .unwrap_or_default();
             for d in docs {
                 assert!(d.contains_key("_id"), "返回的文档必须结构完整");
@@ -93,7 +93,7 @@ fn garbage_file_rejected() {
     drop(f);
 
     assert!(
-        nosqlite::Database::open(&path).is_err(),
+        nodblite::Database::open(&path).is_err(),
         "随机垃圾必须被拒绝"
     );
 
@@ -105,7 +105,7 @@ fn garbage_file_rejected() {
 fn empty_file_rejected() {
     let path = temp_nodb("empty");
     std::fs::File::create(&path).unwrap();
-    assert!(nosqlite::Database::open(&path).is_err(), "空文件必须被拒绝");
+    assert!(nodblite::Database::open(&path).is_err(), "空文件必须被拒绝");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -114,7 +114,7 @@ fn empty_file_rejected() {
 fn wrong_extension_still_rejected() {
     let mut path = temp_nodb("ext");
     path.set_extension("db");
-    assert!(nosqlite::Database::create(&path).is_err());
+    assert!(nodblite::Database::create(&path).is_err());
     let _ = std::fs::remove_file(&path);
 }
 
@@ -140,9 +140,9 @@ fn committed_writes_survive_abort() {
     assert!(!out.success(), "子进程应被 abort 终止");
 
     // 父进程重开:文件必须可用
-    let db = nosqlite::Database::open(&path).expect("崩溃后文件应仍可打开");
+    let db = nodblite::Database::open(&path).expect("崩溃后文件应仍可打开");
     let docs = db
-        .find("items", &nosqlite::query::Filter::match_all())
+        .find("items", &nodblite::query::Filter::match_all())
         .expect("崩溃后查询应成功");
 
     // insert_many 是单事务:要么 200 条全在,要么一条没有
@@ -158,8 +158,8 @@ fn committed_writes_survive_abort() {
         db.create_index("items", "k_1", "k", false, false)
             .expect("崩溃后应能建索引");
         let filter = serde_json::json!({"k": {"$gte": 0}});
-        let f = nosqlite::query::Filter::from_value(&filter).unwrap();
-        let opts = nosqlite::query::FindOptions::default();
+        let f = nodblite::query::Filter::from_value(&filter).unwrap();
+        let opts = nodblite::query::FindOptions::default();
         let want = db.find_with_options("items", &f, &opts).unwrap();
         let got = db.find_planned("items", &f, &filter, &opts).unwrap();
         assert_eq!(want.len(), got.len(), "崩溃后索引与全表扫应一致");
@@ -178,11 +178,11 @@ fn crash_child_writer() {
     let Ok(path) = std::env::var("NOSQLITE_CRASH_PATH") else {
         return;
     };
-    let db = nosqlite::Database::create(std::path::Path::new(&path)).unwrap();
+    let db = nodblite::Database::create(std::path::Path::new(&path)).unwrap();
 
-    let mut docs: Vec<nosqlite::Document> = (0..200)
+    let mut docs: Vec<nodblite::Document> = (0..200)
         .map(|i| {
-            nosqlite::Document::from_json(&format!(r#"{{"k": {}, "n": {}}}"#, i % 5, i)).unwrap()
+            nodblite::Document::from_json(&format!(r#"{{"k": {}, "n": {}}}"#, i % 5, i)).unwrap()
         })
         .collect();
     // 单事务批量写:提交后立刻 abort
@@ -207,10 +207,10 @@ fn repeated_crash_recovery() {
             .expect("应能启动子进程");
         assert!(!out.success(), "第 {} 轮子进程应被 abort", round);
 
-        let db = nosqlite::Database::open(&path)
+        let db = nodblite::Database::open(&path)
             .unwrap_or_else(|e| panic!("第 {} 轮崩溃后应可重开: {:?}", round, e));
         // 子进程每轮都尝试 create(文件已存在会失败),此处只验证可重开
-        let _ = db.find("items", &nosqlite::query::Filter::match_all());
+        let _ = db.find("items", &nodblite::query::Filter::match_all());
         drop(db);
     }
 

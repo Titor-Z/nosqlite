@@ -2,8 +2,8 @@
 //!
 //! 面向两种跨语言出口:
 //!
-//! - **C ABI**(`nosqlite-ffi`):函数返回 `int` 错误码,`nosqlite_last_error()` 取详情;
-//! - **wire 协议**(`nosqlite-server`):映射到 MongoDB 风格的 `code` + HTTP 状态码。
+//! - **C ABI**(`nodblite-ffi`):函数返回 `int` 错误码,`nodblite_last_error()` 取详情;
+//! - **wire 协议**(`nodblite-server`):映射到 MongoDB 风格的 `code` + HTTP 状态码。
 //!
 //! 因此错误码必须**稳定、可程序化判断**,不能依赖中文文案(文案随时可能调整)。
 //! 约定:全部为大写下划线字符串,一旦发布不得改名。
@@ -17,7 +17,7 @@ pub enum ErrorCode {
     DuplicateKey,
     /// 文件路径非法(后缀不是 `.nodb`)。
     InvalidPath,
-    /// 文件不是有效的 nosqlite 数据库 / 魔数不匹配。
+    /// 文件不是有效的 nodblite 数据库 / 魔数不匹配。
     InvalidFormat,
     /// 数据库格式版本不兼容。
     VersionMismatch,

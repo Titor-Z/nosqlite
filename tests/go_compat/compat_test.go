@@ -1,6 +1,6 @@
-// nosqlite-server 的 Go 驱动验收测试。
+// nodblite-server 的 Go 驱动验收测试。
 //
-// 这是阶段 2 的**真正验收标准**:用 MongoDB 官方 Go 驱动连接 nosqlite-server,
+// 这是阶段 2 的**真正验收标准**:用 MongoDB 官方 Go 驱动连接 nodblite-server,
 // 走完整协议栈(OP_MSG + BSON + 游标),而不是自己造的客户端。
 //
 // 运行(由 tests/mongo_wire.rs 驱动,或手动):

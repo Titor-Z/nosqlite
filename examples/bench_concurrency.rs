@@ -1,7 +1,7 @@
 //! 并发写入排队压测示例(M9 压测基线)。
 //!
 //! 回答一个关键问题:redb 是**单写事务**模型,多线程并发写入时是真正并行、
-//! 还是被串行化?这决定了 nosqlite 作为 HTTP 服务存储层时的写入吞吐上限。
+//! 还是被串行化?这决定了 nodblite 作为 HTTP 服务存储层时的写入吞吐上限。
 //!
 //! 做法:同样的总写入量,分别用单线程和多线程跑一遍,比较墙上时钟;
 //! 若两者接近,说明写入被串行化(排队),并发只带来锁竞争开销而非吞吐提升。
@@ -19,7 +19,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nosqlite::{Database, Document};
+use nodblite::{Database, Document};
 
 /// 主函数:跑单线程与多线程两组写入并比较。
 fn main() {
@@ -33,7 +33,7 @@ fn main() {
         .map(|s| s.parse().expect("线程数必须是正整数"))
         .unwrap_or(8);
 
-    println!("nosqlite 并发写入排队压测(M9)");
+    println!("nodblite 并发写入排队压测(M9)");
     println!(
         "总量 {} 条,线程数 {};每条插入均为独立写事务",
         total, threads
@@ -120,7 +120,7 @@ fn run_multi(total: usize, threads: usize) -> Duration {
     assert_eq!(
         db.count(
             "items",
-            &nosqlite::query::Filter::from_value(&serde_json::Value::Null).unwrap()
+            &nodblite::query::Filter::from_value(&serde_json::Value::Null).unwrap()
         )
         .expect("计数应成功"),
         total,
@@ -139,7 +139,7 @@ static FILE_SEQ: AtomicU32 = AtomicU32::new(0);
 fn temp_nodb(tag: &str) -> PathBuf {
     let seq = FILE_SEQ.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "nosqlite_bench_conc_{}_{}_{}.nodb",
+        "nodblite_bench_conc_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         seq

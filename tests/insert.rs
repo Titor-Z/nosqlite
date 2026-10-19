@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nosqlite::{Database, DatabaseError, Document};
+use nodblite::{Database, DatabaseError, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -15,7 +15,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 fn temp_nodb(name: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "nosqlite_test_{}_{}_{}.nodb",
+        "nodblite_test_{}_{}_{}.nodb",
         name,
         std::process::id(),
         n
@@ -70,7 +70,7 @@ fn insert_duplicate_id_fails() {
     let mut doc2 = Document::from_json(r#"{"_id":"same_id","v":2}"#).unwrap();
     let err = db.insert("users", &mut doc2).expect_err("重复主键应失败");
     match err {
-        DatabaseError::Storage(nosqlite::engine::StorageError::DuplicateKey { collection, id }) => {
+        DatabaseError::Storage(nodblite::engine::StorageError::DuplicateKey { collection, id }) => {
             assert_eq!(collection, "users");
             assert_eq!(id, "same_id");
         }
@@ -109,7 +109,7 @@ fn insert_rejects_empty_collection() {
     assert!(
         matches!(
             err,
-            DatabaseError::Storage(nosqlite::engine::StorageError::InvalidCollection(_))
+            DatabaseError::Storage(nodblite::engine::StorageError::InvalidCollection(_))
         ),
         "应报 InvalidCollection"
     );
@@ -137,7 +137,7 @@ fn insert_persists_across_reopen() {
     assert!(
         matches!(
             err,
-            DatabaseError::Storage(nosqlite::engine::StorageError::DuplicateKey { .. })
+            DatabaseError::Storage(nodblite::engine::StorageError::DuplicateKey { .. })
         ),
         "持久化后应仍能检测到主键冲突"
     );

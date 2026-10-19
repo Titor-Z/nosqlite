@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::{Map, Value};
 
-use nosqlite::query::{Filter, FindOptions, SortSpec, Update};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, FindOptions, SortSpec, Update};
+use nodblite::{Database, Document};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -19,7 +19,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 fn temp_nodb(name: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "nosqlite_test_{}_{}_{}.nodb",
+        "nodblite_test_{}_{}_{}.nodb",
         name,
         std::process::id(),
         n

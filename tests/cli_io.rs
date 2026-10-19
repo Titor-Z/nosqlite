@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 fn temp_path(tag: &str, ext: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_cli_io_{}_{}_{}.{}",
+        "nodblite_cli_io_{}_{}_{}.{}",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -26,7 +26,7 @@ fn temp_path(tag: &str, ext: &str) -> PathBuf {
 
 /// 向 CLI 注入若干行命令,返回 stdout+stderr。
 fn run_shell(lines: &[String]) -> String {
-    let exe = env!("CARGO_BIN_EXE_nosqlite");
+    let exe = env!("CARGO_BIN_EXE_nodblite");
     let mut child = Command::new(exe)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

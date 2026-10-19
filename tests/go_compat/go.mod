@@ -1,4 +1,4 @@
-module github.com/Titor-Z/nosqlite/tests/go_compat
+module github.com/Titor-Z/nodblite/tests/go_compat
 
 go 1.21
 

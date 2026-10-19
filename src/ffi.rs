@@ -5,20 +5,20 @@
 //! 骨架照搬 SQLite(**不透明句柄 + 错误码 + 游标**),但在三处按现代标准做,
 //! 因为 SQLite 被 2004 年的 ABI 永久兼容拖住,做不到这些:
 //!
-//! 1. **arena 结果**:`nosqlite_result` 一次性持有全部返回数据,
-//!    只需 [`nosqlite_result_free`] 调一次 —— 修掉「每个返回值单独 free」的泄漏重灾区;
+//! 1. **arena 结果**:`nodblite_result` 一次性持有全部返回数据,
+//!    只需 [`nodblite_result_free`] 调一次 —— 修掉「每个返回值单独 free」的泄漏重灾区;
 //! 2. **结构化错误**:错误码 + 中文消息 + 操作名 + 字段路径 + 输入偏移;
 //! 3. **`struct_size` 版本化 options**:后续加参数不需要 `_v2` 新函数。
 //!
 //! # 内存约定
 //!
-//! - 所有 `nosqlite_result *` 与 `char *` 由本库分配,**必须**用对应函数释放;
-//! - 句柄 `nosqlite_db *` 用 [`nosqlite_close`] 释放;
-//! - 返回的切片在 `nosqlite_result_free` 之前一直有效(Rust 侧用 `Box::leak` 保活)。
+//! - 所有 `nodblite_result *` 与 `char *` 由本库分配,**必须**用对应函数释放;
+//! - 句柄 `nodblite_db *` 用 [`nodblite_close`] 释放;
+//! - 返回的切片在 `nodblite_result_free` 之前一直有效(Rust 侧用 `Box::leak` 保活)。
 //!
 //! # 线程
 //!
-//! `nosqlite_db` 内部是 `Database`(`Send + Sync`),可跨线程共享,但**不要**在
+//! `nodblite_db` 内部是 `Database`(`Send + Sync`),可跨线程共享,但**不要**在
 //! 同一句柄上并发调用 `close`。错误信息按线程局部存储,不跨线程共享。
 
 use std::ffi::{CStr, CString, c_char};
@@ -39,31 +39,31 @@ pub const NOSQLITE_OK: i32 = 0;
 /// 字符串切片(UTF-8,无 NUL 结尾;用 `len` 定界)。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct NosqliteSlice {
+pub struct NodbliteSlice {
     /// 数据指针。
     pub ptr: *const c_char,
     /// 字节长度。
     pub len: usize,
 }
 
-/// 结构化错误(线程局部,由 [`nosqlite_last_error`] 返回,无需释放)。
+/// 结构化错误(线程局部,由 [`nodblite_last_error`] 返回,无需释放)。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct NosqliteError {
+pub struct NodbliteError {
     /// 稳定错误码(见 [`ErrorCode`])。
     pub code: i32,
     /// 错误码字符串(`"DUPLICATE_KEY"` 等)。
-    pub code_str: NosqliteSlice,
+    pub code_str: NodbliteSlice,
     /// 中文消息(供人阅读)。
-    pub message: NosqliteSlice,
+    pub message: NodbliteSlice,
     /// 出错的操作名(`"open"`/`"insert"`/...)。
-    pub op: NosqliteSlice,
+    pub op: NodbliteSlice,
 }
 
 /// 查询结果(arena:全部数据整块持有,只需释放一次)。
 #[repr(C)]
 #[derive(Debug)]
-pub struct NosqliteResult {
+pub struct NodbliteResult {
     /// 错误码,0 表示成功。
     pub code: i32,
     /// 文档/数据条数。
@@ -71,16 +71,16 @@ pub struct NosqliteResult {
     /// 受影响行数(update/delete/upsert 的计数),其余操作为 0。
     pub affected: u64,
     /// 文档 JSON 数组(每条一个切片),共 `count` 个。
-    pub docs: *mut NosqliteSlice,
+    pub docs: *mut NodbliteSlice,
     /// 单值结果的 JSON(如 `insert` 返回的 `_id`),无则为空切片。
-    pub value: NosqliteSlice,
+    pub value: NodbliteSlice,
 }
 
 /// 打开选项(`struct_size` 版本化,未来加字段不需新函数)。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct NosqliteOpenOptions {
-    /// 必须填 `size_of::<NosqliteOpenOptions>()`。
+pub struct NodbliteOpenOptions {
+    /// 必须填 `size_of::<NodbliteOpenOptions>()`。
     pub struct_size: u32,
     /// 保留标志位,当前必须为 0。
     pub flags: u32,
@@ -93,8 +93,8 @@ pub struct NosqliteOpenOptions {
 /// 查询选项。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct NosqliteFindOptions {
-    /// 必须填 `size_of::<NosqliteFindOptions>()`。
+pub struct NodbliteFindOptions {
+    /// 必须填 `size_of::<NodbliteFindOptions>()`。
     pub struct_size: u32,
     /// 跳过条数。
     pub skip: u64,
@@ -107,13 +107,13 @@ pub struct NosqliteFindOptions {
 }
 
 /// 不透明数据库句柄。
-pub struct NosqliteDb {
+pub struct NodbliteDb {
     /// 底层数据库(可跨线程共享)。
     inner: Database,
 }
 
 /// 不透明游标句柄(分块游标:内部按批取页)。
-pub struct NosqliteCursor {
+pub struct NodbliteCursor {
     /// 剩余待取的结果(已按批加载)。
     pending: std::vec::IntoIter<Map<String, Value>>,
     /// 本批已取到的文档在内存中的持有者。
@@ -156,13 +156,13 @@ fn set_error_msg(op: &str, code: ErrorCode, msg: &str) -> i32 {
 }
 
 /// 构造成功的空结果。
-fn ok_empty() -> *mut NosqliteResult {
-    Box::into_raw(Box::new(NosqliteResult {
+fn ok_empty() -> *mut NodbliteResult {
+    Box::into_raw(Box::new(NodbliteResult {
         code: NOSQLITE_OK,
         count: 0,
         affected: 0,
         docs: std::ptr::null_mut(),
-        value: NosqliteSlice {
+        value: NodbliteSlice {
             ptr: std::ptr::null(),
             len: 0,
         },
@@ -170,13 +170,13 @@ fn ok_empty() -> *mut NosqliteResult {
 }
 
 /// 构造失败结果。
-fn err_result(code: i32) -> *mut NosqliteResult {
-    Box::into_raw(Box::new(NosqliteResult {
+fn err_result(code: i32) -> *mut NodbliteResult {
+    Box::into_raw(Box::new(NodbliteResult {
         code,
         count: 0,
         affected: 0,
         docs: std::ptr::null_mut(),
-        value: NosqliteSlice {
+        value: NodbliteSlice {
             ptr: std::ptr::null(),
             len: 0,
         },
@@ -184,14 +184,14 @@ fn err_result(code: i32) -> *mut NosqliteResult {
 }
 
 /// 构造带单值的结果。
-fn ok_value(value: &str) -> *mut NosqliteResult {
+fn ok_value(value: &str) -> *mut NodbliteResult {
     let c = CString::new(value).unwrap_or_default();
-    let slice = NosqliteSlice {
+    let slice = NodbliteSlice {
         ptr: c.as_ptr(),
         len: c.as_bytes().len(),
     };
     std::mem::forget(c); // 由 result_free 通过 Box::from_raw 回收
-    Box::into_raw(Box::new(NosqliteResult {
+    Box::into_raw(Box::new(NodbliteResult {
         code: NOSQLITE_OK,
         count: 0,
         affected: 0,
@@ -201,15 +201,15 @@ fn ok_value(value: &str) -> *mut NosqliteResult {
 }
 
 /// 构造文档列表结果。
-fn ok_docs(docs: &[Map<String, Value>], affected: u64) -> *mut NosqliteResult {
+fn ok_docs(docs: &[Map<String, Value>], affected: u64) -> *mut NodbliteResult {
     let mut owned: Vec<CString> = Vec::with_capacity(docs.len());
     for doc in docs {
         let text = serde_json::to_string(doc).unwrap_or_else(|_| "{}".to_string());
         owned.push(CString::new(text).unwrap_or_default());
     }
     // 用 with_capacity 精确分配:释放时 Vec::from_raw_parts 的 capacity 必须与分配时一致
-    let mut slices: Vec<NosqliteSlice> = Vec::with_capacity(owned.len());
-    slices.extend(owned.iter().map(|c| NosqliteSlice {
+    let mut slices: Vec<NodbliteSlice> = Vec::with_capacity(owned.len());
+    slices.extend(owned.iter().map(|c| NodbliteSlice {
         ptr: c.as_ptr(),
         len: c.as_bytes().len(),
     }));
@@ -218,12 +218,12 @@ fn ok_docs(docs: &[Map<String, Value>], affected: u64) -> *mut NosqliteResult {
     // 泄露两个 Vec:由 result_free 回收
     std::mem::forget(slices);
     std::mem::forget(owned);
-    Box::into_raw(Box::new(NosqliteResult {
+    Box::into_raw(Box::new(NodbliteResult {
         code: NOSQLITE_OK,
         count,
         affected,
         docs: ptr,
-        value: NosqliteSlice {
+        value: NodbliteSlice {
             ptr: std::ptr::null(),
             len: 0,
         },
@@ -297,10 +297,10 @@ fn parse_update(op: &str, raw: &str) -> Result<Update, i32> {
 ///
 /// `path` 必须是合法 NUL 结尾的 UTF-8 字符串。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_open(
+pub unsafe extern "C" fn nodblite_open(
     path: *const c_char,
     create_if_missing: u8,
-) -> *mut NosqliteDb {
+) -> *mut NodbliteDb {
     let Some(path) = (unsafe { read_str(path, "open", "path") }) else {
         return std::ptr::null_mut();
     };
@@ -311,7 +311,7 @@ pub unsafe extern "C" fn nosqlite_open(
         Database::create(p)
     };
     match result {
-        Ok(inner) => Box::into_raw(Box::new(NosqliteDb { inner })),
+        Ok(inner) => Box::into_raw(Box::new(NodbliteDb { inner })),
         Err(e) => {
             set_error("open", &e);
             std::ptr::null_mut()
@@ -321,24 +321,24 @@ pub unsafe extern "C" fn nosqlite_open(
 
 /// 用选项结构打开数据库(可扩展入口)。
 ///
-/// `opts` 为 `NULL` 时等价于 [`nosqlite_open`](path, create_if_missing = 1)。
+/// `opts` 为 `NULL` 时等价于 [`nodblite_open`](path, create_if_missing = 1)。
 ///
 /// # Safety
 ///
 /// `path` 必须是合法 NUL 结尾字符串;`opts` 若非空,其 `struct_size` 必须
-/// 不小于 [`NosqliteOpenOptions`] 的当前大小。
+/// 不小于 [`NodbliteOpenOptions`] 的当前大小。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_open_ex(
+pub unsafe extern "C" fn nodblite_open_ex(
     path: *const c_char,
-    opts: *const NosqliteOpenOptions,
-) -> *mut NosqliteDb {
+    opts: *const NodbliteOpenOptions,
+) -> *mut NodbliteDb {
     // 未提供选项:走默认(不存在则创建)
     let Some(opts) = (unsafe { opts.as_ref() }) else {
-        return unsafe { nosqlite_open(path, 1) };
+        return unsafe { nodblite_open(path, 1) };
     };
 
     // struct_size 校验:允许调用方传更大的结构(将来字段扩展),但不允许更小
-    let required = std::mem::size_of::<NosqliteOpenOptions>() as u32;
+    let required = std::mem::size_of::<NodbliteOpenOptions>() as u32;
     if opts.struct_size < required {
         set_error_msg(
             "open_ex",
@@ -359,16 +359,16 @@ pub unsafe extern "C" fn nosqlite_open_ex(
         return std::ptr::null_mut();
     }
 
-    unsafe { nosqlite_open(path, opts.create_if_missing) }
+    unsafe { nodblite_open(path, opts.create_if_missing) }
 }
 
 /// 关闭数据库句柄。
 ///
 /// # Safety
 ///
-/// `db` 必须来自 [`nosqlite_open`] 且未被重复关闭。
+/// `db` 必须来自 [`nodblite_open`] 且未被重复关闭。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_close(db: *mut NosqliteDb) {
+pub unsafe extern "C" fn nodblite_close(db: *mut NodbliteDb) {
     if db.is_null() {
         return;
     }
@@ -381,13 +381,13 @@ pub unsafe extern "C" fn nosqlite_close(db: *mut NosqliteDb) {
 ///
 /// # Safety
 ///
-/// 指针参数须合法;返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_insert(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_insert(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     doc_json: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg(
             "insert",
@@ -426,13 +426,13 @@ pub unsafe extern "C" fn nosqlite_insert(
 ///
 /// # Safety
 ///
-/// 指针参数须合法;返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_insert_many(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_insert_many(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     docs_json: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg(
             "insert_many",
@@ -483,13 +483,13 @@ pub unsafe extern "C" fn nosqlite_insert_many(
 ///
 /// # Safety
 ///
-/// 指针参数须合法;返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_get(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_get(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     id: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg("get", ErrorCode::Internal, "数据库句柄为空"));
     };
@@ -509,14 +509,14 @@ pub unsafe extern "C" fn nosqlite_get(
 /// 查询文档,返回结果集(`docs` 为文档 JSON 数组)。
 ///
 /// 为便于小结果集使用,`filter`/`sort`/`fields` 可为 NULL(表示缺省)。
-/// 大结果集请改用 [`nosqlite_find_cursor`] 逐条取,避免一次性占用内存。
+/// 大结果集请改用 [`nodblite_find_cursor`] 逐条取,避免一次性占用内存。
 ///
 /// # Safety
 ///
-/// 指针参数须合法(允许 NULL);返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法(允许 NULL);返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_find(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_find(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     filter_json: *const c_char,
     sort_json: *const c_char,
@@ -524,7 +524,7 @@ pub unsafe extern "C" fn nosqlite_find(
     skip: u64,
     limit: u64,
     limit_is_null: u8,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg("find", ErrorCode::Internal, "数据库句柄为空"));
     };
@@ -591,14 +591,14 @@ pub unsafe extern "C" fn nosqlite_find(
 
 /// 打开游标逐条读取(分块加载,内存 O(批大小))。
 ///
-/// 用法:`while (nosqlite_cursor_next(cur)) { ... }`,结束后调 [`nosqlite_cursor_close`]。
+/// 用法:`while (nodblite_cursor_next(cur)) { ... }`,结束后调 [`nodblite_cursor_close`]。
 ///
 /// # Safety
 ///
-/// 指针参数须合法(允许 NULL);返回的游标须用 [`nosqlite_cursor_close`] 释放。
+/// 指针参数须合法(允许 NULL);返回的游标须用 [`nodblite_cursor_close`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_find_cursor(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_find_cursor(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     filter_json: *const c_char,
     sort_json: *const c_char,
@@ -606,7 +606,7 @@ pub unsafe extern "C" fn nosqlite_find_cursor(
     skip: u64,
     limit: u64,
     limit_is_null: u8,
-) -> *mut NosqliteCursor {
+) -> *mut NodbliteCursor {
     let Some(db) = (unsafe { db.as_ref() }) else {
         set_error_msg("find_cursor", ErrorCode::Internal, "数据库句柄为空");
         return std::ptr::null_mut();
@@ -663,7 +663,7 @@ pub unsafe extern "C" fn nosqlite_find_cursor(
     };
 
     match result {
-        Ok(docs) => Box::into_raw(Box::new(NosqliteCursor {
+        Ok(docs) => Box::into_raw(Box::new(NodbliteCursor {
             pending: docs.into_iter(),
             arena: Vec::new(),
         })),
@@ -676,13 +676,13 @@ pub unsafe extern "C" fn nosqlite_find_cursor(
 
 /// 推进游标并返回当前文档 JSON(`NULL` 表示结束)。
 ///
-/// 返回的指针在下一次 `nosqlite_cursor_next` 或 `cursor_close` 之前有效。
+/// 返回的指针在下一次 `nodblite_cursor_next` 或 `cursor_close` 之前有效。
 ///
 /// # Safety
 ///
-/// `cur` 必须来自 [`nosqlite_find_cursor`] 且未关闭。
+/// `cur` 必须来自 [`nodblite_find_cursor`] 且未关闭。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_cursor_next(cur: *mut NosqliteCursor) -> *const c_char {
+pub unsafe extern "C" fn nodblite_cursor_next(cur: *mut NodbliteCursor) -> *const c_char {
     let Some(cur) = (unsafe { cur.as_mut() }) else {
         return std::ptr::null();
     };
@@ -703,9 +703,9 @@ pub unsafe extern "C" fn nosqlite_cursor_next(cur: *mut NosqliteCursor) -> *cons
 ///
 /// # Safety
 ///
-/// `cur` 必须来自 [`nosqlite_find_cursor`] 且未被重复关闭。
+/// `cur` 必须来自 [`nodblite_find_cursor`] 且未被重复关闭。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_cursor_close(cur: *mut NosqliteCursor) {
+pub unsafe extern "C" fn nodblite_cursor_close(cur: *mut NodbliteCursor) {
     if cur.is_null() {
         return;
     }
@@ -716,14 +716,14 @@ pub unsafe extern "C" fn nosqlite_cursor_close(cur: *mut NosqliteCursor) {
 ///
 /// # Safety
 ///
-/// 指针参数须合法;返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_update(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_update(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     filter_json: *const c_char,
     update_json: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     unsafe { update_or_delete(db, collection, filter_json, update_json, true) }
 }
 
@@ -731,24 +731,24 @@ pub unsafe extern "C" fn nosqlite_update(
 ///
 /// # Safety
 ///
-/// 指针参数须合法;返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_delete(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_delete(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     filter_json: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     unsafe { update_or_delete(db, collection, filter_json, std::ptr::null(), false) }
 }
 
 /// update/delete 的共同实现。
 unsafe fn update_or_delete(
-    db: *mut NosqliteDb,
+    db: *mut NodbliteDb,
     collection: *const c_char,
     filter_json: *const c_char,
     update_json: *const c_char,
     is_update: bool,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let op = if is_update { "update" } else { "delete" };
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg(op, ErrorCode::Internal, "数据库句柄为空"));
@@ -774,7 +774,7 @@ unsafe fn update_or_delete(
             Ok(n) => {
                 let r = unsafe { &mut *ok_empty() };
                 r.affected = n as u64;
-                r as *mut NosqliteResult
+                r as *mut NodbliteResult
             }
             Err(e) => err_result(set_error(op, &e)),
         }
@@ -783,7 +783,7 @@ unsafe fn update_or_delete(
             Ok(n) => {
                 let r = unsafe { &mut *ok_empty() };
                 r.affected = n as u64;
-                r as *mut NosqliteResult
+                r as *mut NodbliteResult
             }
             Err(e) => err_result(set_error(op, &e)),
         }
@@ -794,14 +794,14 @@ unsafe fn update_or_delete(
 ///
 /// # Safety
 ///
-/// 指针参数须合法;返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_upsert(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_upsert(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     filter_json: *const c_char,
     update_json: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg(
             "upsert",
@@ -843,13 +843,13 @@ pub unsafe extern "C" fn nosqlite_upsert(
 ///
 /// # Safety
 ///
-/// 指针参数须合法(允许 NULL);返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法(允许 NULL);返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_count(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_count(
+    db: *mut NodbliteDb,
     collection: *const c_char,
     filter_json: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg(
             "count",
@@ -869,7 +869,7 @@ pub unsafe extern "C" fn nosqlite_count(
         Ok(n) => {
             let r = unsafe { &mut *ok_empty() };
             r.affected = n as u64;
-            r as *mut NosqliteResult
+            r as *mut NodbliteResult
         }
         Err(e) => err_result(set_error("count", &e)),
     }
@@ -879,9 +879,9 @@ pub unsafe extern "C" fn nosqlite_count(
 ///
 /// # Safety
 ///
-/// 返回值须用 [`nosqlite_result_free`] 释放。
+/// 返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_list_collections(db: *mut NosqliteDb) -> *mut NosqliteResult {
+pub unsafe extern "C" fn nodblite_list_collections(db: *mut NodbliteDb) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg(
             "list_collections",
@@ -896,13 +896,13 @@ pub unsafe extern "C" fn nosqlite_list_collections(db: *mut NosqliteDb) -> *mut 
 }
 
 /// 把字符串列表打包成结果(每个元素一个 JSON 字符串切片)。
-fn ok_strings(items: &[String]) -> *mut NosqliteResult {
+fn ok_strings(items: &[String]) -> *mut NodbliteResult {
     let owned: Vec<CString> = items
         .iter()
         .map(|n| CString::new(serde_json::to_string(n).unwrap_or_default()).unwrap_or_default())
         .collect();
-    let mut slices: Vec<NosqliteSlice> = Vec::with_capacity(owned.len());
-    slices.extend(owned.iter().map(|c| NosqliteSlice {
+    let mut slices: Vec<NodbliteSlice> = Vec::with_capacity(owned.len());
+    slices.extend(owned.iter().map(|c| NodbliteSlice {
         ptr: c.as_ptr(),
         len: c.as_bytes().len(),
     }));
@@ -910,12 +910,12 @@ fn ok_strings(items: &[String]) -> *mut NosqliteResult {
     let ptr = slices.as_mut_ptr();
     std::mem::forget(slices);
     std::mem::forget(owned);
-    Box::into_raw(Box::new(NosqliteResult {
+    Box::into_raw(Box::new(NodbliteResult {
         code: NOSQLITE_OK,
         count,
         affected: 0,
         docs: ptr,
-        value: NosqliteSlice {
+        value: NodbliteSlice {
             ptr: std::ptr::null(),
             len: 0,
         },
@@ -929,12 +929,12 @@ fn ok_strings(items: &[String]) -> *mut NosqliteResult {
 ///
 /// # Safety
 ///
-/// 指针参数须合法;返回值须用 [`nosqlite_result_free`] 释放。
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_exec(
-    db: *mut NosqliteDb,
+pub unsafe extern "C" fn nodblite_exec(
+    db: *mut NodbliteDb,
     command_json: *const c_char,
-) -> *mut NosqliteResult {
+) -> *mut NodbliteResult {
     let Some(db) = (unsafe { db.as_ref() }) else {
         return err_result(set_error_msg("exec", ErrorCode::Internal, "数据库句柄为空"));
     };
@@ -1126,7 +1126,7 @@ pub unsafe extern "C" fn nosqlite_exec(
                 Ok(n) => {
                     let r = unsafe { &mut *ok_empty() };
                     r.affected = n as u64;
-                    r as *mut NosqliteResult
+                    r as *mut NodbliteResult
                 }
                 Err(e) => err_result(set_error("exec.update", &e)),
             }
@@ -1152,7 +1152,7 @@ pub unsafe extern "C" fn nosqlite_exec(
                 Ok(UpsertResult::Updated(n)) => {
                     let r = unsafe { &mut *ok_empty() };
                     r.affected = n as u64;
-                    r as *mut NosqliteResult
+                    r as *mut NodbliteResult
                 }
                 Err(e) => err_result(set_error("exec.upsert", &e)),
             }
@@ -1166,7 +1166,7 @@ pub unsafe extern "C" fn nosqlite_exec(
                 Ok(n) => {
                     let r = unsafe { &mut *ok_empty() };
                     r.affected = n as u64;
-                    r as *mut NosqliteResult
+                    r as *mut NodbliteResult
                 }
                 Err(e) => err_result(set_error("exec.delete", &e)),
             }
@@ -1180,7 +1180,7 @@ pub unsafe extern "C" fn nosqlite_exec(
                 Ok(n) => {
                     let r = unsafe { &mut *ok_empty() };
                     r.affected = n as u64;
-                    r as *mut NosqliteResult
+                    r as *mut NodbliteResult
                 }
                 Err(e) => err_result(set_error("exec.count", &e)),
             }
@@ -1201,7 +1201,7 @@ pub unsafe extern "C" fn nosqlite_exec(
 
 /// 取本条线程最近一次错误的错误码(0 表示无错误)。
 #[unsafe(no_mangle)]
-pub extern "C" fn nosqlite_last_error_code() -> i32 {
+pub extern "C" fn nodblite_last_error_code() -> i32 {
     let code = LAST_CODE.with(|c| c.get());
     // 无错误时 LAST_ERROR 为空
     if LAST_ERROR.with(|e| e.borrow().is_none()) {
@@ -1215,9 +1215,9 @@ pub extern "C" fn nosqlite_last_error_code() -> i32 {
 ///
 /// 返回的指针与其中切片在下一次调用本库前有效,**不需要**释放。
 #[unsafe(no_mangle)]
-pub extern "C" fn nosqlite_last_error() -> *const NosqliteError {
+pub extern "C" fn nodblite_last_error() -> *const NodbliteError {
     thread_local! {
-        static ERR: std::cell::RefCell<Option<NosqliteError>> =
+        static ERR: std::cell::RefCell<Option<NodbliteError>> =
             const { std::cell::RefCell::new(None) };
         static KEEP: std::cell::RefCell<(Option<CString>, Option<CString>, Option<CString>)> =
             const { std::cell::RefCell::new((None, None, None)) };
@@ -1232,16 +1232,16 @@ pub extern "C" fn nosqlite_last_error() -> *const NosqliteError {
             *keep = (msg, op, Some(code_c));
             let (m, o, c) = (&keep.0, &keep.1, &keep.2);
             let slice_of = |s: &Option<CString>| match s {
-                Some(v) => NosqliteSlice {
+                Some(v) => NodbliteSlice {
                     ptr: v.as_ptr(),
                     len: v.as_bytes().len(),
                 },
-                None => NosqliteSlice {
+                None => NodbliteSlice {
                     ptr: std::ptr::null(),
                     len: 0,
                 },
             };
-            let err = NosqliteError {
+            let err = NodbliteError {
                 code: code.as_i32(),
                 code_str: slice_of(c),
                 message: slice_of(m),
@@ -1250,18 +1250,18 @@ pub extern "C" fn nosqlite_last_error() -> *const NosqliteError {
             let _ = slot.borrow_mut().insert(err);
             slot.borrow()
                 .as_ref()
-                .map_or(std::ptr::null(), |e| e as *const NosqliteError)
+                .map_or(std::ptr::null(), |e| e as *const NodbliteError)
         })
     })
 }
 
-/// 释放 [`NosqliteResult`] 及其持有的全部数据(整块释放,只需调一次)。
+/// 释放 [`NodbliteResult`] 及其持有的全部数据(整块释放,只需调一次)。
 ///
 /// # Safety
 ///
 /// `r` 必须来自本库且未被重复释放。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nosqlite_result_free(r: *mut NosqliteResult) {
+pub unsafe extern "C" fn nodblite_result_free(r: *mut NodbliteResult) {
     if r.is_null() {
         return;
     }

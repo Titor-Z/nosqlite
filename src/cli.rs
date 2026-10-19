@@ -1,11 +1,11 @@
 //! 类 sqlite3 的命令行工具(交互式 TTY,对齐 sqlite3 形态)。
 //!
 //! 使用方法:
-//! - `nosqlite`:直接进入交互式 shell,未绑定任何数据库;
-//! - `nosqlite <file.nodb>`:打开该数据库进入 shell,文件不存在则自动创建;
-//! - `nosqlite -h`/`--help`/`help`:显示用法。
+//! - `nodblite`:直接进入交互式 shell,未绑定任何数据库;
+//! - `nodblite <file.nodb>`:打开该数据库进入 shell,文件不存在则自动创建;
+//! - `nodblite -h`/`--help`/`help`:显示用法。
 //!
-//! shell 内命令(提示符 `nosqlite> `)不带文件路径:
+//! shell 内命令(提示符 `nodblite> `)不带文件路径:
 //! - 数据库管理:`open <file>`(不存在则创建)、`create <file>`(新建,已存在拒绝)、`databases`(显示当前绑定);
 //! - 集合操作(无点):`insert/find/update/upsert/delete/count/drop <collection> ...`;
 //! - 导入导出与统计:`.export <collection> [file]`、`.import <collection> <file>`、`.stats`;
@@ -107,8 +107,8 @@ pub fn run() -> ExitCode {
             }
         },
         _ => {
-            eprintln!("错误: 参数过多,`nosqlite` 只接受可选的 <file.nodb> 路径。");
-            eprintln!("输入 `nosqlite help` 查看用法。");
+            eprintln!("错误: 参数过多,`nodblite` 只接受可选的 <file.nodb> 路径。");
+            eprintln!("输入 `nodblite help` 查看用法。");
             ExitCode::FAILURE
         }
     }
@@ -146,7 +146,7 @@ fn run_shell(initial: Option<Database>) -> ExitCode {
     let stdin = std::io::stdin();
     loop {
         // 打印提示符并刷新缓冲区
-        print!("nosqlite> ");
+        print!("nodblite> ");
         if std::io::stdout().flush().is_err() {
             break;
         }
@@ -1016,7 +1016,7 @@ fn format_size(bytes: u64) -> String {
 
 /// 打印 shell 内命令用法。
 fn print_shell_help() {
-    println!("nosqlite shell 内命令(不带文件路径):");
+    println!("nodblite shell 内命令(不带文件路径):");
     println!();
     println!("数据库管理(点命令):");
     println!("  .open <file.nodb>       打开数据库(不存在则自动创建);无参 = 关闭当前");
@@ -1068,14 +1068,14 @@ fn print_shell_help() {
 
 /// 打印顶层用法。
 fn print_help() {
-    println!("nosqlite —— 像 SQLite 一样小巧的单文件 NoSQL 数据库");
+    println!("nodblite —— 像 SQLite 一样小巧的单文件 NoSQL 数据库");
     println!();
     println!("用法:");
-    println!("  nosqlite                  直接进入交互式 shell(未绑定数据库)");
-    println!("  nosqlite <file.nodb>      打开数据库进入 shell,文件不存在则自动创建");
-    println!("  nosqlite -h|--help|help   显示本帮助");
+    println!("  nodblite                  直接进入交互式 shell(未绑定数据库)");
+    println!("  nodblite <file.nodb>      打开数据库进入 shell,文件不存在则自动创建");
+    println!("  nodblite -h|--help|help   显示本帮助");
     println!();
-    println!("进入 shell 后,输入 `help` 查看 shell 内命令(提示符 `nosqlite> `)。");
+    println!("进入 shell 后,输入 `help` 查看 shell 内命令(提示符 `nodblite> `)。");
     println!();
     println!("说明:");
     println!("  - 文件后缀必须为 .nodb,不支持其他后缀或无后缀");

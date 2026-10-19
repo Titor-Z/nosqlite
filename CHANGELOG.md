@@ -126,7 +126,7 @@
 ## [0.3.0] - 2026-09-16
 
 ### 新增
-- **`nosqlite-server`**:MongoDB wire 协议服务端。BSON 编解码零新依赖,OP_MSG / OP_QUERY,18 个命令。
+- **`nodblite-server`**:MongoDB wire 协议服务端。BSON 编解码零新依赖,OP_MSG / OP_QUERY,18 个命令。
 - Go 官方驱动验收通过。
 
 ## [0.2.2] - 2026-09-16
@@ -137,7 +137,7 @@
 ## [0.2.1] - 2026-09-16
 
 ### 新增
-- **C ABI**(`src/ffi.rs` + `include/nosqlite.h`):不透明句柄、arena 结果、结构化错误、游标;`tests/c_smoke.c` 真实 C 程序冒烟;`examples/python/nosqlite.py`。
+- **C ABI**(`src/ffi.rs` + `include/nodblite.h`):不透明句柄、arena 结果、结构化错误、游标;`tests/c_smoke.c` 真实 C 程序冒烟;`examples/python/nodblite.py`。
 
 ## [0.2.0] - 2026-09-16
 

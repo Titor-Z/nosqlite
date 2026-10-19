@@ -5,14 +5,14 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{Filter, FindOptions};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, FindOptions};
+use nodblite::{Database, Document};
 use serde_json::{Map, Value, json};
 
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_m28f_{}_{}_{}.nodb",
+        "nodblite_m28f_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()

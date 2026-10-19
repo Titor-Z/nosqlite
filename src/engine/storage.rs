@@ -15,7 +15,7 @@ pub enum StorageError {
     InvalidPath(String),
     /// 底层 IO 错误。
     Io(std::io::Error),
-    /// 文件不是有效的 nosqlite 数据库(不存在/非 nosqlite 创建/魔数不匹配)。
+    /// 文件不是有效的 nodblite 数据库(不存在/非 nodblite 创建/魔数不匹配)。
     InvalidFormat(String),
     /// 数据库格式版本不兼容(由更高/更低版本创建)。
     VersionMismatch {
@@ -49,7 +49,7 @@ impl fmt::Display for StorageError {
                 if *found > *expected {
                     write!(
                         f,
-                        "数据库格式版本({})高于当前引擎支持的版本({}),请升级 nosqlite",
+                        "数据库格式版本({})高于当前引擎支持的版本({}),请升级 nodblite",
                         found, expected
                     )
                 } else {

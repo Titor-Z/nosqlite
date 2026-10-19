@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nosqlite::engine::{RedbEngine, Storage, StorageError};
+use nodblite::engine::{RedbEngine, Storage, StorageError};
 
 /// 全局自增计数器,用于生成唯一的临时文件路径。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -14,7 +14,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 fn temp_nodb(name: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "nosqlite_test_{}_{}_{}.nodb",
+        "nodblite_test_{}_{}_{}.nodb",
         name,
         std::process::id(),
         n
@@ -30,7 +30,7 @@ fn cleanup(path: &Path) {
 fn temp_path(name: &str, ext: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "nosqlite_test_{}_{}_{}.{}",
+        "nodblite_test_{}_{}_{}.{}",
         name,
         std::process::id(),
         n,
@@ -104,7 +104,7 @@ fn create_rejects_no_suffix() {
 fn create_accepts_uppercase_suffix() {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let path = std::env::temp_dir().join(format!(
-        "nosqlite_test_upper_{}_{}.NODB",
+        "nodblite_test_upper_{}_{}.NODB",
         std::process::id(),
         n
     ));
@@ -118,7 +118,7 @@ fn create_accepts_uppercase_suffix() {
 fn open_nonexistent_fails() {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let path = std::env::temp_dir().join(format!(
-        "nosqlite_test_missing_{}_{}.nodb",
+        "nodblite_test_missing_{}_{}.nodb",
         std::process::id(),
         n
     ));
@@ -130,11 +130,11 @@ fn open_nonexistent_fails() {
     );
 }
 
-/// 打开一个魔数不匹配的文件(纯 redb 数据库、非 nosqlite 创建)应被拒绝。
+/// 打开一个魔数不匹配的文件(纯 redb 数据库、非 nodblite 创建)应被拒绝。
 #[test]
 fn open_foreign_redb_fails() {
     let path = temp_nodb("foreign");
-    // 直接用 redb 创建,但不写 nosqlite 元数据
+    // 直接用 redb 创建,但不写 nodblite 元数据
     let db = redb::Database::create(&path).expect("用 redb 直接创建");
     drop(db);
 
@@ -151,7 +151,7 @@ fn open_foreign_redb_fails() {
 #[test]
 fn open_garbage_file_fails() {
     let path = temp_nodb("garbage");
-    std::fs::write(&path, b"this is definitely not a nosqlite database file")
+    std::fs::write(&path, b"this is definitely not a nodblite database file")
         .expect("写入垃圾数据应成功");
 
     let err = RedbEngine::open(&path).expect_err("垃圾文件应被拒绝");

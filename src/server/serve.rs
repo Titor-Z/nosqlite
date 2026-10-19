@@ -125,7 +125,7 @@ pub fn serve(config: ServerConfig) -> std::io::Result<()> {
 
     let listener = TcpListener::bind(&config.addr)?;
     println!(
-        "nosqlite-server 已启动: {} (数据库 {},兼容 MongoDB wire 协议)",
+        "nodblite-server 已启动: {} (数据库 {},兼容 MongoDB wire 协议)",
         config.addr, config.db_path
     );
 
@@ -259,7 +259,7 @@ fn dispatch(
         other => err_doc(
             59,
             "CommandNotFound",
-            &format!("nosqlite-server 尚未实现命令: {}", other),
+            &format!("nodblite-server 尚未实现命令: {}", other),
         ),
     }
 }
@@ -289,9 +289,9 @@ fn hello_response() -> Map<String, Value> {
 /// `buildInfo` 响应(驱动/工具常探测)。
 fn build_info() -> Map<String, Value> {
     ok_doc([
-        ("version", json!("8.0.0-nosqlite")),
+        ("version", json!("8.0.0-nodblite")),
         ("versionArray", json!([8, 0, 0, 0])),
-        ("gitVersion", json!("nosqlite")),
+        ("gitVersion", json!("nodblite")),
         ("modules", json!([])),
         ("allocator", json!("system")),
         ("javascriptEngine", json!("none")),
@@ -471,7 +471,7 @@ fn build_cursor_response(
     batch_size: usize,
     field: &str,
 ) -> Map<String, Value> {
-    let ns = format!("nosqlite.{}", coll);
+    let ns = format!("nodblite.{}", coll);
     let total = docs.len();
     let take = batch_size.max(1).min(total);
     let first: Vec<Value> = docs[..take].iter().cloned().map(Value::Object).collect();
@@ -525,7 +525,7 @@ fn cmd_get_more(cmd: &Map<String, Value>) -> Map<String, Value> {
 
     match cursors().next_batch(id, batch_size) {
         Some((coll, batch)) => {
-            let ns = format!("nosqlite.{}", coll);
+            let ns = format!("nodblite.{}", coll);
             let docs: Vec<Value> = batch.into_iter().map(Value::Object).collect();
             // 游标是否耗尽:registry 在取完最后一批时会移除,故再查一次
             let still_exists = cursors()
@@ -923,7 +923,7 @@ fn cmd_list_collections(db: &Database, _cmd: &Map<String, Value>) -> Map<String,
         .collect();
     ok_doc([(
         "cursor",
-        json!({"firstBatch": first_batch, "id": {"$numberLong": "0"}, "ns": "nosqlite.$cmd.listCollections"}),
+        json!({"firstBatch": first_batch, "id": {"$numberLong": "0"}, "ns": "nodblite.$cmd.listCollections"}),
     )])
 }
 
@@ -938,7 +938,7 @@ fn cmd_list_databases(db: &Database, _cmd: &Map<String, Value>) -> Map<String, V
         (
             "databases",
             json!([{
-                "name": "nosqlite",
+                "name": "nodblite",
                 "sizeOnDisk": 0,
                 "empty": total == 0,
             }]),
@@ -1036,7 +1036,7 @@ fn cmd_list_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Valu
         "v": 2,
         "key": {"_id": 1},
         "name": "_id_",
-        "ns": format!("nosqlite.{}", coll),
+        "ns": format!("nodblite.{}", coll),
     }));
 
     for def in db.list_indexes(coll).unwrap_or_default() {
@@ -1049,7 +1049,7 @@ fn cmd_list_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Valu
         doc.insert("v".into(), json!(2));
         doc.insert("key".into(), Value::Object(key));
         doc.insert("name".into(), json!(def.name));
-        doc.insert("ns".into(), json!(format!("nosqlite.{}", coll)));
+        doc.insert("ns".into(), json!(format!("nodblite.{}", coll)));
         if def.unique {
             doc.insert("unique".into(), json!(true));
         }
@@ -1063,7 +1063,7 @@ fn cmd_list_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Valu
         "cursor",
         json!({
             "id": json!({"$numberLong": "0"}),
-            "ns": format!("nosqlite.{}.$cmd.listIndexes", coll),
+            "ns": format!("nodblite.{}.$cmd.listIndexes", coll),
             "firstBatch": batch,
         }),
     )])
@@ -1099,7 +1099,7 @@ fn cmd_drop(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
     match db.drop_collection(coll) {
         Ok(_) => ok_doc([
             ("nIndexesWas", json!(1)),
-            ("ns", json!(format!("nosqlite.{}", coll))),
+            ("ns", json!(format!("nodblite.{}", coll))),
         ]),
         Err(e) => err_doc(2, "BadValue", &e.to_string()),
     }
@@ -1111,7 +1111,7 @@ fn cmd_drop_database(db: &Database) -> Map<String, Value> {
     for n in names {
         let _ = db.drop_collection(&n);
     }
-    ok_doc([("dropped", json!("nosqlite"))])
+    ok_doc([("dropped", json!("nodblite"))])
 }
 
 /// `aggregate`:先支持 `$match/$sort/$limit/$skip` 组成的简单管道。
@@ -1253,7 +1253,7 @@ fn cmd_explain(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
         Ok(plan) => ok_doc([(
             "queryPlanner",
             json!({
-                "namespace": format!("nosqlite.{}", coll),
+                "namespace": format!("nodblite.{}", coll),
                 "winningPlan": plan,
             }),
         )]),
@@ -1370,7 +1370,7 @@ fn aggregate_group(
         "cursor",
         json!({
             "id": json!({"$numberLong": "0"}),
-            "ns": format!("nosqlite.{}.$cmd.aggregate", coll),
+            "ns": format!("nodblite.{}.$cmd.aggregate", coll),
             "firstBatch": batch,
         }),
     )])

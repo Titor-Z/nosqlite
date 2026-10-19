@@ -2,14 +2,14 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{Filter, FindOptions};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, FindOptions};
+use nodblite::{Database, Document};
 use serde_json::{Map, Value, json};
 
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_m28p_{}_{}_{}.nodb",
+        "nodblite_m28p_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -29,7 +29,7 @@ fn project(tag: &str, doc: Value, projection: Value) -> Map<String, Value> {
     db.insert("items", &mut d).unwrap();
 
     let opts = FindOptions {
-        projection: Some(nosqlite::query::Projection::from_value(&projection).unwrap()),
+        projection: Some(nodblite::query::Projection::from_value(&projection).unwrap()),
         ..Default::default()
     };
     let mut docs = db
@@ -164,7 +164,7 @@ fn elem_match_projection_multiple_fields() {
 /// 非法参数被拒绝。
 #[test]
 fn projection_operator_errors() {
-    use nosqlite::query::Projection;
+    use nodblite::query::Projection;
     // $slice 的 limit 必须为正
     assert!(Projection::from_value(&json!({"a": {"$slice": [0, 0]}})).is_err());
     // $slice 需要整数或数组

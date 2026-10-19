@@ -6,14 +6,14 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{Filter, FindOptions, Update};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, FindOptions, Update};
+use nodblite::{Database, Document};
 use serde_json::{Map, Value, json};
 
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_m27_{}_{}_{}.nodb",
+        "nodblite_m27_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -46,7 +46,7 @@ fn values(docs: &[Map<String, Value>], field: &str) -> Vec<i64> {
 /// 规划查询。
 fn planned(db: &Database, cond: &Value, sort: &Value) -> Vec<Map<String, Value>> {
     let opts = FindOptions {
-        sort: Some(nosqlite::query::SortSpec::from_value(sort).unwrap()),
+        sort: Some(nodblite::query::SortSpec::from_value(sort).unwrap()),
         ..Default::default()
     };
     db.find_planned("items", &Filter::from_value(cond).unwrap(), cond, &opts)
@@ -61,7 +61,7 @@ fn descending_index_matches_desc_sort() {
     let docs: Vec<Value> = (0..10).map(|i| json!({"n": i})).collect();
     let (path, db) = setup("desc", docs);
 
-    let def = nosqlite::index::def::IndexDef::new_with_directions(
+    let def = nodblite::index::def::IndexDef::new_with_directions(
         "items",
         "n_-1",
         &["n"],
@@ -80,7 +80,7 @@ fn descending_index_matches_desc_sort() {
         .explain(
             "items",
             &json!({"n": {"$gte": 0}}),
-            Some(&nosqlite::query::SortSpec::from_value(&json!({"n": -1})).unwrap()),
+            Some(&nodblite::query::SortSpec::from_value(&json!({"n": -1})).unwrap()),
         )
         .unwrap();
     assert_eq!(
@@ -104,7 +104,7 @@ fn descending_index_with_asc_sort_is_not_sorted_by_index() {
     db.create_index_with_directions("items", "n_-1", &["n"], &[-1], false, false)
         .unwrap();
 
-    let sort = nosqlite::query::SortSpec::from_value(&json!({"n": 1})).unwrap();
+    let sort = nodblite::query::SortSpec::from_value(&json!({"n": 1})).unwrap();
     let plan = db
         .explain("items", &json!({"n": {"$gte": 0}}), Some(&sort))
         .unwrap();
@@ -130,7 +130,7 @@ fn ascending_index_with_desc_sort() {
     let (path, db) = setup("asc_desc", docs);
     db.create_index("items", "n_1", "n", false, false).unwrap();
 
-    let sort = nosqlite::query::SortSpec::from_value(&json!({"n": -1})).unwrap();
+    let sort = nodblite::query::SortSpec::from_value(&json!({"n": -1})).unwrap();
     let plan = db
         .explain("items", &json!({"n": {"$gte": 0}}), Some(&sort))
         .unwrap();
@@ -152,7 +152,7 @@ fn descending_index_with_pagination() {
         .unwrap();
 
     let opts = FindOptions {
-        sort: Some(nosqlite::query::SortSpec::from_value(&json!({"n": -1})).unwrap()),
+        sort: Some(nodblite::query::SortSpec::from_value(&json!({"n": -1})).unwrap()),
         skip: 2,
         limit: Some(3),
         ..Default::default()
@@ -191,7 +191,7 @@ fn descending_index_results_match_collscan() {
     ];
     for cond in conds {
         let opts = FindOptions {
-            sort: Some(nosqlite::query::SortSpec::from_value(&json!({"n": -1})).unwrap()),
+            sort: Some(nodblite::query::SortSpec::from_value(&json!({"n": -1})).unwrap()),
             ..Default::default()
         };
         let want = db
@@ -222,7 +222,7 @@ fn composite_all_descending() {
     db.create_index_with_directions("items", "a_-1_b_-1", &["a", "b"], &[-1, -1], false, false)
         .unwrap();
 
-    let sort = nosqlite::query::SortSpec::from_value(&json!({"a": -1, "b": -1})).unwrap();
+    let sort = nodblite::query::SortSpec::from_value(&json!({"a": -1, "b": -1})).unwrap();
     let plan = db.explain("items", &json!({"a": 1}), Some(&sort)).unwrap();
     assert_eq!(plan["stage"], json!("IXSCAN"));
     assert_eq!(plan["sortedByIndex"], json!(true));
@@ -239,7 +239,7 @@ fn mixed_direction_index_still_filters() {
     db.create_index_with_directions("items", "a_1_b_-1", &["a", "b"], &[1, -1], false, false)
         .unwrap();
 
-    let sort = nosqlite::query::SortSpec::from_value(&json!({"a": 1, "b": -1})).unwrap();
+    let sort = nodblite::query::SortSpec::from_value(&json!({"a": 1, "b": -1})).unwrap();
     let plan = db.explain("items", &json!({"a": 1}), Some(&sort)).unwrap();
     // 混向索引的方向无法用单次扫描满足 → 保守不标记
     assert_eq!(plan["sortedByIndex"], json!(false));
@@ -265,7 +265,7 @@ fn mixed_direction_index_still_filters() {
 /// 方向在定义 JSON 中持久化;旧定义(无 directions)默认全升序。
 #[test]
 fn directions_persist_and_default() {
-    let def = nosqlite::index::def::IndexDef::new_with_directions(
+    let def = nodblite::index::def::IndexDef::new_with_directions(
         "c",
         "i",
         &["a", "b"],
@@ -274,12 +274,12 @@ fn directions_persist_and_default() {
         false,
     );
     let bytes = def.to_json();
-    let back = nosqlite::index::def::IndexDef::from_json("c", "i", &bytes).unwrap();
+    let back = nodblite::index::def::IndexDef::from_json("c", "i", &bytes).unwrap();
     assert_eq!(back.directions, vec![1, -1]);
 
     // 模拟 M26 及更早的定义(只有 fields,没有 directions)
     let legacy = br#"{"fields":["a","b"],"unique":false,"sparse":false}"#;
-    let old = nosqlite::index::def::IndexDef::from_json("c", "i", legacy).unwrap();
+    let old = nodblite::index::def::IndexDef::from_json("c", "i", legacy).unwrap();
     assert_eq!(old.directions, vec![1, 1], "旧定义应默认为升序");
 
     drop((def, back));

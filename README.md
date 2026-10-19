@@ -1,14 +1,14 @@
-# nosqlite
+# nodblite
 
 **像 SQLite 一样小巧的单文件 NoSQL 数据库** —— MongoDB 风格的文档模型,单文件(`.nodb`)零配置部署。
 
 ```bash
-cargo add nosqlite
+cargo add nodblite
 ```
 
 ## 它是什么
 
-nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可直接拷贝的单文件里:
+nodblite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可直接拷贝的单文件里:
 
 - **单文件存储**:整个数据库就是 一个 `.nodb` 文件,复制即迁移、备份即拷贝;
 - **文档模型**:JSON 文档 + 自动主键 `_id`,集合隔离,无需建表;
@@ -24,25 +24,25 @@ nosqlite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可�
 - **列表页一次扫描**:`find_page_total` 同时返回「匹配总数 + 当页文档」,省掉一次全表 `count`;
 - **字段投影**:`Projection` / CLI `--fields`,列表页只取需要的字段;
 - **复合值可比较**:数组/对象按 BSON 风格递归比较,可排序,`$eq`/`$in` 为精确深度匹配;
-- **附带 CLI**:`nosqlite <file.nodb>` 进入 sqlite3 风格 REPL(点命令管理 + 无点 CRUD);
+- **附带 CLI**:`nodblite <file.nodb>` 进入 sqlite3 风格 REPL(点命令管理 + 无点 CRUD);
 - **导入导出与统计**:`.export`(JSON Lines)/`.import`(JSONL 或 JSON 数组,单事务)/`.stats`。
 
 底层是 [redb](https://crates.io/crates/redb)(纯 Rust 单文件 B+树 KV 存储),之上提供文档语义层。`.nodb` 格式版本 v1。
 
 ## 路线:双形态
 
-nosqlite 有两个形态,共用同一套查询语义:
+nodblite 有两个形态,共用同一套查询语义:
 
 | 形态 | 形态说明 | 状态 |
 |---|---|---|
-| **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程;适合本地 GUI/App、CLI、桌面软件 | ✅ **已实现**(`include/nosqlite.h`) |
-| **服务端(wire 协议)** | `nosqlite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连,可替换 mongodb-server | ✅ **已实现**(Go + Node 官方驱动验收通过) |
+| **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程;适合本地 GUI/App、CLI、桌面软件 | ✅ **已实现**(`include/nodblite.h`) |
+| **服务端(wire 协议)** | `nodblite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连,可替换 mongodb-server | ✅ **已实现**(Go + Node 官方驱动验收通过) |
 
 当前已完成端侧全部能力(Rust 内嵌 API + CLI)。
 
 ## 何时**不要**用
 
-诚实地说,nosqlite 不适合以下场景:
+诚实地说,nodblite 不适合以下场景:
 
 - **需要跨进程/跨机器并发写**:单写事务模型,写入被串行化(多线程写无加速比);
 - **需要聚合管道、事务(跨文档)、索引下推**:未实现;大数据量排序分页是全量抽排序键的两遍法;
@@ -85,11 +85,11 @@ nosqlite 有两个形态,共用同一套查询语义:
 
 ### 跨语言契约
 
-为 C ABI(`nosqlite-ffi`)与 MongoDB wire 协议共用,以下三项已冻结:
+为 C ABI(`nodblite-ffi`)与 MongoDB wire 协议共用,以下三项已冻结:
 
 | 契约 | 说明 |
 |---|---|
-| **错误码** | `nosqlite::ErrorCode`,`as_str()` 如 `DUPLICATE_KEY`/`INVALID_FILTER`,`as_i32()` 供 C 侧返回(0 保留给成功) |
+| **错误码** | `nodblite::ErrorCode`,`as_str()` 如 `DUPLICATE_KEY`/`INVALID_FILTER`,`as_i32()` 供 C 侧返回(0 保留给成功) |
 | **字段序** | 文档字段顺序**保持写入顺序**(已开启 `serde_json/preserve_order`),投影后 `_id` 恒在最前 |
 | **Extended JSON** | `$date`/`$oid`/`$numberLong`/`$numberDouble` 在比较与匹配时按真实类型归一,存储层不改写 |
 
@@ -104,33 +104,33 @@ nosqlite 有两个形态,共用同一套查询语义:
 
 ## 嵌入到任意语言(C ABI)
 
-构建后得到 `libnosqlite.dylib` / `.so` / `.dll`,配合 `include/nosqlite.h` 即可被任何语言**进程内**调用 —— 没有服务进程,没有网络。
+构建后得到 `libnodblite.dylib` / `.so` / `.dll`,配合 `include/nodblite.h` 即可被任何语言**进程内**调用 —— 没有服务进程,没有网络。
 
 ```c
-#include "nosqlite.h"
+#include "nodblite.h"
 
-NosqliteDb *db = nosqlite_open("app.nodb", 1);
-NosqliteResult *r = nosqlite_insert(db, "users", "{\"name\":\"张三\"}");
+NodbliteDb *db = nodblite_open("app.nodb", 1);
+NodbliteResult *r = nodblite_insert(db, "users", "{\"name\":\"张三\"}");
 char id[64];
 snprintf(id, sizeof(id), "%.*s", (int)r->value.len, r->value.ptr);
-nosqlite_result_free(r);            // 整块释放,只需一次
+nodblite_result_free(r);            // 整块释放,只需一次
 
 /* 游标:大结果集逐条取,内存 O(批大小) */
-NosqliteCursor *cur = nosqlite_find_cursor(db, "users", NULL, NULL, NULL, 0, 0, 1);
+NodbliteCursor *cur = nodblite_find_cursor(db, "users", NULL, NULL, NULL, 0, 0, 1);
 const char *doc;
-while ((doc = nosqlite_cursor_next(cur)) != NULL) {
+while ((doc = nodblite_cursor_next(cur)) != NULL) {
     puts(doc);
 }
-nosqlite_cursor_close(cur);
+nodblite_cursor_close(cur);
 
-nosqlite_close(db);
+nodblite_close(db);
 ```
 
 设计上**骨架照搬 SQLite**(不透明句柄 + `int` 错误码 + 游标),但修掉它因 2004 年 ABI 冻结而做不到的三件事:
 
-| 现代化点 | SQLite | nosqlite |
+| 现代化点 | SQLite | nodblite |
 |---|---|---|
-| 结果释放 | 每个返回值单独 `sqlite3_free` | **arena,一次 `nosqlite_result_free`** |
+| 结果释放 | 每个返回值单独 `sqlite3_free` | **arena,一次 `nodblite_result_free`** |
 | 错误信息 | 一个笼统错误码 | **结构化**:`{code, code_str, message, op}` |
 | 接口演进 | 只能堆 `_v2`/`_v3` | **`struct_size` 版本化 options** |
 
@@ -138,13 +138,13 @@ nosqlite_close(db);
 
 两种方式,任选:
 
-**① 预编译包**(推荐):从 [GitHub Releases](https://github.com/Titor-Z/nosqlite/releases) 下载对应平台的 `nosqlite-ffi-<platform>.tar.gz`,内含动态库、静态库与 `include/nosqlite.h`,并附 `.sha256` 校验。
+**① 预编译包**(推荐):从 [GitHub Releases](https://github.com/Titor-Z/nosqlite/releases) 下载对应平台的 `nodblite-ffi-<platform>.tar.gz`,内含动态库、静态库与 `include/nodblite.h`,并附 `.sha256` 校验。
 
 | 平台 | 动态库 | 静态库 |
 |---|---|---|
-| Linux x86_64 | `libnosqlite.so` | `libnosqlite.a` |
-| macOS aarch64 | `libnosqlite.dylib` | `libnosqlite.a` |
-| Windows x86_64 | `nosqlite.dll` | `nosqlite.lib` |
+| Linux x86_64 | `libnodblite.so` | `libnodblite.a` |
+| macOS aarch64 | `libnodblite.dylib` | `libnodblite.a` |
+| Windows x86_64 | `nodblite.dll` | `nodblite.lib` |
 
 **② 本地构建**:`cargo build --release`,产物在 `target/release/`。
 
@@ -153,40 +153,40 @@ nosqlite_close(db);
 ```python
 # Python(标准库 ctypes,零依赖)
 import ctypes
-lib = ctypes.CDLL("./libnosqlite.dylib")
-lib.nosqlite_open.restype = ctypes.c_void_p
-lib.nosqlite_open.argtypes = [ctypes.c_char_p, ctypes.c_uint8]
-db = lib.nosqlite_open(b"app.nodb", 1)
+lib = ctypes.CDLL("./libnodblite.dylib")
+lib.nodblite_open.restype = ctypes.c_void_p
+lib.nodblite_open.argtypes = [ctypes.c_char_p, ctypes.c_uint8]
+db = lib.nodblite_open(b"app.nodb", 1)
 ```
 
 ```go
 // Go(cgo)
 /*
-#cgo LDFLAGS: -L. -lnosqlite
-#include "nosqlite.h"
+#cgo LDFLAGS: -L. -lnodblite
+#include "nodblite.h"
 */
 import "C"
-// C.nosqlite_open(cPath, 1)
+// C.nodblite_open(cPath, 1)
 ```
 
 ```rust
 // Rust:直接用 crate,无需 C ABI(编译期零开销)
-let db = nosqlite::Database::open(Path::new("app.nodb"))?;
+let db = nodblite::Database::open(Path::new("app.nodb"))?;
 ```
 
-- 完整 Python 示例(纯标准库 `ctypes`,无第三方依赖):[`examples/python/nosqlite.py`](examples/python/nosqlite.py)
-- 错误码表见 `include/nosqlite.h` 顶部宏定义;程序化判断请用 `code`,不要匹配消息文本
+- 完整 Python 示例(纯标准库 `ctypes`,无第三方依赖):[`examples/python/nodblite.py`](examples/python/nodblite.py)
+- 错误码表见 `include/nodblite.h` 顶部宏定义;程序化判断请用 `code`,不要匹配消息文本
 
 > ⚠️ 用 ctypes 调用时**必须声明 `argtypes`**,否则句柄的 64 位指针会被当成 `int` 截断而段错误。
 
-## 作为 MongoDB 服务端(nosqlite-server)
+## 作为 MongoDB 服务端(nodblite-server)
 
 ```bash
-./nosqlite-server app.nodb                      # 默认监听 127.0.0.1:27017
-./nosqlite-server --addr 0.0.0.0:27018 app.nodb
+./nodblite-server app.nodb                      # 默认监听 127.0.0.1:27017
+./nodblite-server --addr 0.0.0.0:27018 app.nodb
 ```
 
-然后用**任意 MongoDB 官方驱动**直连,无需 nosqlite 专属 SDK:
+然后用**任意 MongoDB 官方驱动**直连,无需 nodblite 专属 SDK:
 
 ```go
 client, _ := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:27017"))
@@ -218,7 +218,7 @@ const list = await users.find({ age: { $gte: 18 } }).sort({ age: -1 }).toArray()
 ## 快速上手
 
 ```rust
-use nosqlite::{query::Filter, Document, Database};
+use nodblite::{query::Filter, Document, Database};
 use serde_json::json;
 
 let db = Database::create("app.nodb")?;
@@ -234,11 +234,11 @@ for doc in db.find("users", &filter)? {
 }
 
 // 按 _id 更新(主键直达,不经扫描)
-let update = nosqlite::query::Update::from_value(&json!({"$set": {"vip": true}}))?;
+let update = nodblite::query::Update::from_value(&json!({"$set": {"vip": true}}))?;
 db.update_by_id("users", &id, &update)?;
 
 // 计数自增 / 去重追加
-let inc = nosqlite::query::Update::from_value(&json!({"inc": {"views": 1}}))?;
+let inc = nodblite::query::Update::from_value(&json!({"inc": {"views": 1}}))?;
 db.update_by_id("users", &id, &inc)?;
 
 // upsert:命中则更新,未命中按 filter 等值字段新建
@@ -249,13 +249,13 @@ db.update_or_insert("users", &filter, &update)?;
 CLI:
 
 ```text
-$ nosqlite app.nodb
-nosqlite> insert users {"name": "张三", "age": 30}
+$ nodblite app.nodb
+nodblite> insert users {"name": "张三", "age": 30}
 插入成功: 集合 `users`, _id = 6aaa...
-nosqlite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
-nosqlite> .stats
-nosqlite> .export users backup.jsonl
-nosqlite> .import users backup.jsonl
+nodblite> find users {"age": {"$gte": 18}} --sort {"age": -1} --limit 10
+nodblite> .stats
+nodblite> .export users backup.jsonl
+nodblite> .import users backup.jsonl
 ```
 
 ## 性能参考

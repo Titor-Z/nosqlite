@@ -5,17 +5,17 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{
+use nodblite::query::{
     Filter, Projection, SortSpec, Update, as_number_double, as_number_long, as_oid,
 };
-use nosqlite::{Database, Document, ErrorCode};
+use nodblite::{Database, Document, ErrorCode};
 use serde_json::{Value, json};
 
 /// 生成本次测试独占的临时 `.nodb` 路径。
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_contract_{}_{}_{}.nodb",
+        "nodblite_contract_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -64,7 +64,7 @@ fn field_order_survives_projection() {
         .find_with_options(
             "c",
             &Filter::match_all(),
-            &nosqlite::query::FindOptions {
+            &nodblite::query::FindOptions {
                 sort: None,
                 projection: Some(proj),
                 skip: 0,
@@ -109,7 +109,7 @@ fn duplicate_key_code() {
 #[test]
 fn invalid_filter_code() {
     let err = Filter::from_value(&json!([])).expect_err("顶层非对象应报错");
-    let db_err: nosqlite::DatabaseError = err.into();
+    let db_err: nodblite::DatabaseError = err.into();
     assert_eq!(db_err.code(), ErrorCode::InvalidFilter);
     assert_eq!(db_err.code().as_str(), "INVALID_FILTER");
 }
@@ -119,7 +119,7 @@ fn invalid_filter_code() {
 fn invalid_update_code() {
     // `$pull` 自 v0.6.1 起已支持,这里用一个真正未知的操作符
     let err = Update::from_value(&json!({"$nosuchop": {"a": 1}})).expect_err("未知操作符应报错");
-    let db_err: nosqlite::DatabaseError = err.into();
+    let db_err: nodblite::DatabaseError = err.into();
     assert_eq!(db_err.code(), ErrorCode::InvalidUpdate);
     assert_eq!(db_err.code().as_str(), "INVALID_UPDATE");
 }
@@ -128,7 +128,7 @@ fn invalid_update_code() {
 #[test]
 fn invalid_sort_code() {
     let err = SortSpec::from_value(&json!({"a": 2})).expect_err("方向非法应报错");
-    let db_err: nosqlite::DatabaseError = err.into();
+    let db_err: nodblite::DatabaseError = err.into();
     assert_eq!(db_err.code(), ErrorCode::InvalidSort);
 }
 
@@ -136,14 +136,14 @@ fn invalid_sort_code() {
 #[test]
 fn invalid_projection_code() {
     let err = Projection::from_value(&json!({"a": 1, "b": 0})).expect_err("混用应报错");
-    let db_err: nosqlite::DatabaseError = err.into();
+    let db_err: nodblite::DatabaseError = err.into();
     assert_eq!(db_err.code(), ErrorCode::InvalidProjection);
 }
 
 /// 路径后缀非法 → `INVALID_PATH`。
 #[test]
 fn invalid_path_code() {
-    let path = std::env::temp_dir().join(format!("nosqlite_bad_{}.db", std::process::id()));
+    let path = std::env::temp_dir().join(format!("nodblite_bad_{}.db", std::process::id()));
     let err = Database::create(&path).expect_err("非法后缀应报错");
     assert_eq!(err.code(), ErrorCode::InvalidPath);
 }
@@ -287,7 +287,7 @@ fn extended_json_persists_as_written() {
 
     // filter 里的 $oid 包装作为初始值写入(存储层不改写)
     let id = match result {
-        nosqlite::UpsertResult::Inserted(id) => id,
+        nodblite::UpsertResult::Inserted(id) => id,
         other => panic!("应插入,实际: {:?}", other),
     };
     let doc = db.get_by_id("c", &id).unwrap().unwrap();

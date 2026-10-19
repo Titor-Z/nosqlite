@@ -1,6 +1,6 @@
 //! 更新操作符扩展(v0.1.4):`$inc`/`$mul`/`$min`/`$max`/`$rename`/`$push`/`$addToSet`/`$currentDate`。
 
-use nosqlite::query::{Update, UpdateError, as_date};
+use nodblite::query::{Update, UpdateError, as_date};
 use serde_json::{Map, Value, json};
 
 /// 构造更新。

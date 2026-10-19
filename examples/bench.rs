@@ -1,4 +1,4 @@
-//! nosqlite 读路径压测(M9 压测基线)。
+//! nodblite 读路径压测(M9 压测基线)。
 //!
 //! 目的:用真实数据量回答两个问题 ——
 //! 1. 全量扫描的**耗时**随数据量如何增长(#5、#7);
@@ -6,7 +6,7 @@
 //!
 //! # 数据载入方式
 //!
-//! 本示例只压**读路径**,因此数据用**批量单事务**直接写入 redb(沿用 nosqlite 的
+//! 本示例只压**读路径**,因此数据用**批量单事务**直接写入 redb(沿用 nodblite 的
 //! key 布局 `集合名(0x00)doc_id` 与元数据表 `nosqlite_meta`),生成的是标准 `.nodb` 文件,
 //! 之后用 `Database::open` 打开并测量。
 //! 这样做的原因:逐条插入的写路径瓶颈已在 `examples/bench_write.rs` 单独量化
@@ -23,8 +23,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nosqlite::query::{Filter, SortSpec, Update};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, SortSpec, Update};
+use nodblite::{Database, Document};
 
 /// 默认压测规模。
 const DEFAULT_SIZES: [usize; 2] = [10_000, 100_000];
@@ -59,7 +59,7 @@ struct Round {
 fn main() {
     let (sizes, repeat) = parse_args();
 
-    println!("nosqlite 读路径压测(M9 压测基线)");
+    println!("nodblite 读路径压测(M9 压测基线)");
     println!(
         "规模 {:?},每档重复 {} 次取中位数;数据以批量单事务载入(见文件头说明)",
         sizes, repeat
@@ -119,7 +119,7 @@ fn run_round(docs: &[(String, Vec<u8>)]) -> Round {
     assert_eq!(ids.len(), n, "批量插入条数应正确");
     drop(docs_parsed);
 
-    // ---- 用 nosqlite 的公开 API 打开并测量读路径 ----
+    // ---- 用 nodblite 的公开 API 打开并测量读路径 ----
     let null = Filter::from_value(&serde_json::Value::Null).unwrap();
 
     // 全量 find(旧 API 对照:内存 O(命中数) = O(n))
@@ -285,7 +285,7 @@ fn temp_nodb(n: usize) -> PathBuf {
     static SEQ: AtomicU32 = AtomicU32::new(0);
     let seq = SEQ.fetch_add(1, Ordering::SeqCst);
     let path = std::env::temp_dir().join(format!(
-        "nosqlite_bench_{}_{}_{}.nodb",
+        "nodblite_bench_{}_{}_{}.nodb",
         std::process::id(),
         n,
         seq

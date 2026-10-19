@@ -2,8 +2,8 @@
 //!
 //! 覆盖 `Document` 的创建/解析/序列化、`_id` 主键规则,以及 ObjectId 生成。
 
-use nosqlite::Document;
-use nosqlite::document::ObjectId;
+use nodblite::Document;
+use nodblite::document::ObjectId;
 
 /// 空文档创建后为空 JSON 对象。
 #[test]
@@ -28,7 +28,7 @@ fn from_json_rejects_non_object() {
     for bad in [r#"[1,2,3]"#, r#""hello""#, r#"42"#, "null"] {
         let err = Document::from_json(bad).expect_err("非对象顶层应报错");
         assert!(
-            matches!(err, nosqlite::DocumentError::NotAnObject),
+            matches!(err, nodblite::DocumentError::NotAnObject),
             "输入 {} 应报 NotAnObject",
             bad
         );
@@ -40,7 +40,7 @@ fn from_json_rejects_non_object() {
 fn from_json_rejects_bad_json() {
     let err = Document::from_json("{not valid").expect_err("非法 JSON 应报错");
     assert!(
-        matches!(err, nosqlite::DocumentError::Json(_)),
+        matches!(err, nodblite::DocumentError::Json(_)),
         "应报 Json 错误"
     );
 }
@@ -79,7 +79,7 @@ fn ensure_id_rejects_non_string_id() {
         let mut doc = Document::from_json(bad).unwrap();
         let err = doc.ensure_id().expect_err("非字符串 _id 应报错");
         assert!(
-            matches!(err, nosqlite::DocumentError::IdNotString),
+            matches!(err, nodblite::DocumentError::IdNotString),
             "输入 {} 应报 IdNotString",
             bad
         );

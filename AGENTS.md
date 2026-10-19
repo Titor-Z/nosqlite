@@ -1,6 +1,6 @@
-# AGENTS.md — nosqlite 项目 Agent 规范
+# AGENTS.md — nodblite 项目 Agent 规范
 
-> nosqlite:一个像 SQLite 一样小巧的单文件 NoSQL 数据库(文件后缀 `.nodb`),支持 Rust 内嵌 API 与 CLI。
+> nodblite:一个像 SQLite 一样小巧的单文件 NoSQL 数据库(文件后缀 `.nodb`),支持 Rust 内嵌 API 与 CLI。
 
 ## changelog
 
@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.6.4 完成 —— **改名 nosqlite → nodblite**(crates.io 同名已被占用且定位重合);只改对外标识,存储格式与 `.nodb` 后缀不动,并用 worktree 跨版本验证旧库可读;**526 例全绿**。参见 [taolun #68](#68-v064-改名nosqlite--nodblite)。
 - 2026.09.16: v0.6.3 完成 —— 新增索引性能基准,实测发现并修掉**唯一索引建索引 O(n²)** 缺陷(10 万条 74 s → 2.4 s,31 倍);固化索引性能数据与选型提示;**526 例全绿**。参见 [taolun #67](#67-v063-执行性能实测--修掉唯一索引-on²-缺陷)。
 - 2026.09.16: v0.6.2 M30 完成 —— Node.js 官方驱动验收(12 项)、崩溃恢复测试(7 例,含真实 `abort` 验证事务原子性)、`$group` 真正分组聚合;修掉**截断文件导致进程 panic**的缺陷;新增 CHANGELOG、发布包瘦身至 280 KiB;**525 例全绿**。参见 [taolun #65](#65-v062-m30-设计工程化收尾node-驱动--崩溃恢复--发布准备) / [taolun #66](#66-v062-m30-执行工程化收尾node-驱动--崩溃恢复--聚合修复) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.6.1 M29 完成 —— 数组更新 `$pull`/`$pop`(含对象子集匹配)+ 投影位置运算符 `{"arr.$": 1}`;**517 例全绿**。参见 [taolun #63](#63-v061-m29-设计数组更新-pullpop--投影位置运算符) / [taolun #64](#64-v061-m29-执行数组更新-pullpop--投影位置运算符) / [项目进度-已完成](#已完成)。
@@ -20,9 +21,9 @@
 - 2026.09.16: v0.4.1 M23a 完成 —— 类型序修正为 **MongoDB 官方 BSON 序**(MinKey<Null<Number<String<Object<Array<Binary<ObjectId<Bool<Date<Timestamp<Regex<MaxKey),补 MinKey/MaxKey/Timestamp;**破坏性变更**(跨类型比较);+10 例共 **392 例全绿**。参见 [taolun #49](#49-v041-m23a-设计类型序修正为-bson-官方序破坏性) / [taolun #50](#50-v041-m23a-执行类型序修正为-bson-官方序) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.4.0 M22 完成 —— `ScanSession` 真流式(会话自持读事务,`next_batch` 续取);`for_each` 改为其封装;+10 例共 **382 例全绿**。同时确立定位:**部署形态学 SQLite,数据模型/索引/游标语义 100% 学 MongoDB**。参见 [taolun #47](#47-v040-m22-设计scansession活游标--索引总方案) / [taolun #48](#48-v040-m22-执行scansession活游标) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.3.1 M21 完成 —— 真实游标:`getMore`/`killCursors` 落地,`batchSize` 分批生效,`limit` 语义修正(只约束总结果数);`aggregate` 同步接入游标;Go 驱动 13 项全通过,总 **372 例全绿**。参见 [taolun #45](#45-v031-m21-设计真实游标getmore--killcursors) / [taolun #46](#46-v031-m21-执行真实游标getmore--killcursors) / [项目进度-已完成](#已完成)。
-- 2026.09.16: v0.3.0 M20 完成(阶段 2) —— **nosqlite-server 落地**:MongoDB wire 协议(OP_MSG + BSON 编解码 + 命令分发),**Go 官方驱动 9 项验收全通过**;367 例全绿。踩坑三条(section 1 / cursor.id 必须 int64 / OP_REPLY 长度)已写入认知修正。参见 [taolun #43](#43-v030-m20-设计阶段-2--nosqlite-servermongodb-wire-协议) / [taolun #44](#44-v030-m20-执行阶段-2--nosqlite-servermongodb-wire-协议) / [项目进度-已完成](#已完成)。
-- 2026.09.16: v0.2.2 M19 完成(阶段 1.5) —— C ABI 收尾:新增 `open_ex`(兑现 `struct_size` 版本化)、`release.yml` 产出 `nosqlite-ffi-<platform>` 库包(动态库+静态库+头文件+SHA256)、README 补「获取库」「各语言接入」;**354 例全绿**。参见 [taolun #41](#41-v022-m19-设计阶段-15--c-abi-收尾可用性而非功能) / [taolun #42](#42-v022-m19-执行阶段-15--c-abi-收尾) / [项目进度-已完成](#已完成)。
-- 2026.09.16: v0.2.1 M18 完成(阶段 1) —— **C ABI 落地**:`src/ffi.rs` + `include/nosqlite.h`,产出 cdylib/staticlib;骨架照搬 SQLite(不透明句柄 + 错误码 + 游标),现代化三点(arena 结果 / 结构化错误 / 版本化 options);真实 C 程序冒烟 + Python ctypes 实证;**354 例全绿**。参见 [taolun #39](#39-v021-m18-设计阶段-1--nosqlite-ffic-abi) / [taolun #40](#40-v021-m18-执行阶段-1--nosqlite-ffic-abi) / [项目进度-已完成](#已完成)。
+- 2026.09.16: v0.3.0 M20 完成(阶段 2) —— **nodblite-server 落地**:MongoDB wire 协议(OP_MSG + BSON 编解码 + 命令分发),**Go 官方驱动 9 项验收全通过**;367 例全绿。踩坑三条(section 1 / cursor.id 必须 int64 / OP_REPLY 长度)已写入认知修正。参见 [taolun #43](#43-v030-m20-设计阶段-2--nodblite-servermongodb-wire-协议) / [taolun #44](#44-v030-m20-执行阶段-2--nodblite-servermongodb-wire-协议) / [项目进度-已完成](#已完成)。
+- 2026.09.16: v0.2.2 M19 完成(阶段 1.5) —— C ABI 收尾:新增 `open_ex`(兑现 `struct_size` 版本化)、`release.yml` 产出 `nodblite-ffi-<platform>` 库包(动态库+静态库+头文件+SHA256)、README 补「获取库」「各语言接入」;**354 例全绿**。参见 [taolun #41](#41-v022-m19-设计阶段-15--c-abi-收尾可用性而非功能) / [taolun #42](#42-v022-m19-执行阶段-15--c-abi-收尾) / [项目进度-已完成](#已完成)。
+- 2026.09.16: v0.2.1 M18 完成(阶段 1) —— **C ABI 落地**:`src/ffi.rs` + `include/nodblite.h`,产出 cdylib/staticlib;骨架照搬 SQLite(不透明句柄 + 错误码 + 游标),现代化三点(arena 结果 / 结构化错误 / 版本化 options);真实 C 程序冒烟 + Python ctypes 实证;**354 例全绿**。参见 [taolun #39](#39-v021-m18-设计阶段-1--nodblite-ffic-abi) / [taolun #40](#40-v021-m18-执行阶段-1--nodblite-ffic-abi) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.0 M17 完成(阶段 0) —— 跨语言契约冻结:字段序保持(`preserve_order`,实测修复静默重排)、稳定错误码 `ErrorCode`(12 码,C ABI 整数 + wire 字符串)、Extended JSON 扩展(`$oid`/`$numberLong`/`$numberDouble`);+16 例共 **351 例全绿**。同时写入「双形态路线」总纲与「尽可能完整支持最新 MongoDB」的长期目标。参见 [taolun #37](#37-v020-m17-设计阶段-0--跨语言契约冻结双形态前置) / [taolun #38](#38-v020-m17-执行阶段-0-契约冻结) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.5 M16 完成 —— CLI `.export`(JSON Lines,分批写出)/`.import`(JSONL 或 JSON 数组,单事务整批)/`.stats`(文件大小 + 各集合条数);+10 例共 **335 例全绿**;顺带修正 `.help` 里残留的旧命令名。参见 [taolun #35](#35-v015-m16-设计cli-export--import--stats) / [taolun #36](#36-v015-m16-执行cli-export--import--stats) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.1.4 M15 完成 —— 更新操作符 `$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate`(数组支持 `$each/$position/$slice/$sort`)+ upsert(`update_or_insert`);+50 例共 **325 例全绿**。参见 [taolun #33](#33-v014-m15-设计更新操作符扩展--upsert) / [taolun #34](#34-v014-m15-执行更新操作符扩展--upsert) / [项目进度-已完成](#已完成)。
@@ -34,8 +35,8 @@
 - 2026.09.16: M9 补测完成 —— 写路径对照基准定位瓶颈为 **fsync 物理成本**(A/D = 1.08x @1k、0.76x @10k),而非引擎缺陷;批量单事务收益 **314x～1562x**;读路径补齐 10万/50万档实测,确认内存放大稳定在 **5.9–12.0 倍**(50万行单次 find 的 RSS 增量达 819 MiB)。参见 [taolun #23](#23-20260916-m9-补测写路径对照基准与归因) / [项目进度-已完成](#已完成)。
 - 2026.09.16: M9 完成 —— 缺陷修复(#1 数组下标路径用对象覆盖数组的数据破坏缺陷;#2 空更新静默通过且虚增修改条数)+ 压测基线(实测写入吞吐仅约百条/秒、全量 find 的 RSS 增量达文档总字节的 5–12 倍)。参见 [taolun #21](#21-20260916-m9-设计缺陷修复--压测基线) / [taolun #22](#22-20260916-m9-执行) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M8 完成 —— REPL 对齐 sqlite3 点命令:管理命令一律点号开头(`.open/.databases/.collect/.help/.quit/.exit`),CRUD 一律无点,移除全部无点管理别名,`.collect` 替代 `.tables` 语义。参见 [taolun #20](#20-20260812-m8-执行) / [项目进度-已完成](#已完成)。
-- 2026.08.12: M7 完成 —— CLI 默认 TTY(对齐 sqlite3):`nosqlite`/`nosqlite <file>` 无参或带路径直接进 REPL,文件不存在自动创建;移除单命令模式;REPL 内 `open/create/databases` 管理绑定。参见 [taolun #17](#17-20260812-m7-设计cli-默认-tty对齐-sqlite3) / [项目进度-已完成](#已完成)。
-- 2026.08.12: M6 完成 —— CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。参见 [taolun #15](#15-20260812-m6-设计cli-交互式-repl) / [项目进度-已完成](#已完成)。
+- 2026.08.12: M7 完成 —— CLI 默认 TTY(对齐 sqlite3):`nodblite`/`nodblite <file>` 无参或带路径直接进 REPL,文件不存在自动创建;移除单命令模式;REPL 内 `open/create/databases` 管理绑定。参见 [taolun #17](#17-20260812-m7-设计cli-默认-tty对齐-sqlite3) / [项目进度-已完成](#已完成)。
+- 2026.08.12: M6 完成 —— CLI 交互式 shell(`nodblite shell <file.nodb>` REPL,提示符 `nodblite> `,shell 内命令不带文件路径)。参见 [taolun #15](#15-20260812-m6-设计cli-交互式-repl) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M5 完成 —— CLI 全命令(count/collections/drop)+ 单文件复制粘贴验证(tests/migration.rs 自动化回归)+ 测试补全(tests/manage.rs,112 例全绿)。参见 [taolun #13](#13-20260812-m5-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M4 完成 —— update/delete,CRUD 闭环。`$set` 更新操作符(点号路径赋值,嵌套自动创建,`_id` 主键不可改),`Storage` trait 扩展 `update/delete`,CLI 新增 `update`/`delete` 命令。参见 [taolun #10](#10-20260812-m4-设计) / [项目进度-已完成](#已完成)。
 - 2026.08.12: M3 完成 —— find + filter 子集($eq/$gt/$in/$regex 等)+ sort/limit/skip,BSON 风格类型序,点号路径与逻辑组合。参见 [taolun #7](#7-20260812-m3-设计) / [项目进度-已完成](#已完成)。
@@ -185,9 +186,9 @@
 ### 15. 2026.08.12 M6 设计:CLI 交互式 REPL
 
 - M5 打 tag `2026.08.12.d1633f8` 发布。
-- 需求:当前 CLI 为单命令模式(`nosqlite <命令> <file> ...`),每次都要带文件路径;用户希望像 sqlite3 一样进入 TTY 交互式 shell。
-- 设计:`nosqlite shell <file.nodb>` 进入交互模式(新子命令,保留单命令模式不变):
-  - 打开数据库后进入 REPL,提示符 `nosqlite> `;
+- 需求:当前 CLI 为单命令模式(`nodblite <命令> <file> ...`),每次都要带文件路径;用户希望像 sqlite3 一样进入 TTY 交互式 shell。
+- 设计:`nodblite shell <file.nodb>` 进入交互模式(新子命令,保留单命令模式不变):
+  - 打开数据库后进入 REPL,提示符 `nodblite> `;
   - shell 内命令不带文件路径参数,集合命令与单命令对齐:`insert/find/update/delete/count/drop <collection> ...`、`collections`(无参);
   - `help` 显示 shell 内命令用法;`quit`/`exit` 退出 shell;
   - 空行忽略;每行一条命令;命令解析复用现有 filter/update 解析逻辑;
@@ -199,7 +200,7 @@
 
 - `Command` 增加 `Shell(String)` 变体,`parse` 识别 `shell <file>`;新增 `run_shell(path)`:打开数据库 → 打印欢迎语 → 循环读取 stdin 每行 → `parse_shell` 解析为 `ShellCommand`(无路径)→ `exec_shell` 分发执行 → 空行忽略,错误打印后继续循环,`quit/exit/.quit/.exit` 退出,EOF(Ctrl+D)退出。
 - 集合命令抽出为「已打开数据库」内部函数 `exec_insert/exec_find/exec_update/exec_delete/exec_count/exec_collections/exec_drop`,单命令模式的 `run_*` 变为 `open_database(path)` + `exec_*` 的薄壳,避免 shell 与单命令两套逻辑重复。
-- shell 内命令与单命令对齐:`insert/find/update/delete/count/drop <collection> ...`、`collections`(无参);find 支持 `--sort/--skip/--limit`;`help/?` 显示 shell 用法,`quit/exit` 退出;提示符 `nosqlite> `。
+- shell 内命令与单命令对齐:`insert/find/update/delete/count/drop <collection> ...`、`collections`(无参);find 支持 `--sort/--skip/--limit`;`help/?` 显示 shell 用法,`quit/exit` 退出;提示符 `nodblite> `。
 - `parse_shell` 与 `ShellCommand` 公开导出,便于集成测试。
 - 新增 `tests/cli_shell.rs`(11 例:quit/help 各形态、insert/find(含选项)/update/delete/count/collections/drop 解析、空行与缺参/未知命令报错),连同现有测试共 123 例全绿;`cargo build/clippy --all-targets` 零警告。
 - CLI 冒烟验证:stdin 管道注入多行命令,insert/collections/count/find/update/delete/drop/help/quit 全部正确执行(注:PowerShell 双引号 here-string 会插值 `$set/$gte`,冒烟须用单引号 here-string)。
@@ -207,10 +208,10 @@
 ### 17. 2026.08.12 M7 设计:CLI 默认 TTY(对齐 sqlite3)
 
 - M6 打 tag `2026.08.12.2fb977f` 发布。
-- 认知修正:M6 采用 `nosqlite shell <file>` + 单命令并存,但 sqlite3 的 CLI 语义是**默认直接进入 TTY**,且**不依赖数据库文件是否存在**——不管有没有库都能进入,在 TTY 内创建/加载数据库。M6 的形态偏离目标。
+- 认知修正:M6 采用 `nodblite shell <file>` + 单命令并存,但 sqlite3 的 CLI 语义是**默认直接进入 TTY**,且**不依赖数据库文件是否存在**——不管有没有库都能进入,在 TTY 内创建/加载数据库。M6 的形态偏离目标。
 - 设计(对齐 sqlite3):
-  - `nosqlite`(无参数):直接进入 REPL,**未绑定数据库**状态;
-  - `nosqlite <file.nodb>`:打开该库进入 REPL,文件不存在则**自动创建**(对齐 sqlite3 打开即建);
+  - `nodblite`(无参数):直接进入 REPL,**未绑定数据库**状态;
+  - `nodblite <file.nodb>`:打开该库进入 REPL,文件不存在则**自动创建**(对齐 sqlite3 打开即建);
   - **移除单命令模式**(`create/open/insert/find/update/delete/count/collections/drop <file> ...` 子命令全部删除,只留 TTY;Rust 内嵌 API 与 Storage trait 不受影响);
   - REPL 内数据库管理命令:`open <file>`(关闭当前,不存在则创建/存在则打开)、`create <file>`(新建,已存在拒绝,沿用 M1 防误覆盖)、`databases`(显示当前绑定);
   - 集合命令在未绑定数据库时报「尚未打开数据库,请先执行 open/create」,不崩溃;
@@ -225,7 +226,7 @@
 - `run_shell(initial: Option<Database>)` 持有 `current: Option<Database>` 可变绑定状态,切换绑定前 `drop(current.take())` 释放旧句柄(Windows redb 独占锁约束);集合命令通过 `require_db` 门卫,未绑定时报「尚未打开数据库,请先执行 `open <file.nodb>` 或 `create <file.nodb>`」,不崩溃。
 - `ShellCommand` 新增数据库管理命令:`open <file>`(关闭当前,不存在则创建/存在则打开)、`create <file>`(新建,目标已存在拒绝,沿用 M1 防误覆盖)、`databases`(别名 `db`,显示当前绑定);`exec_shell` 签名改为 `(&mut Option<Database>, cmd)`。
 - `tests/cli_shell.rs` 扩展 4 例(open/create/databases 解析 + open/create 缺路径报错),连同现有测试共 127 例全绿;`cargo build/clippy --all-targets` 零警告。
-- CLI 冒烟验证(单引号 here-string 注入 stdin):无参进入未绑定提示 + 未绑定执行 find 报错提示 + create/databases/insert/collections/count 正常;`nosqlite <不存在>.nodb` 自动创建后进入、再进入数据仍持久化;非法后缀 create 拒绝;`--help` 显示用法;参数过多报错。均正确。
+- CLI 冒烟验证(单引号 here-string 注入 stdin):无参进入未绑定提示 + 未绑定执行 find 报错提示 + create/databases/insert/collections/count 正常;`nodblite <不存在>.nodb` 自动创建后进入、再进入数据仍持久化;非法后缀 create 拒绝;`--help` 显示用法;参数过多报错。均正确。
 
 ### 19. 2026.08.12 M8 设计:REPL 对齐 sqlite3 点命令
 
@@ -243,7 +244,7 @@
   - `.help` / `.quit` / `.exit`:点命令;
   - `insert/find/update/delete/count/drop <collection> ...`:保持无点(CRUD);
   - **移除全部无点管理别名**(open/create/databases/db/collections/quit/exit/help/?);
-  - 提示符保持 `nosqlite> `。
+  - 提示符保持 `nodblite> `。
 - 实现:`cli.rs` 的 `ShellCommand` 删除 `Create`,`.open` 无参分支关闭绑定;`parse_shell` 重写点命令/CRUD 二分解析;`exec_open` 支持无参;`print_shell_help` 改为 sqlite3 `.help` 风格两段式。
 - 测试:`tests/cli_shell.rs` 更新 `.open/.databases/.collect` 解析 + `.open` 无参 + 无点管理命令报错。
 - 说明:MVP 阶段 `.collect` 不支持 pattern 通配(先无参列出全部);后续按需扩展。
@@ -257,7 +258,7 @@
 
 ### 21. 2026.09.16 M9 设计:缺陷修复 + 压测基线
 
-- 背景:通用 CMS 后台项目决定采用 Rust 后端 + 内嵌 nosqlite 作存储(不引入外部数据库,保持单二进制)。开工前先把 nosqlite 在该场景下暴露的缺陷与缺口补掉,避免 CMS 开发中反复回补。
+- 背景:通用 CMS 后台项目决定采用 Rust 后端 + 内嵌 nodblite 作存储(不引入外部数据库,保持单二进制)。开工前先把 nodblite 在该场景下暴露的缺陷与缺口补掉,避免 CMS 开发中反复回补。
 - 核查方法:对参考项目 CloudBase CMS(`packages/service`)全量 grep 数据层调用,统计**实际用到的全部操作符与访问模式**,据此确定缺口清单(不凭猜测)。
 - 实际用到的操作符与现状:
   - 已覆盖:`$in`(6 处)、`$or`、`$and`、`$gte`/`$lte`、`$eq`、`$set`(含点号路径)。
@@ -279,7 +280,7 @@
   - 顺序:**先修缺陷 → 建压测基线 → 按数据补功能 → 按数据做效率改造**。理由:效率类改造的「怎么补」取决于压测数据,盲补会白做。
   - 明确不补(省时且保持通用):`$push`/`$pull`、聚合管道/`$lookup`/join、跨集合事务、唯一约束与索引(本阶段)、Server 模式。
   - **不升 `.nodb` 文件格式版本**:全部改动必须在 v1 内兼容,旧库可直接打开、复制粘贴迁移必须继续成立。
-  - 纪律:nosqlite 内**不出现任何 CMS 专属概念**(`_collections`/`schema`/`permission` 等),保持「MongoDB 对齐的通用文档库」。
+  - 纪律:nodblite 内**不出现任何 CMS 专属概念**(`_collections`/`schema`/`permission` 等),保持「MongoDB 对齐的通用文档库」。
   - 数组包含方案:M10 采用**新增 `$elemMatch`**(语义与 MongoDB 一致),而非给隐式 `$eq` 加数组包含语义 —— 后者会改变既有比较语义,需全量回归。
 - 里程碑规划:
   - M9:缺陷修复(#1、#2)+ 压测基线,**不含新功能**。
@@ -320,17 +321,17 @@
 
 | 条数 | 组 | 中位 | 极差 | 吞吐 |
 |---|---|---|---|---|
-| 1,000 | A nosqlite 逐条插入(每条一个写事务/Immediate) | 4.187 s | 4.161–4.217 s | 238.8 条/秒 |
+| 1,000 | A nodblite 逐条插入(每条一个写事务/Immediate) | 4.187 s | 4.161–4.217 s | 238.8 条/秒 |
 | 1,000 | B redb 批量单事务(Immediate) | 13.35 ms | 12.82–19.22 ms | 74,905 条/秒 |
 | 1,000 | C redb 批量单事务(None + 末尾落盘) | 19.05 ms | 14.87–19.52 ms | 52,498 条/秒 |
 | 1,000 | D fsync 基准(追加 + `sync_all`) | 3.869 s | 3.858–3.899 s | 258.5 次/秒 |
-| 10,000 | A nosqlite 逐条插入 | 228.900 s | 168.015–295.263 s | 43.7 条/秒 |
+| 10,000 | A nodblite 逐条插入 | 228.900 s | 168.015–295.263 s | 43.7 条/秒 |
 | 10,000 | B redb 批量单事务(Immediate) | 202.91 ms | 174.87–217.74 ms | 49,284 条/秒 |
 | 10,000 | C redb 批量单事务(None + 末尾落盘) | 146.57 ms | 120.60–176.62 ms | 68,227 条/秒 |
 | 10,000 | D fsync 基准 | 302.019 s | 283.613–304.464 s | 33.1 次/秒 |
 
 - 归因结论:
-  - **写入瓶颈就是 fsync 的物理成本,不是 nosqlite/redb 的实现缺陷**:A/D = **1.08x**(1,000 条)/ **0.76x**(10,000 条),即 nosqlite 每条插入的耗时与一次 fsync 同量级。
+  - **写入瓶颈就是 fsync 的物理成本,不是 nodblite/redb 的实现缺陷**:A/D = **1.08x**(1,000 条)/ **0.76x**(10,000 条),即 nodblite 每条插入的耗时与一次 fsync 同量级。
   - **fsync 成本随数据文件增大而显著恶化**:3.87 ms/次 @1,000 条 → 30.20 ms/次 @10,000 条。这直接导致逐条写事务的吞吐从 **238.8 条/秒降到 43.7 条/秒** —— 文件越大越慢,是恶性缩放。
   - **批量单事务收益 1–2 个数量级**:B/A = **313.6x**(1,000 条)/ **1128.1x**(10,000 条);C/A = **219.8x** / **1561.7x**。
   - **`Durability::None` 只在大批量时才占优**:1,000 条时 C(52,498) < B(74,905)(多付一次提交不划算);10,000 条时 C(68,227) > B(49,284)。→ 小批量用 B(更简单),超大批量导入用 C。
@@ -356,7 +357,7 @@
 
 ### 24. 2026.09.16 M11 设计:内存优先(流式化 + 主键寻址)
 
-- 背景:产品定位已收敛为「MongoDB 语义的单文件嵌入式文档库,按独立产品发布(crates.io + CLI 二进制)」,精力按 nosqlite:CMS = 7:3 分配,先出正式版本。用户当前最痛点是**内存占用**(50 万档单次 `find` 的 RSS 增量达 526–819 MiB)。
+- 背景:产品定位已收敛为「MongoDB 语义的单文件嵌入式文档库,按独立产品发布(crates.io + CLI 二进制)」,精力按 nodblite:CMS = 7:3 分配,先出正式版本。用户当前最痛点是**内存占用**(50 万档单次 `find` 的 RSS 增量达 526–819 MiB)。
 - **内存账本**(500,000 条,payload 89.24 MiB,实测 RSS 增量 819 MiB):
 
 | 层 | 位置 | 估算 | 说明 |
@@ -595,7 +596,7 @@
 - **`.import <collection> <file>`**:支持 JSON Lines 与「整个文件是一个 JSON 数组」两种格式;先**全量解析校验**,再用 `insert_many` **单事务**写入 —— 任一条格式错误则整批不写(测试覆盖「第 2 行非法」与「主键冲突」两种回滚场景)。
 - **`.stats`**:文件路径、文件大小(人类可读)、集合数、各集合文档数 + 合计。
 - **顺带修正帮助文本**:`.help` 里仍残留 M8 之前的有点/无点混排(写了 `open/create/databases/collections` 与 `quit/exit`),以及与代码不符的 `collections`;统一为 `.open`/`.databases`/`.collect`/`.help`/`.quit`/`.exit`,并补上导入导出段与 `.stats`。
-- 测试:新增 `tests/cli_io.rs` **9 例**(往返、JSON 数组导入、非法 JSON 整批不写、主键冲突回滚、`--append`、默认覆盖、空集合导出、`.stats` 输出、缺参提示;通过 `CARGO_BIN_EXE_nosqlite` + stdin 注入驱动真实二进制)+ `tests/cli_shell.rs` 1 例解析;合计 **335 例全绿**,clippy 零警告。
+- 测试:新增 `tests/cli_io.rs` **9 例**(往返、JSON 数组导入、非法 JSON 整批不写、主键冲突回滚、`--append`、默认覆盖、空集合导出、`.stats` 输出、缺参提示;通过 `CARGO_BIN_EXE_nodblite` + stdin 注入驱动真实二进制)+ `tests/cli_shell.rs` 1 例解析;合计 **335 例全绿**,clippy 零警告。
 - 冒烟:建库 → 插入两个集合 → `.stats` → `.export` → 新库 `.import` → `count`/`.stats` 全部正确。
 
 ### 37. v0.2.0 M17 设计:阶段 0 —— 跨语言契约冻结(双形态前置)
@@ -603,7 +604,7 @@
 - 用户决策(本轮确认):
   1. **双形态**(嵌入式 C ABI + 服务端 wire 协议)是总纲,已写入「双形态路线」章节;
   2. 查询语义以**尽可能完整支持最新 MongoDB 为长期目标**,当前只是最小集;
-  3. C ABI 采用**高层 API 为主 + `nosqlite_exec` 兜底**。
+  3. C ABI 采用**高层 API 为主 + `nodblite_exec` 兜底**。
 - 为什么先做阶段 0:C ABI 与 wire 协议**共用**错误码、字段序、Extended JSON 契约。等两边写完再改要动两处,现在定契约成本最低。
 - 阶段 0 三件事:
 
@@ -635,17 +636,17 @@
 - 测试:新增 `tests/contract.rs` **16 例**,三块各自锁定(字段序 2 例、错误码 7 例、Extended JSON 7 例);合计 **351 例全绿**,clippy 零警告。
 - README 增「跨语言契约」与「路线:双形态」两节;「与 MongoDB 的差异」中的类型系统条目更新。
 
-### 39. v0.2.1 M18 设计:阶段 1 —— `nosqlite-ffi`(C ABI)
+### 39. v0.2.1 M18 设计:阶段 1 —— `nodblite-ffi`(C ABI)
 
 - 用户立场:**嵌入式端照 SQLite 的用法,但要在算法与设计上更现代**;封装成自己的 C 库,因此没有 SQLite 的 ABI 冻结包袱。
 - **关键认知(本轮讨论得出,必须记住)**:所谓「比 SQLite 更现代」**不在存储引擎**——SQLite 的 B-tree/WAL/page cache 是 25 年真实负载打磨的,redb 不会更好。
   真正能现代化的是 **API 与语义层**;而且 SQLite 的 API 之所以笨重,是因为它承诺了 2004 年的 ABI 永久兼容(只能堆 `_v2`/`_v3`)。**我们没有历史包袱,这是最大优势。**
 - 保留 SQLite 骨架(不冒险):
-  - 不透明句柄 `nosqlite_db*`;返回 `int`/结构体错误码而非异常;
+  - 不透明句柄 `nodblite_db*`;返回 `int`/结构体错误码而非异常;
   - **游标模型** `cursor_next()`(不用回调 —— Go cgo 回调跨 OS 线程会崩、Node 回调涉及事件循环线程安全);
   - 无全局状态、无回调注册;朴素 C89 头文件,便于各语言绑定生成器处理。
 - 现代化三点(有真实收益):
-  1. **arena 结果**:`nosqlite_result` 一次性持有全部返回切片,只需 `nosqlite_result_free` 调一次 —— 修掉 SQLite「每个 column 单独 free」这个内存泄漏重灾区;
+  1. **arena 结果**:`nodblite_result` 一次性持有全部返回切片,只需 `nodblite_result_free` 调一次 —— 修掉 SQLite「每个 column 单独 free」这个内存泄漏重灾区;
   2. **结构化错误**:`{code, message, op, field_path, offset}` —— 保留 M9 做出来的「数组下标越界/标量中间值」等精确信息,不退化成一个笼统错误码;
   3. **`struct_size` 版本化 options(OpenEX 模式)**:后续加字段不需要 `_v2` 新函数。
 - 明确**不做**:回调式 API、two-call 零分配探针(易误用)、宏魔法、自定义二进制协议(JSON 是唯一零依赖选择)。
@@ -654,22 +655,22 @@
 - 接口清单(草案):`open/open_ex/close`、`insert/insert_many/find/update/upsert/delete/count/get`、`exec`(兜底)、`last_error`(线程局部)、`result_free`、`cursor_next/cursor_close`。
 - 工程要求:`crate-type = ["rlib", "cdylib", "staticlib"]`;`cbindgen` 生成头文件;用真实 C 程序(`cc`)跑通冒烟测试。
 
-### 40. v0.2.1 M18 执行:阶段 1 —— `nosqlite-ffi`(C ABI)
+### 40. v0.2.1 M18 执行:阶段 1 —— `nodblite-ffi`(C ABI)
 
-- **产物**:`src/ffi.rs` + `include/nosqlite.h`;`Cargo.toml` 的 `[lib]` 加 `crate-type = ["rlib", "cdylib", "staticlib"]`,构建即产出 `.dylib/.so/.dll` 与静态库。
+- **产物**:`src/ffi.rs` + `include/nodblite.h`;`Cargo.toml` 的 `[lib]` 加 `crate-type = ["rlib", "cdylib", "staticlib"]`,构建即产出 `.dylib/.so/.dll` 与静态库。
 - **导出面**:`open/close`、`insert/insert_many/get/find/update/upsert/delete/count/list_collections`、`find_cursor/cursor_next/cursor_close`、`exec`(兜底)、`last_error_code/last_error`、`result_free`。
 - **三个现代化点已落地**:
-  1. arena 结果:`NosqliteResult` 持有全部切片,`nosqlite_result_free` 一次释放;
-  2. 结构化错误:`NosqliteError { code, code_str, message, op }`,线程局部;
-  3. 版本化 options:`NosqliteOpenOptions/NosqliteFindOptions` 带 `struct_size`(定义已备,`open_ex` 尚未暴露,留待需要时加)。
+  1. arena 结果:`NodbliteResult` 持有全部切片,`nodblite_result_free` 一次释放;
+  2. 结构化错误:`NodbliteError { code, code_str, message, op }`,线程局部;
+  3. 版本化 options:`NodbliteOpenOptions/NodbliteFindOptions` 带 `struct_size`(定义已备,`open_ex` 尚未暴露,留待需要时加)。
 - **设计决策**:`insert`/`upsert` 的 `value` 返回**裸 `_id` 字符串**(不加 JSON 引号),便于 C 侧直接当主键传入其他函数。
 - **游标实现**:分块游标,复用 `find_page`/`find_with_options`;`cursor_next` 每次返回的指针在下一次调用前有效(内部 arena 只保留当前一条)。
 - **实现中修掉的两个真 bug**(由真实 C 程序冒烟发现,不是单测能抓到的):
   1. `exec` 初版委托给各专用入口 —— 导致线程局部 `last_error` 被二次调用覆盖,且参数被重新序列化一遍。改为**直接实现**,与专用入口共享 `parse_filter/parse_sort/parse_projection` 保证语义不分叉。
   2. `insert` 初版返回 `"<id>"`(带引号),C 侧拿它当主键会查不到。改为裸 `_id`。
-- **Python 侧踩坑(必须记住)**:ctypes 若不声明 `argtypes`,句柄会被当 `int` 传递 → **64 位指针截断 → 段错误**。已写入 `examples/python/nosqlite.py` 的注释与 AGENTS.md 认知修正。
+- **Python 侧踩坑(必须记住)**:ctypes 若不声明 `argtypes`,句柄会被当 `int` 传递 → **64 位指针截断 → 段错误**。已写入 `examples/python/nodblite.py` 的注释与 AGENTS.md 认知修正。
 - **测试**:`tests/c_api.rs` 3 例 —— (a) **真的编译并运行 `tests/c_smoke.c`**(cc 链接 dylib,覆盖 open/insert/冲突错误/批量/count/find/游标/update/upsert/get/投影/exec/list/delete/非法 filter);(b) 结构体布局断言;(c) **解析头文件 `#define` 与 Rust `ErrorCode::as_i32()` 比对**,防头文件漂移。
-- **实证**:`examples/python/nosqlite.py` 用**纯标准库 ctypes**跑通 insert/update/upsert/find/get/count/delete,证明「任何语言进程内嵌入」成立,无需服务进程、无需第三方包。
+- **实证**:`examples/python/nodblite.py` 用**纯标准库 ctypes**跑通 insert/update/upsert/find/get/count/delete,证明「任何语言进程内嵌入」成立,无需服务进程、无需第三方包。
 - 合计 **354 例全绿**,clippy 零警告。
 
 ### 41. v0.2.2 M19 设计:阶段 1.5 —— C ABI 收尾(可用性而非功能)
@@ -679,20 +680,20 @@
 
 | # | 内容 | 理由 |
 |---|---|---|
-| ① | `open_ex`(暴露 `NosqliteOpenOptions`) | 结构体已定义但未启用,留着就是「声称的现代化没兑现」 |
+| ① | `open_ex`(暴露 `NodbliteOpenOptions`) | 结构体已定义但未启用,留着就是「声称的现代化没兑现」 |
 | ② | `release.yml` 增加 **库产物**(dylib/so/dll + 静态库 + 头文件)打包 | 让 C ABI 真正可分发给下游 |
 | ③ | 三平台产物附 SHA256 | 与 CLI 一致,供校验 |
 | ④ | 文档:各语言如何拿到库(路径/命名/加载方式) | 目前只有 Python 示例,缺「从哪下载」的说明 |
 
-- 命名约定(供下游写加载逻辑):Linux `libnosqlite.so`、macOS `libnosqlite.dylib`、Windows `nosqlite.dll`;静态库 `libnosqlite.a` / `nosqlite.lib`。
+- 命名约定(供下游写加载逻辑):Linux `libnodblite.so`、macOS `libnodblite.dylib`、Windows `nodblite.dll`;静态库 `libnodblite.a` / `nodblite.lib`。
 - 暂不做(等真有下游再投入):macOS 代码签名/notarization、npm/go module 分发元数据、Windows MSVC 运行时说明。
   - 理由:签名需要开发者账号与证书,在没有实际下游用户前是纯成本;预编译包 + SHA256 已能覆盖自用与早期采用者。
 
 ### 42. v0.2.2 M19 执行:阶段 1.5 —— C ABI 收尾
 
-- **① `open_ex`**:`src/ffi.rs` 新增,`include/nosqlite.h` 同步声明。校验 `struct_size`(不得小于当前大小,允许更大以兼容未来字段)与 `flags`(必须为 0);`opts == NULL` 时退化为 `nosqlite_open(path, 1)`。
-  - 至此 `NosqliteOpenOptions` 不再是「定义了却没用上」的死结构,声称的 ABI 演进能力兑现。
-- **② `release.yml` 增加库产物**:矩阵新增 `platform`/`lib_archive`/`dylib`/`staticlib` 四个字段;每个平台额外产出一个 `nosqlite-ffi-<platform>.{tar.gz,zip}`,内含动态库 + 静态库 + `include/` 目录(保留目录结构,下游可直接 `-Iinclude`),并附 `.sha256`。
+- **① `open_ex`**:`src/ffi.rs` 新增,`include/nodblite.h` 同步声明。校验 `struct_size`(不得小于当前大小,允许更大以兼容未来字段)与 `flags`(必须为 0);`opts == NULL` 时退化为 `nodblite_open(path, 1)`。
+  - 至此 `NodbliteOpenOptions` 不再是「定义了却没用上」的死结构,声称的 ABI 演进能力兑现。
+- **② `release.yml` 增加库产物**:矩阵新增 `platform`/`lib_archive`/`dylib`/`staticlib` 四个字段;每个平台额外产出一个 `nodblite-ffi-<platform>.{tar.gz,zip}`,内含动态库 + 静态库 + `include/` 目录(保留目录结构,下游可直接 `-Iinclude`),并附 `.sha256`。
   - 本地已模拟验证 tar 打包与内容结构正确;YAML 语法已校验。
 - **③ 文档**:README 新增「获取库」(预编译包 / 本地构建,三平台命名对照表)与「各语言接入」(Python ctypes / Go cgo / Rust 直连)两节。
 - **④ C 冒烟测试扩展**:`tests/c_smoke.c` 增加 `open_ex` 用例 —— 正确 `struct_size` 成功、`struct_size=0` 失败且给 `INTERNAL` 码、`flags!=0` 失败。
@@ -700,9 +701,9 @@
 - **明确暂不做**(理由记于此,避免反复纠结):macOS 代码签名/notarization 需要开发者账号与证书,在无真实下游前是纯成本;npm/go module 分发元数据同理。预编译包 + SHA256 已覆盖自用与早期采用者。
 - 合计 **354 例全绿**,clippy 零警告;Python ctypes 示例回归通过。
 
-### 43. v0.3.0 M20 设计:阶段 2 —— `nosqlite-server`(MongoDB wire 协议)
+### 43. v0.3.0 M20 设计:阶段 2 —— `nodblite-server`(MongoDB wire 协议)
 
-- 目标:用 **Go 官方驱动** `go.mongodb.org/mongo-driver/v2` 连上,让 `nosqlite-server` 可替代 mongodb-server。
+- 目标:用 **Go 官方驱动** `go.mongodb.org/mongo-driver/v2` 连上,让 `nodblite-server` 可替代 mongodb-server。
 - 第一步目标(本里程碑):**驱动能连上 + 核心 CRUD 跑通**,不是全协议。
 - 协议事实(决定实现顺序):
   - 传输:TCP,消息 = 标准头部(16 字节,含 `messageLength`/`requestID`/`responseTo`/`opCode`)+ 体;
@@ -722,18 +723,18 @@
   - 与内部 JSON 的映射借助 M14/M17 的 **Extended JSON** 契约:
     `ObjectId` ↔ `{"$oid": "..."}`、`Date` ↔ `{"$date": ...}`、`int64` ↔ `{"$numberLong": "..."}`;
   - `_id` 在协议层必须是 **BSON ObjectId**,存储里是 24 位 hex 字符串 —— **翻译在 server 层完成**,存储不变。
-- 架构:`nosqlite-server` 为**同一个 crate 的 bin**(`src/bin/nosqlite-server.rs`),复用 `Database`,不另建 crate,避免跨 crate 重复依赖。
+- 架构:`nodblite-server` 为**同一个 crate 的 bin**(`src/bin/nodblite-server.rs`),复用 `Database`,不另建 crate,避免跨 crate 重复依赖。
 - 进程模型:**单进程独占 `.nodb`**,因此 redb 的单写者约束天然满足;连接多线程共享一个 `Database`(`Send + Sync` 已保证)。
 - 不做(本里程碑):认证(先不做/或做最简 SCRAM 跳过)、副本集、分片、事务会话、`changeStream`、压缩。
 
-### 44. v0.3.0 M20 执行:阶段 2 —— nosqlite-server(MongoDB wire 协议)
+### 44. v0.3.0 M20 执行:阶段 2 —— nodblite-server(MongoDB wire 协议)
 
 - **结果:Go 官方驱动 `go.mongodb.org/mongo-driver/v2` 全部 9 项验收通过**(Ping/插入查询/批量+游标/更新/删除/findAndModify/upsert/Date/主键冲突)。
 - 新增模块:
   - `src/server/bson.rs` —— BSON ↔ JSON 编解码,零新依赖。类型映射见模块文档;`ObjectId` ↔ 24 位 hex 字符串、`datetime` ↔ `{"$date": ms}`、`int64`/`int32`、binary/regex/decimal128/minKey/maxKey 等。
   - `src/server/wire.rs` —— OP_MSG/OP_QUERY 帧编解码;`Request` 含 `command` + `sequences`。
   - `src/server/serve.rs` —— TCP 监听(每连接一线程)+ 命令分发(模块名由 `server` 改为 `serve`,否则 `server::server` 触发 clippy `module_inception`)。
-  - `src/bin/nosqlite-server.rs` —— 独立入口,`--addr` 默认 `127.0.0.1:27017`。
+  - `src/bin/nodblite-server.rs` —— 独立入口,`--addr` 默认 `127.0.0.1:27017`。
 - **三个关键坑(都是真实 driver 打出来的,不实测根本发现不了)**:
   1. **OP_MSG section 1**:驱动把批量文档放在 section 1(带 identifier:`documents`/`updates`/`deletes`),命令文档里**没有**这些字段。只读 section 0 表现为「插入 0 条 / 更新 0 条」。`Request.sequences` 按 identifier 分组解决了这一点。
   2. **`cursor.id` 必须是 BSON int64**:用普通数字 `0` 会被编码成 int32,驱动报 `id should be an int64 but it is a BSON 32-bit integer` 并拒绝整个响应。必须写 `{"$numberLong": "0"}` 触发 int64 编码。
@@ -879,7 +880,7 @@
     | Timestamp | `0x0A` | (t,i) 大端 |
     | Regex | `0x0B` | pattern + options |
     | MaxKey | `0x0C` | 无 |
-- **索引表布局**:`(集合名\0 字段路径\0 编码值\0 doc_id) -> ()`,独立 B+树(`nosqlite_indexes` 存定义、`nosqlite_index_data` 存条目)。
+- **索引表布局**:`(集合名\0 字段路径\0 编码值\0 doc_id) -> ()`,独立 B+树(`nodblite_indexes` 存定义、`nosqlite_index_data` 存条目)。
   - doc_id 拼在末尾(学 SQLite 的 rowid 拼接):保证 key 唯一,且相同索引值下天然按 doc_id 有序。
   - **multikey 进模型**:数组字段展开为多条条目(同一 doc 写 N 条),存储格式不变;本期先只处理标量,数组按 multikey 展开一起做。
 - **索引定义表** `nosqlite_index_meta`:`(集合\0索引名) -> {字段, 唯一, sparse, encoding_version}`。
@@ -1162,7 +1163,7 @@
 
 ### 66. v0.6.2 M30 执行:工程化收尾(Node 驱动 + 崩溃恢复 + 聚合修复)
 
-- **Node.js 官方驱动验收**(`tests/node_compat/` + `tests/node_wire.rs`):与 Go 验收同构 —— Rust 集成测试拉起 `nosqlite-server`,把 `NOSQLITE_URI` 传给 `node --test`。**12 项**用例全通过。依赖缺失时**显式跳过并打印原因**,不静默通过。
+- **Node.js 官方驱动验收**(`tests/node_compat/` + `tests/node_wire.rs`):与 Go 验收同构 —— Rust 集成测试拉起 `nodblite-server`,把 `NOSQLITE_URI` 传给 `node --test`。**12 项**用例全通过。依赖缺失时**显式跳过并打印原因**,不静默通过。
   - npm 安装踩坑:本机 `~/.npm` 缓存含 root-owned 文件导致 `EACCES`。解法是 `npm install --cache ./.npm-cache`(项目本地缓存),**不修改用户全局目录**。
 - **Node 验收发现真实缺口**:`$group` 的 `$sum` 只支持常量 1(当初只为 `countDocuments` 实现)。这是 Go 驱动没覆盖到的路径 —— **换一个驱动再跑一遍确实能捞到东西**。
   - 重写为 `aggregate_group`:`_id` 支持常量与 `"$字段"`,累加器支持 `$sum`(常量/字段路径)与 `$count`;整数结果输出为整数(避免驱动看到 `3.0`)。
@@ -1208,6 +1209,32 @@
 - 文档:README 新增「索引效果」小节(含选型提示);基准命令固化。
 - 测试:**526 例全绿**,clippy 零警告。
 
+### 68. v0.6.4 改名:nosqlite → nodblite
+
+- **决策依据(实测,非猜测)**:
+  - **crates.io 的 `nosqlite` 已被占用** —— `AmeenAhmed/NoSqlite-rs`,2026-10-06 创建,v0.3.0,描述为「MongoDB-inspired document database backed by SQLite JSONB, with BSON, aggregation, indexes, change streams, and a MongoDB command adapter」,与本项目定位几乎逐字重合。后果:`cargo publish` 直接失败、`cargo add nosqlite` 装到别人的库、搜索永远排在后面。
+  - PyPI 的 `nosqlite`(`shaunduncan/nosqlite`,sqlite3 的文档存储包装)与 npm 的(`sunkarapk/nosqlite`)也已被占。
+  - GitHub 同名仓库 72 个。
+  - 候选名筛查:`nodblite` 在 crates.io / PyPI / npm **全部可用**,GitHub 同名仓库 **0** 个;`docstore-rs` 同样干净但不如前者押韵 SQLite。
+- **改名边界(关键纪律:只改对外标识,绝不动存储格式)**:
+
+  | 类别 | 处理 |
+  |---|---|
+  | crate 名 / 二进制名 / lib 名 | ✅ `nodblite`、`nodblite-server` |
+  | C ABI 函数与头文件 | ✅ `nodblite_*`、`include/nodblite.h`、`NODBLITE_H` |
+  | 文档 / 注释 / 示例 | ✅ |
+  | **redb 表名** `nosqlite_meta`/`_docs`/`_index_meta`/`_index_data` | ❌ **不改**(改了旧库全失效) |
+  | **魔数 `"NOSQLITE"`** | ❌ **不改** |
+  | **`.nodb` 后缀** | ❌ **不改** |
+  | **wire 命名空间 `nodblite.{集合}`** | ✅ 改(驱动不硬编码,已核实) |
+
+- **做法**:脚本化批量替换(642 处 / 77 文件),但先把不可改的存储标识替换成占位符保护起来,替换完再还原 —— 避免「改名把文件格式改坏」。
+- **兼容性验证(必须做,已做)**:用 `git worktree` 检出改名前的提交构建旧版 → 旧版创建含 2 条文档 + 1 个索引的 `.nodb` → **新版打开并完整读取**(数据、索引、追加写入全部正常)。
+- **踩到的两个坑**:
+  1. 批量替换把 `[[bin]]` 段与 `src/bin/` 文件名改乱,`CARGO_BIN_EXE_nodblite-server` 未定义。需手工确认 bin 目标名与源文件路径一致。
+  2. `Cargo.toml` 的 `repository` 与 README 链接被改成 `Titor-Z/nodblite`,但 **GitHub 仓库尚未改名**,会导致 404 —— 已回指现有仓库,等仓库真正改名后再统一更新。
+- 测试:**526 例全绿**,Go 18 项 / Node 12 项双驱动全通过,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -1231,16 +1258,16 @@
 > | 数据模型 / 查询语义 / 索引模型 / 游标 / 协议 | **MongoDB** | 目标 100% 对齐,**不得**因为「嵌入式」而降级 |
 > | 引擎内部实现手法(如持有活游标的 `stmt` 式扫描) | 可借 SQLite 工程手法 | 只是实现手段,不得改变对外语义 |
 >
-> **nosqlite 是 SQLite 在文档领域的对立面竞争者,不是「另一款 SQLite」。**
+> **nodblite 是 SQLite 在文档领域的对立面竞争者,不是「另一款 SQLite」。**
 > 因此索引必须按 MongoDB 的模型做(multikey、复合索引前缀原则、BSON 类型序),
 > 绝不能采用关系型引擎的取舍。
 
 - **形态 A —— 嵌入式(C ABI)**:`.nodb` 由宿主进程独占,像 SQLite 一样被任何语言**进程内**调用。
   - 适用:本地 GUI/App(Electron/Tauri/Go/Wails)、CLI 工具、桌面软件。
   - 硬要求:不能让端侧用户额外安装/常驻服务进程。
-- **形态 B —— 服务端(wire 协议)**:`nosqlite-server` 监听 `mongodb://`,**第三方 MongoDB 官方/社区 driver 直连**。
+- **形态 B —— 服务端(wire 协议)**:`nodblite-server` 监听 `mongodb://`,**第三方 MongoDB 官方/社区 driver 直连**。
   - 适用:多进程/多语言共享、Web 后端(如 CMS)。
-  - 目标:客户端无需任何 nosqlite 专属 SDK。
+  - 目标:客户端无需任何 nodblite 专属 SDK。
 - 共同基础:查询语义、Extended JSON、错误码 —— **两者共享,不得分叉**。
 
 #### 查询语义总目标:**尽可能完整地支持最新 MongoDB 查询语言**
@@ -1286,6 +1313,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- v0.6.4:改名 nodblite(crates.io 原名称已占用);526 例全绿。
 - v0.6.3:索引性能基准 + 修掉唯一索引 O(n²)(31 倍);526 例全绿。
 - M30(v0.6.2):Node 驱动验收 12 项、崩溃恢复 7 例、`$group` 聚合、截断文件 panic 修复、CHANGELOG、发布包瘦身;525 例全绿。
 - M29(v0.6.1):`$pull`/`$pop` + 投影位置运算符 `arr.$`;517 例全绿。
@@ -1298,9 +1326,9 @@
 - M23a(v0.4.1):类型序对齐 MongoDB 官方 BSON 序 + MinKey/MaxKey/Timestamp;392 例全绿。
 - M22(v0.4.0):ScanSession 真流式(活游标,自持读事务);382 例全绿。
 - M21(v0.3.1):真实游标 —— `getMore`/`killCursors`/`batchSize`,`limit` 语义修正;372 例全绿。
-- M20(v0.3.0,阶段 2):nosqlite-server(MongoDB wire 协议),Go 官方驱动验收通过;367 例全绿。
+- M20(v0.3.0,阶段 2):nodblite-server(MongoDB wire 协议),Go 官方驱动验收通过;367 例全绿。
 - M19(v0.2.2,阶段 1.5):C ABI 收尾 —— `open_ex` + 三平台库产物 + 分发文档;354 例全绿。
-- M18(v0.2.1,阶段 1):C ABI(`nosqlite-ffi`)—— 句柄/错误码/游标 + arena 结果 + 结构化错误;真实 C 与 Python 双验证;354 例全绿。
+- M18(v0.2.1,阶段 1):C ABI(`nodblite-ffi`)—— 句柄/错误码/游标 + arena 结果 + 结构化错误;真实 C 与 Python 双验证;354 例全绿。
 - M17(v0.2.0,阶段 0):跨语言契约冻结 —— 字段序 / 错误码 / Extended JSON;351 例全绿。
 - M16(v0.1.5):CLI `.export`/`.import`/`.stats`;335 例全绿。
 - M15(v0.1.4):更新操作符扩展(8 个)+ upsert;325 例全绿。
@@ -1312,7 +1340,7 @@
 - M9:缺陷修复(#1 数组下标路径数据破坏、#2 空更新异常)+ 压测基线(写入吞吐 43.7–238.8 条/秒且随文件增大恶化;全量 find 内存放大 6–12 倍,50 万档 819 MiB)。
 - M8:REPL 对齐 sqlite3 点命令(管理一律点号、CRUD 无点、`.collect` 列集合)。
 - M7:CLI 默认 TTY(对齐 sqlite3,无参/带路径直接进 REPL + 自动创建,移除单命令模式)。
-- M6:CLI 交互式 shell(`nosqlite shell <file.nodb>` REPL,提示符 `nosqlite> `,shell 内命令不带文件路径)。
+- M6:CLI 交互式 shell(`nodblite shell <file.nodb>` REPL,提示符 `nodblite> `,shell 内命令不带文件路径)。
 - M5:CLI 全命令(count/collections/drop)+ 单文件复制粘贴自动化验证 + 测试补全(112 例全绿)。
 - M4:update/delete,CRUD 闭环(`$set` 更新操作符、`Storage` trait 扩展 update/delete、CLI update/delete)。
 - M3:find + filter 子集($eq/$gt/$in/$regex)+ sort/limit/skip。
@@ -1338,10 +1366,10 @@
 - Windows 下 redb 持有文件独占锁:同一进程内"创建后再打开"必须先 `drop` 释放第一个句柄,否则 `Database::open` 会因锁冲突报"文件不存在或不是有效数据库"的误导性错误。
 - PowerShell 双引号 here-string(`@"..."@`)会插值 `$` 变量(如 `$set`/`$gte` 被清空导致 filter/update 解析异常),多行命令注入 stdin 冒烟时必须用单引号 here-string(`@'...'@`)。
 - sqlite3 CLI 语义:默认直接进入 TTY,且不依赖数据库文件是否存在——不管有没有库都能进入,在 TTY 内用 `.open` 等命令创建/加载数据库;对齐目标是「无参数进 REPL、带路径打开(不存在即建)、移除单命令子命令」。
-- **写性能的归因结论(不要重复踩坑)**:nosqlite 逐条插入的耗时 ≈ 一次 fsync 的物理成本(A/D = 1.08x @1,000 条、0.76x @10,000 条),**不是引擎实现缺陷**。且 fsync 成本随数据文件增大而恶化(3.87 ms @1,000 条 → 30.20 ms @10,000 条),所以逐条写事务的吞吐会随数据库增长而下降(238.8 → 43.7 条/秒)。修法是**批量单事务**(收益 314x～1562x),不是换引擎。
+- **写性能的归因结论(不要重复踩坑)**:nodblite 逐条插入的耗时 ≈ 一次 fsync 的物理成本(A/D = 1.08x @1,000 条、0.76x @10,000 条),**不是引擎实现缺陷**。且 fsync 成本随数据文件增大而恶化(3.87 ms @1,000 条 → 30.20 ms @10,000 条),所以逐条写事务的吞吐会随数据库增长而下降(238.8 → 43.7 条/秒)。修法是**批量单事务**(收益 314x～1562x),不是换引擎。
 - **压测方法**:单次测量会被机器负载污染 —— 同一「1,000 条逐条插入」曾测出 4.19 s 与 23.1 s 两种结果。压测必须**预热 + 重复多次取中位数并报极差**,否则数据不可用于决策。
 - **MongoDB 驱动把批量数据放在 OP_MSG section 1,不在命令文档里**:`insert` 的文档在 identifier 为 `documents` 的 section 1,`update`/`delete` 分别是 `updates`/`deletes`。只解析 section 0 会表现为「操作成功但影响 0 条」,且驱动不报错,极难排查。
 - **wire 协议里 `cursor.id` 必须是 BSON int64**:写成普通数字会被编码成 int32,驱动直接拒绝整个响应(`id should be an int64 but it is a BSON 32-bit integer`)。用 `{"$numberLong": "0"}` 强制 int64。
 - **`maxWireVersion` 给低了驱动直接拒连**:当前给 17。改小前务必用真实驱动验证。
-- **ctypes 不声明 `argtypes` 会导致 64 位指针截断**:`ctypes.CDLL` 默认把未声明的参数当 `int` 传递,`nosqlite_db*` 句柄被截断成 32 位后必然段错误。凡是接受句柄的函数,必须显式 `fn.argtypes = [ctypes.c_void_p, ...]`。排查时表现为「单独调用正常,组合调用崩溃」。
+- **ctypes 不声明 `argtypes` 会导致 64 位指针截断**:`ctypes.CDLL` 默认把未声明的参数当 `int` 传递,`nodblite_db*` 句柄被截断成 32 位后必然段错误。凡是接受句柄的函数,必须显式 `fn.argtypes = [ctypes.c_void_p, ...]`。排查时表现为「单独调用正常,组合调用崩溃」。
 - **读路径的真问题是内存不是延迟**:`find` 全量延迟严格线性(7.3–8.8 µs/条,可预期),但 `scan` 返回 `Vec<(String, Vec<u8>)>` 导致 RSS 增量稳定为文档总字节的 **10–12 倍**(50 万条达 819 MiB)。优化优先级应为**内存 > 写入吞吐 > 读延迟**。

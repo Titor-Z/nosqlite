@@ -1,17 +1,17 @@
 //! 写路径对照基准(M9 压测基线的归因补测)。
 //!
-//! 目的:把「fsync 的物理成本」与「nosqlite/redb 自身开销」分离开,回答
+//! 目的:把「fsync 的物理成本」与「nodblite/redb 自身开销」分离开,回答
 //! 「写入慢到底是引擎的锅,还是每次 commit 都 fsync 的物理必然」。
 //!
 //! 四组对照(同一台机器、同一批文档、同一 key 布局):
 //!
-//! - **A. nosqlite 现状**:`Database::insert` 逐条插入(= 每条一个写事务,`Durability::Immediate`)
+//! - **A. nodblite 现状**:`Database::insert` 逐条插入(= 每条一个写事务,`Durability::Immediate`)
 //! - **B. redb 批量单事务(Immediate)**:N 条插完只 commit 一次,即摊薄 fsync
 //! - **C. redb 批量单事务(None + 末次落盘)**:批量期间不 fsync,末尾补一次 `Immediate` 提交
 //! - **D. fsync 基准**:对同一文件反复「追加少量字节 + `sync_all()`」,得到本机单次 fsync 成本
 //!
 //! 判读方式:若 **A 的单条耗时 ≈ D 的单次 fsync 成本**,则瓶颈就是 fsync 的物理成本,
-//! 而非 nosqlite/redb 的实现缺陷;B/C 相对 A 的倍数即「批量写」能拿到的收益。
+//! 而非 nodblite/redb 的实现缺陷;B/C 相对 A 的倍数即「批量写」能拿到的收益。
 //!
 //! 用法(release 模式):
 //!
@@ -25,7 +25,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use nosqlite::{Database, Document};
+use nodblite::{Database, Document};
 use redb::{Database as RedbDatabase, Durability, TableDefinition};
 
 /// 文档表定义(与 `src/engine/redb_engine.rs` 保持一致)。
@@ -58,7 +58,7 @@ fn main() {
         .map(|s| s.parse().expect("重复次数必须是正整数"))
         .unwrap_or(3);
 
-    println!("nosqlite 写路径对照基准(M9)");
+    println!("nodblite 写路径对照基准(M9)");
     println!(
         "条数 {} 条,每组重复 {} 次取中位数;文档结构与值完全一致",
         n, repeat
@@ -84,8 +84,8 @@ fn main() {
         );
     }
 
-    let a = measure(repeat, || group_nosqlite_insert(&docs));
-    print_group("A nosqlite 逐条插入(每条一个写事务/Immediate)", &a, n);
+    let a = measure(repeat, || group_nodblite_insert(&docs));
+    print_group("A nodblite 逐条插入(每条一个写事务/Immediate)", &a, n);
 
     let b = measure(repeat, || group_redb_batch_immediate(&docs));
     print_group("B redb 批量单事务(Immediate)", &b, n);
@@ -93,9 +93,9 @@ fn main() {
     let c = measure(repeat, || group_redb_batch_none(&docs));
     print_group("C redb 批量单事务(None + 末尾落盘)", &c, n);
 
-    // F 组:nosqlite 的公开批量 API(内部会重新序列化)
-    let f = measure(repeat, || group_nosqlite_insert_many(&docs));
-    print_group("F nosqlite insert_many(已解析文档)", &f, n);
+    // F 组:nodblite 的公开批量 API(内部会重新序列化)
+    let f = measure(repeat, || group_nodblite_insert_many(&docs));
+    print_group("F nodblite insert_many(已解析文档)", &f, n);
 
     // E 组:归因用 —— JSON 序列化开销(Document::to_bytes)
     let e = measure(repeat, || group_serialize_baseline(&docs));
@@ -124,11 +124,11 @@ fn main() {
     print_platform_note(n, &d, &g);
 }
 
-/// F 组:nosqlite 的公开批量 API `Database::insert_many`。
+/// F 组:nodblite 的公开批量 API `Database::insert_many`。
 ///
 /// 与 B 组的差异:本组走完整门面层 —— 文档需先解析成 `Document`,
 /// 写入前每一条都要 `ensure_id()` + `to_bytes()` 重新序列化。
-fn group_nosqlite_insert_many(docs: &[(String, Vec<u8>)]) -> Duration {
+fn group_nodblite_insert_many(docs: &[(String, Vec<u8>)]) -> Duration {
     let path = temp_nodb("f");
     let db = Database::create(&path).expect("创建数据库应成功");
 
@@ -148,11 +148,11 @@ fn group_nosqlite_insert_many(docs: &[(String, Vec<u8>)]) -> Duration {
     elapsed
 }
 
-/// A 组:nosqlite 逐条插入(现状)。
+/// A 组:nodblite 逐条插入(现状)。
 ///
 /// 说明:A 组在计时区内比 B/C 多付一次**内存中的 JSON 序列化**(`insert` 内部会 `to_bytes`)。
 /// 该成本约 1–2 µs/条,而 fsync 在毫秒量级,差异可忽略。
-fn group_nosqlite_insert(docs: &[(String, Vec<u8>)]) -> Duration {
+fn group_nodblite_insert(docs: &[(String, Vec<u8>)]) -> Duration {
     let path = temp_nodb("a");
     let db = Database::create(&path).expect("创建数据库应成功");
 
@@ -522,7 +522,7 @@ fn temp_path(tag: &str, ext: &str) -> PathBuf {
     let seq = SEQ.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir();
     let name = format!(
-        "nosqlite_bench_write_{}_{}_{}.{}",
+        "nodblite_bench_write_{}_{}_{}.{}",
         tag,
         std::process::id(),
         seq,

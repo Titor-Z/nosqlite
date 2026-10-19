@@ -1,6 +1,6 @@
 [package]
-name = "nosqlite"
-version = "0.6.3"
+name = "nodblite"
+version = "0.6.4"
 edition = "2024"
 rust-version = "1.85"
 description = "一个像 SQLite 一样小巧的单文件 NoSQL 数据库(.nodb):MongoDB 风格文档模型,单文件零配置部署"
@@ -21,10 +21,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 redb = "3"
 
 [[bin]]
-name = "nosqlite"
+name = "nodblite"
 path = "src/main.rs"
 
 [lib]
-name = "nosqlite"
-# rlib 供 Rust 调用;cdylib/staticlib 供 C ABI(nosqlite-ffi)链接
+name = "nodblite"
+# rlib 供 Rust 调用;cdylib/staticlib 供 C ABI(nodblite-ffi)链接
 crate-type = ["rlib", "cdylib", "staticlib"]

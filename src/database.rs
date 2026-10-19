@@ -18,7 +18,7 @@ use crate::query::{
     UpdateError,
 };
 
-/// nosqlite 数据库门面。
+/// nodblite 数据库门面。
 ///
 /// 持有具体存储引擎,对外暴露文档级操作。
 #[derive(Debug)]

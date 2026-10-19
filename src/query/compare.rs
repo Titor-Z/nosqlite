@@ -74,7 +74,7 @@ pub mod rank {
 
 /// 若值是 Extended JSON 的 `{"$oid": "..."}`,返回其中的字符串。
 ///
-/// `_id` 在 nosqlite 中就是 24 位 hex 字符串,因此 `$oid` 与普通字符串等价。
+/// `_id` 在 nodblite 中就是 24 位 hex 字符串,因此 `$oid` 与普通字符串等价。
 pub fn as_oid(value: &Value) -> Option<&str> {
     wrap_str(value, "$oid")
 }

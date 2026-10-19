@@ -60,7 +60,7 @@ jobs:
       - name: 汇总到 Step Summary
         run: |
           {
-            echo "## nosqlite 基准（Linux / GitHub runner）"
+            echo "## nodblite 基准（Linux / GitHub runner）"
             echo ""
             echo "> ⚠️ 共享 runner + 云盘：数值为**指示性参考**，不是精确基线。"
             echo "> 关键用途是与 macOS 对照，确认平台同步语义差异（见 \`AGENTS.md\`「认知修正」）。"

@@ -12,7 +12,7 @@
 
 use std::cmp::Ordering::Less;
 
-use nosqlite::query::{Filter, SortSpec, as_timestamp, compare_values, type_rank};
+use nodblite::query::{Filter, SortSpec, as_timestamp, compare_values, type_rank};
 use serde_json::{Value, json};
 
 /// 便捷比较。
@@ -182,7 +182,7 @@ fn sort_mixed_types_follows_bson_order() {
 /// 等级常量与 test 期望对应(防止常量表被误改)。
 #[test]
 fn rank_constants_are_stable() {
-    use nosqlite::query::compare::rank;
+    use nodblite::query::compare::rank;
     assert_eq!(rank::MIN_KEY, 0);
     assert_eq!(rank::NULL, 1);
     assert_eq!(rank::NUMBER, 2);
@@ -201,7 +201,7 @@ fn rank_constants_are_stable() {
 /// `$oid` 归一为字符串,等级应等同 STRING。
 #[test]
 fn oid_ranks_as_string() {
-    use nosqlite::query::compare::rank;
+    use nodblite::query::compare::rank;
     assert_eq!(
         type_rank(Some(&json!({"$oid": "6ad54cd9bcd4e32cb134e111"}))),
         rank::STRING
@@ -211,7 +211,7 @@ fn oid_ranks_as_string() {
 /// `$numberLong` 归一为数字,等级应等同 NUMBER。
 #[test]
 fn number_long_ranks_as_number() {
-    use nosqlite::query::compare::rank;
+    use nodblite::query::compare::rank;
     assert_eq!(type_rank(Some(&json!({"$numberLong": "42"}))), rank::NUMBER);
     assert_eq!(
         type_rank(Some(&json!({"$numberDouble": "1.5"}))),

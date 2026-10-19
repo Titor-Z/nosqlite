@@ -8,15 +8,15 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{Filter, FindOptions, SortSpec};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, FindOptions, SortSpec};
+use nodblite::{Database, Document};
 use serde_json::{Map, Value, json};
 
 /// 生成本次测试独占的临时 `.nodb` 路径。
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_plan_{}_{}_{}.nodb",
+        "nodblite_plan_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -315,7 +315,7 @@ fn index_scan_reflects_updates() {
 
     // 把 n=2 改成 n=3
     let id = before[0]["_id"].as_str().unwrap().to_string();
-    let update = nosqlite::query::Update::from_value(&json!({"$set": {"n": 3}})).unwrap();
+    let update = nodblite::query::Update::from_value(&json!({"$set": {"n": 3}})).unwrap();
     db.update_by_id("items", &id, &update).unwrap();
 
     assert!(planned(&db, json!({"n": 2})).is_empty(), "旧值应查不到");

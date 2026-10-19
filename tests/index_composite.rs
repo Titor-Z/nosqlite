@@ -8,15 +8,15 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{Filter, FindOptions};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, FindOptions};
+use nodblite::{Database, Document};
 use serde_json::{Map, Value, json};
 
 /// 生成本次测试独占的临时 `.nodb` 路径。
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_composite_{}_{}_{}.nodb",
+        "nodblite_composite_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -79,7 +79,7 @@ fn same_set(mut a: Vec<Map<String, Value>>, mut b: Vec<Map<String, Value>>) {
 fn create_composite_index() {
     let (path, db) = setup("create", vec![json!({"a": 1, "b": 2})]);
 
-    let def = nosqlite::index::def::IndexDef::new_composite(
+    let def = nodblite::index::def::IndexDef::new_composite(
         "items",
         "a_1_b_1",
         &["a", "b"],
@@ -251,7 +251,7 @@ fn composite_index_reflects_updates() {
     assert_eq!(found.len(), 1);
     let id = found[0]["_id"].as_str().unwrap().to_string();
 
-    let update = nosqlite::query::Update::from_value(&json!({"$set": {"b": 2}})).unwrap();
+    let update = nodblite::query::Update::from_value(&json!({"$set": {"b": 2}})).unwrap();
     db.update_by_id("items", &id, &update).unwrap();
 
     assert!(

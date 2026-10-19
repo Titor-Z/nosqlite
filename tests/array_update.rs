@@ -2,14 +2,14 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::Update;
-use nosqlite::{Database, Document};
+use nodblite::query::Update;
+use nodblite::{Database, Document};
 use serde_json::{Map, Value, json};
 
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_m29a_{}_{}_{}.nodb",
+        "nodblite_m29a_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -209,7 +209,7 @@ fn pull_no_change_not_counted() {
 
     let upd = Update::from_value(&json!({"$pull": {"a": 999}})).unwrap();
     let n = db
-        .update("items", &nosqlite::query::Filter::match_all(), &upd)
+        .update("items", &nodblite::query::Filter::match_all(), &upd)
         .unwrap();
     assert_eq!(n, 0, "无元素被移除时不应计入 modified");
 

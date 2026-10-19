@@ -1,4 +1,4 @@
-// nosqlite wire 协议的 Node.js 官方驱动验收。
+// nodblite wire 协议的 Node.js 官方驱动验收。
 //
 // 与 tests/go_compat 对齐:不自己造客户端,用官方 `mongodb` 包走完整协议栈。
 // 连接串由 NOSQLITE_URI 环境变量传入(由 Rust 集成测试传给 node 进程)。

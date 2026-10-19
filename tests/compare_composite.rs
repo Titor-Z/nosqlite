@@ -7,15 +7,15 @@
 
 use std::path::PathBuf;
 
-use nosqlite::query::{Filter, SortSpec, compare_values};
-use nosqlite::{Database, Document};
+use nodblite::query::{Filter, SortSpec, compare_values};
+use nodblite::{Database, Document};
 use serde_json::{Value, json};
 
 /// 生成本次测试独占的临时 `.nodb` 路径。
 fn temp_nodb(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_cmp_{}_{}_{}.nodb",
+        "nodblite_cmp_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()

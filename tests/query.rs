@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use nosqlite::query::{Filter, SortError, SortSpec};
+use nodblite::query::{Filter, SortError, SortSpec};
 
 /// 辅助:从 JSON 字符串解析 filter。
 fn filter(json: &str) -> Filter {
@@ -132,7 +132,7 @@ fn regex_invalid_pattern() {
     let v: serde_json::Value = serde_json::from_str(r#"{"name":{"$regex":"["}}"#).unwrap();
     let err = Filter::from_value(&v).expect_err("非法正则应报错");
     assert!(
-        matches!(err, nosqlite::query::FilterError::InvalidRegex(_)),
+        matches!(err, nodblite::query::FilterError::InvalidRegex(_)),
         "实际: {:?}",
         err
     );
@@ -242,7 +242,7 @@ fn null_filter_matches_all() {
 fn filter_rejects_non_object() {
     let v: serde_json::Value = serde_json::from_str("[1,2,3]").unwrap();
     let err = Filter::from_value(&v).expect_err("数组 filter 应报错");
-    assert!(matches!(err, nosqlite::query::FilterError::NotObject));
+    assert!(matches!(err, nodblite::query::FilterError::NotObject));
 }
 
 /// 未知操作符应报错。
@@ -251,7 +251,7 @@ fn filter_rejects_unknown_operator() {
     let v: serde_json::Value = serde_json::from_str(r#"{"age":{"$magic":1}}"#).unwrap();
     let err = Filter::from_value(&v).expect_err("未知操作符应报错");
     assert!(
-        matches!(err, nosqlite::query::FilterError::InvalidOperator(_)),
+        matches!(err, nodblite::query::FilterError::InvalidOperator(_)),
         "实际: {:?}",
         err
     );

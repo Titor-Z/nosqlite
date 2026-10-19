@@ -4,12 +4,12 @@
 //! 覆盖 shell 内各命令(open/create/databases/insert/find/update/delete/count/
 //! collections/drop/help/quit)的解析,与 filter/update 解析逻辑保持一致。
 
-use nosqlite::cli::ShellCommand;
+use nodblite::cli::ShellCommand;
 
 /// 辅助:按空白拆分一行命令为单词列表。
 fn parse_line(line: &str) -> Result<ShellCommand, String> {
     let parts: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
-    nosqlite::cli::parse_shell(&parts)
+    nodblite::cli::parse_shell(&parts)
 }
 
 /// .quit / .exit 退出 shell(严格点命令,无点别名报错)。

@@ -1,6 +1,6 @@
 //! Node.js 官方 `mongodb` 驱动验收(v0.6.2 M30)。
 //!
-//! 与 `tests/mongo_wire.rs` 的 Go 验收对齐:拉起 `nosqlite-server`,再用
+//! 与 `tests/mongo_wire.rs` 的 Go 验收对齐:拉起 `nodblite-server`,再用
 //! **官方 Node 驱动**走完整 wire 协议栈。
 //!
 //! 若本机没有 Node 或依赖未安装,测试**显式跳过并打印原因**,不静默通过。
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 fn temp_path(tag: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_node_{}_{}_{}.nodb",
+        "nodblite_node_{}_{}_{}.nodb",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -43,7 +43,7 @@ impl Drop for ServerGuard {
 }
 
 fn start_server(db_path: &std::path::Path) -> Option<ServerGuard> {
-    let exe = env!("CARGO_BIN_EXE_nosqlite-server");
+    let exe = env!("CARGO_BIN_EXE_nodblite-server");
     let port = free_port();
     let addr = format!("127.0.0.1:{}", port);
 
@@ -54,7 +54,7 @@ fn start_server(db_path: &std::path::Path) -> Option<ServerGuard> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("应能启动 nosqlite-server");
+        .expect("应能启动 nodblite-server");
 
     let guard = ServerGuard { child, addr };
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -99,7 +99,7 @@ fn node_driver_end_to_end() {
 
     let db = temp_path("e2e");
     let Some(server) = start_server(&db) else {
-        panic!("nosqlite-server 未能在 5 秒内就绪");
+        panic!("nodblite-server 未能在 5 秒内就绪");
     };
 
     let out = Command::new("node")

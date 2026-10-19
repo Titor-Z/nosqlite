@@ -1,6 +1,6 @@
 //! MongoDB wire 协议验收(阶段 2)。
 //!
-//! 这里不做「自己造客户端测自己」的自娱自乐 —— 而是**自动拉起 `nosqlite-server`,
+//! 这里不做「自己造客户端测自己」的自娱自乐 —— 而是**自动拉起 `nodblite-server`,
 //! 再用 MongoDB 官方 Go 驱动连接**,走完整协议栈。
 //!
 //! 若本机没有 Go 工具链或驱动未下载,测试会自动跳过(不阻塞 CI 的纯 Rust 阶段)。
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 fn temp_path(tag: &str, ext: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_wire_{}_{}_{}.{}",
+        "nodblite_wire_{}_{}_{}.{}",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -47,9 +47,9 @@ impl Drop for ServerGuard {
     }
 }
 
-/// 启动 `nosqlite-server`,等待端口就绪。
+/// 启动 `nodblite-server`,等待端口就绪。
 fn start_server(db_path: &PathBuf) -> Option<ServerGuard> {
-    let exe = env!("CARGO_BIN_EXE_nosqlite-server");
+    let exe = env!("CARGO_BIN_EXE_nodblite-server");
     let port = free_port();
     let addr = format!("127.0.0.1:{}", port);
 
@@ -60,7 +60,7 @@ fn start_server(db_path: &PathBuf) -> Option<ServerGuard> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("应能启动 nosqlite-server");
+        .expect("应能启动 nodblite-server");
 
     let guard = ServerGuard { child, addr };
 
@@ -100,7 +100,7 @@ fn go_driver_end_to_end() {
 
     let db = temp_path("e2e", "nodb");
     let Some(server) = start_server(&db) else {
-        panic!("nosqlite-server 未能在 5 秒内就绪");
+        panic!("nodblite-server 未能在 5 秒内就绪");
     };
 
     let out = Command::new("go")
@@ -130,7 +130,7 @@ fn go_driver_end_to_end() {
 fn raw_hello_handshake() {
     let db = temp_path("hello", "nodb");
     let Some(server) = start_server(&db) else {
-        panic!("nosqlite-server 未能在 5 秒内就绪");
+        panic!("nodblite-server 未能在 5 秒内就绪");
     };
 
     let mut stream = TcpStream::connect(&server.addr).expect("应能连接");

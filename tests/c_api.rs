@@ -10,7 +10,7 @@ use std::process::Command;
 fn temp_path(tag: &str, ext: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nosqlite_cabi_{}_{}_{}.{}",
+        "nodblite_cabi_{}_{}_{}.{}",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -39,11 +39,11 @@ fn c_abi_smoke_test() {
     // 1. 确保动态库已构建(测试编译期已构建 lib,这里只做存在性校验)
     let target = target_dir();
     let lib = if cfg!(target_os = "macos") {
-        target.join("libnosqlite.dylib")
+        target.join("libnodblite.dylib")
     } else if cfg!(target_os = "windows") {
-        target.join("nosqlite.dll")
+        target.join("nodblite.dll")
     } else {
-        target.join("libnosqlite.so")
+        target.join("libnodblite.so")
     };
     // cdylib 不参与 `cargo test` 的构建(crate-type 里 rlib 优先),
     // 因此在干净环境下动态库可能还不存在 —— 这里按需构建一次,
@@ -68,7 +68,7 @@ fn c_abi_smoke_test() {
     cmd.arg(&src)
         .arg(format!("-I{}", include.display()))
         .arg(format!("-L{}", target.display()))
-        .arg("-lnosqlite")
+        .arg("-lnodblite")
         .arg("-o")
         .arg(&bin);
     if cfg!(target_os = "macos") {
@@ -114,38 +114,38 @@ fn c_abi_smoke_test() {
 /// 结构体布局必须与 C 头文件一致(`repr(C)` + 字段顺序)。
 #[test]
 fn struct_layouts_match_header() {
-    use nosqlite::ffi::*;
+    use nodblite::ffi::*;
 
     // Slice = { ptr, len }
     assert_eq!(
-        std::mem::size_of::<NosqliteSlice>(),
+        std::mem::size_of::<NodbliteSlice>(),
         std::mem::size_of::<usize>() * 2
     );
 
     // Error = { i32, slice, slice, slice } => 4 + padding(4) + 16*3 = 56
     // 用对齐推算,不硬编码具体字节数,避免平台差异
-    assert!(std::mem::size_of::<NosqliteError>() >= 4 + 3 * 16);
+    assert!(std::mem::size_of::<NodbliteError>() >= 4 + 3 * 16);
 
     // OpenOptions 的 struct_size 字段在偏移 0
-    assert_eq!(std::mem::offset_of!(NosqliteOpenOptions, struct_size), 0);
+    assert_eq!(std::mem::offset_of!(NodbliteOpenOptions, struct_size), 0);
 
     // FindOptions 的 struct_size 字段在偏移 0
-    assert_eq!(std::mem::offset_of!(NosqliteFindOptions, struct_size), 0);
+    assert_eq!(std::mem::offset_of!(NodbliteFindOptions, struct_size), 0);
 
     // Result 的前两个字段是 code/count(便于 C 侧直接读)
-    assert_eq!(std::mem::offset_of!(NosqliteResult, code), 0);
-    assert!(std::mem::offset_of!(NosqliteResult, count) > 0);
+    assert_eq!(std::mem::offset_of!(NodbliteResult, code), 0);
+    assert!(std::mem::offset_of!(NodbliteResult, count) > 0);
 }
 
 /// 头文件里的错误码宏必须与 Rust 枚举的 `as_i32()` 一致。
 ///
-/// 直接解析 `include/nosqlite.h` 的 `#define`,这样头文件与实现漂移会立刻被抓住。
+/// 直接解析 `include/nodblite.h` 的 `#define`,这样头文件与实现漂移会立刻被抓住。
 #[test]
 fn header_macros_match_rust() {
-    use nosqlite::ErrorCode;
+    use nodblite::ErrorCode;
 
     let header = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("include/nosqlite.h"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("include/nodblite.h"),
     )
     .expect("应能读取头文件");
 

@@ -1,16 +1,16 @@
-//! `nosqlite-server` 入口:以 MongoDB wire 协议对外提供服务。
+//! `nodblite-server` 入口:以 MongoDB wire 协议对外提供服务。
 //!
 //! 用法:
 //! ```text
-//! nosqlite-server [--addr 127.0.0.1:27017] <file.nodb>
+//! nodblite-server [--addr 127.0.0.1:27017] <file.nodb>
 //! ```
 //!
 //! 启动后,任何 MongoDB 官方/社区驱动都可以用 `mongodb://127.0.0.1:27017`
-//! 直接连接 —— 无需任何 nosqlite 专属 SDK。
+//! 直接连接 —— 无需任何 nodblite 专属 SDK。
 
 use std::process::ExitCode;
 
-use nosqlite::server::serve::{ServerConfig, serve};
+use nodblite::server::serve::{ServerConfig, serve};
 
 /// 默认监听地址(MongoDB 标准端口)。
 const DEFAULT_ADDR: &str = "127.0.0.1:27017";
@@ -72,10 +72,10 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
-    println!("nosqlite-server —— 以 MongoDB wire 协议提供 .nodb 数据库");
+    println!("nodblite-server —— 以 MongoDB wire 协议提供 .nodb 数据库");
     println!();
     println!("用法:");
-    println!("  nosqlite-server [--addr <host:port>] <file.nodb>");
+    println!("  nodblite-server [--addr <host:port>] <file.nodb>");
     println!();
     println!("说明:");
     println!("  - 默认监听 {} (MongoDB 标准端口)", DEFAULT_ADDR);
@@ -86,6 +86,6 @@ fn print_help() {
     );
     println!();
     println!("示例:");
-    println!("  nosqlite-server app.nodb");
-    println!("  nosqlite-server --addr 0.0.0.0:27018 app.nodb");
+    println!("  nodblite-server app.nodb");
+    println!("  nodblite-server --addr 0.0.0.0:27018 app.nodb");
 }

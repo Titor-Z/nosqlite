@@ -7,8 +7,8 @@
 //! 这是整个索引方案的根基:两者不一致,范围查询走索引就会静默返回错误结果
 //! (全表扫和走索引给出不同答案,且不报错)。本文件用穷举两两组合锁死它。
 
-use nosqlite::index::key::{encode_index_values, encode_key, is_indexable};
-use nosqlite::query::compare_values;
+use nodblite::index::key::{encode_index_values, encode_key, is_indexable};
+use nodblite::query::compare_values;
 use serde_json::{Value, json};
 
 /// 用于两两校验的样本值(覆盖全部 BSON 类型 + 边界值)。
@@ -92,7 +92,7 @@ fn encoding_order_matches_comparison() {
 
 /// 完整类型序:编码后的字节序应与 BSON 官方序一致。
 ///
-/// 注:`$oid` 在 nosqlite 里按**字符串**参与比较与编码(M23a 契约,
+/// 注:`$oid` 在 nodblite 里按**字符串**参与比较与编码(M23a 契约,
 /// 存储层主键就是 24 位 hex 字符串),因此它出现在 STRING 等级,而非 OBJECT_ID 等级。
 #[test]
 fn encoding_follows_bson_type_order() {
