@@ -52,6 +52,21 @@ pub enum Plan {
         /// 排序是否可直接由索引顺序满足。
         sorted_by_index: bool,
     },
+    /// 多区间**并集**(M26):每个子计划各自扫索引,候选 doc_id 取并集。
+    ///
+    /// 用于 `$or`:`{$or: [{a:1},{a:2}]}` → 两个区间并集。
+    /// **所有分支都必须能走索引**,否则整体退回全表扫。
+    Union {
+        /// 各分支的索引扫描计划。
+        branches: Vec<Plan>,
+    },
+    /// 多索引**交集**(M26):各索引各自出候选集,取 doc_id 交集。
+    ///
+    /// 用于 `{a:1, b:2}` 且 `a`、`b` 各有独立索引(closest 候选最少的先扫)。
+    Intersect {
+        /// 参与交集的索引扫描计划。
+        branches: Vec<Plan>,
+    },
 }
 
 impl Plan {
@@ -60,6 +75,8 @@ impl Plan {
         match self {
             Plan::CollScan => "COLLSCAN",
             Plan::IndexScan { .. } => "IXSCAN",
+            Plan::Union { .. } => "OR",
+            Plan::Intersect { .. } => "AND",
         }
     }
 
@@ -68,12 +85,14 @@ impl Plan {
         match self {
             Plan::CollScan => None,
             Plan::IndexScan { index, .. } => Some(&index.name),
+            Plan::Union { branches } => branches.first().and_then(|b| b.index_name()),
+            Plan::Intersect { branches } => branches.first().and_then(|b| b.index_name()),
         }
     }
 
     /// 是否为索引扫描。
     pub fn is_index_scan(&self) -> bool {
-        matches!(self, Plan::IndexScan { .. })
+        !matches!(self, Plan::CollScan)
     }
 }
 
@@ -92,11 +111,68 @@ pub fn plan_with_json(filter_json: &Value, sort: Option<&SortSpec>, indexes: &[I
         return Plan::CollScan;
     };
 
+    // ① `$or`:拆分各分支,全部能走索引才整体走索引(并集)
+    if let Some(Value::Array(branches)) = obj.get("$or") {
+        let plans: Option<Vec<Plan>> = branches
+            .iter()
+            .map(|b| {
+                let p = plan_conjunction(b, sort, indexes);
+                p.is_index_scan().then_some(p)
+            })
+            .collect();
+        if let Some(plans) = plans.filter(|v| !v.is_empty()) {
+            return Plan::Union { branches: plans };
+        }
+        return Plan::CollScan;
+    }
+
+    // ② 顶层是 `$and`:合并各子条件的字段(交集由下面的 conjunct 逻辑处理)
+    //    这里简化处理:把 `$and` 数组里的对象合并成一个平坦对象再规划。
+    if let Some(Value::Array(conds)) = obj.get("$and") {
+        let mut merged = Map::new();
+        let mut ok = true;
+        for c in conds {
+            match c.as_object() {
+                Some(m) => {
+                    for (k, v) in m {
+                        if merged.insert(k.clone(), v.clone()).is_some() {
+                            ok = false; // 同字段重复,放弃合并
+                        }
+                    }
+                }
+                None => ok = false,
+            }
+        }
+        if ok {
+            return plan_conjunction(&Value::Object(merged), sort, indexes);
+        }
+    }
+
+    plan_conjunction(filter_json, sort, indexes)
+}
+
+/// 为**合取条件**(顶层字段之间是 AND)生成计划。
+///
+/// 优先尝试「单个复合索引覆盖最长前缀」;若不划算,尝试「多个单字段索引取交集」。
+fn plan_conjunction(filter_json: &Value, sort: Option<&SortSpec>, indexes: &[IndexDef]) -> Plan {
+    plan_conjunction_inner(filter_json, sort, indexes, true)
+}
+
+/// `allow_intersection = false` 时不再尝试交集,避免构造交集分支时无限递归。
+fn plan_conjunction_inner(
+    filter_json: &Value,
+    sort: Option<&SortSpec>,
+    indexes: &[IndexDef],
+    allow_intersection: bool,
+) -> Plan {
+    let Some(obj) = filter_json.as_object() else {
+        return Plan::CollScan;
+    };
+
     // 收集所有可用计划,取「前缀最长」者(等值优先于范围)
     let mut best: Option<(usize, usize, Plan)> = None; // (前缀长度, 是否全等值, plan)
 
     for def in indexes {
-        // 按字段顺序,尽可能多地消费 filter 里的条件
         let mut segs: Vec<Vec<u8>> = Vec::new();
         let mut all_equality = true;
         let mut last_range_field: Option<String> = None;
@@ -110,32 +186,17 @@ pub fn plan_with_json(filter_json: &Value, sort: Option<&SortSpec>, indexes: &[I
                 .is_some_and(|m| m.keys().any(|k| k.starts_with('$')));
 
             if is_op_object {
-                // 范围条件:只能作为**最后一个**前缀字段(MongoDB 前缀原则)
-                if segs.len() < def.fields.len() - 1 {
-                    // 后面还有字段,但当前是范围 → 只能用到当前字段为止
-                    all_equality = false;
-                    last_range_field = Some(field.clone());
-                    // 范围字段本身不进入精确前缀(区间由 bounds 表达)
-                    break;
-                }
                 all_equality = false;
                 last_range_field = Some(field.clone());
                 break;
-            } else {
-                // 等值条件:可以进入精确前缀
-                segs.push(encode_key(Some(value)));
             }
+            segs.push(encode_key(Some(value)));
         }
 
-        // 前缀至少要覆盖第一个字段,否则这个索引用不上
         if segs.is_empty() && last_range_field.is_none() {
             continue;
         }
-        if segs.is_empty() && last_range_field.is_some() {
-            // 第一个字段就是范围条件:可用,但前缀为空
-        }
 
-        // 构造区间:等值前缀 + (可选)范围字段的上下界
         let (lower, upper, desc) = match &last_range_field {
             Some(rf) => {
                 let ops = obj
@@ -146,16 +207,9 @@ pub fn plan_with_json(filter_json: &Value, sort: Option<&SortSpec>, indexes: &[I
                 let (lo, hi, d) = range_component(&ops, rf);
                 let mut l = concat_segs(&segs);
                 l.extend_from_slice(&lo.unwrap_or_default());
-                let mut u = if lo_is_set(&ops) {
-                    // 有下界时上界需在等值前缀之后放开
-                    concat_segs(&segs)
-                } else {
-                    concat_segs(&segs)
-                };
+                let mut u = concat_segs(&segs);
                 if let Some(h) = hi {
                     u.extend_from_slice(&h);
-                } else {
-                    // 无上界:前缀即足够,后续由 filter 二次过滤保证正确性
                 }
                 let lower_v = if lo_is_set(&ops) || !segs.is_empty() {
                     Some(l)
@@ -170,7 +224,6 @@ pub fn plan_with_json(filter_json: &Value, sort: Option<&SortSpec>, indexes: &[I
                 (lower_v, upper_v, d)
             }
             None => {
-                // 全等值:front 是精确前缀,用 0xFF 作上界
                 let prefix = concat_segs(&segs);
                 let mut upper = prefix.clone();
                 upper.push(0xFF);
@@ -190,14 +243,69 @@ pub fn plan_with_json(filter_json: &Value, sort: Option<&SortSpec>, indexes: &[I
                 .unwrap_or(true),
         };
 
-        // 优先:前缀字段多 > 全等值
         let score = (segs.len(), usize::from(all_equality));
         if best.as_ref().is_none_or(|(n, eq, _)| score > (*n, *eq)) {
             best = Some((score.0, score.1, plan));
         }
     }
 
-    best.map(|(_, _, p)| p).unwrap_or(Plan::CollScan)
+    let primary = best.map(|(_, _, p)| p);
+
+    // 尝试索引交集:对 filter 里每个有独立索引的字段各出一个计划
+    if let Some(secondary) = allow_intersection
+        .then(|| intersection_plans(obj, sort, indexes, primary.as_ref()))
+        .flatten()
+    {
+        return Plan::Intersect {
+            branches: secondary,
+        };
+    }
+
+    primary.unwrap_or(Plan::CollScan)
+}
+
+/// 构造「多索引取交集」的分支列表。
+///
+/// 只有当**每个字段**都能找到独立的索引、且分支数 >= 2 时才返回 `Some`。
+/// `primary` 会被排除,避免与已有的复合索引计划重复。
+fn intersection_plans(
+    obj: &Map<String, Value>,
+    sort: Option<&SortSpec>,
+    indexes: &[IndexDef],
+    primary: Option<&Plan>,
+) -> Option<Vec<Plan>> {
+    // 若某个复合索引的**全部字段**都被 filter 覆盖,它优于交集(单次扫描更省)。
+    if let Some(Plan::IndexScan { index, .. }) = primary
+        && index.fields.len() >= 2
+        && index.fields.iter().all(|f| obj.contains_key(f))
+    {
+        return None;
+    }
+
+    let mut branches: Vec<Plan> = Vec::new();
+    // 只看顶层字段条件(逻辑组合不参与交集)
+    for (field, value) in obj.iter().filter(|(k, _)| !k.starts_with('$')) {
+        // 找以该字段开头的索引(单字段,或复合前缀取首字段)
+        let Some(def) = indexes.iter().find(|d| d.fields.first() == Some(field)) else {
+            continue; // 该字段无索引,跳过(不影响交集正确性)
+        };
+
+        let mut single = Map::new();
+        single.insert(field.clone(), value.clone());
+        // 分支内禁止再构造交集(否则无限递归)
+        let p = plan_conjunction_inner(
+            &Value::Object(single),
+            sort,
+            std::slice::from_ref(def),
+            false,
+        );
+        if !p.is_index_scan() {
+            return None;
+        }
+        branches.push(p);
+    }
+
+    (branches.len() >= 2).then_some(branches)
 }
 
 /// 拼接等值前缀段。
@@ -285,6 +393,32 @@ pub fn explain_plan(plan: &Plan, coll: &str) -> Map<String, Value> {
             out.insert("sortedByIndex".to_string(), Value::Bool(*sorted_by_index));
             // 回表后仍需完整 filter 二次过滤 —— 明确写进 explain,避免误解
             out.insert("filterApplied".to_string(), Value::Bool(true));
+        }
+        Plan::Union { branches } => {
+            out.insert("stage".to_string(), Value::String("OR".to_string()));
+            out.insert("collection".to_string(), Value::String(coll.to_string()));
+            out.insert(
+                "branches".to_string(),
+                Value::Array(
+                    branches
+                        .iter()
+                        .map(|b| explain_plan(b, coll).into())
+                        .collect(),
+                ),
+            );
+        }
+        Plan::Intersect { branches } => {
+            out.insert("stage".to_string(), Value::String("AND".to_string()));
+            out.insert("collection".to_string(), Value::String(coll.to_string()));
+            out.insert(
+                "branches".to_string(),
+                Value::Array(
+                    branches
+                        .iter()
+                        .map(|b| explain_plan(b, coll).into())
+                        .collect(),
+                ),
+            );
         }
     }
     out

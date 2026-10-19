@@ -162,6 +162,18 @@ fn encode_element(buf: &mut Vec<u8>, key: &str, value: &Value) {
             write_cstring(buf, key);
             buf.push(if *b { 1 } else { 0 });
         }
+        // 扩展 JSON 的 `{"$numberLong": "0"}` 强制编码成 int64 ——
+        // 游标 id 等字段驱动要求 64 位,普通整数会被写成 int32 导致驱动报错。
+        Value::Object(m) if m.len() == 1 && m.contains_key("$numberLong") => {
+            let i = m
+                .get("$numberLong")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            buf.push(T_INT64);
+            write_cstring(buf, key);
+            buf.extend_from_slice(&i.to_le_bytes());
+        }
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 // 整数优先 int32,超出范围用 int64

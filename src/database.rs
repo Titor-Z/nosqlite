@@ -438,15 +438,9 @@ impl Database {
             crate::index::planner::Plan::CollScan => {
                 return self.find_with_options(collection, filter, options);
             }
-            crate::index::planner::Plan::IndexScan { index, bounds, .. } => {
-                // 1. 索引区间扫描 → 候选 doc_id(按索引序)
-                let ids = self.engine.scan_index_range(
-                    collection,
-                    &index.field_signature(),
-                    index.fields.len(),
-                    bounds.lower.as_deref(),
-                    bounds.upper.as_deref(),
-                )?;
+            other => {
+                // 1. 递归执行计划 → 候选 doc_id
+                let ids = self.collect_plan_ids(collection, other)?;
 
                 // 2. 按主键回表 + 二次过滤(安全底线)
                 for id in ids {
@@ -474,6 +468,68 @@ impl Database {
             docs = docs.iter().map(|doc| projection.apply(doc)).collect();
         }
         Ok(docs)
+    }
+
+    /// 递归执行计划,返回候选 `doc_id` 集合(M26)。
+    ///
+    /// - `IndexScan`:直接扫索引区间;
+    /// - `Union`:各分支取**并集**(用于 `$or`);
+    /// - `Intersect`:各分支取**交集**(用于多索引 AND)。
+    ///
+    /// 返回值去重;并集保持首次出现的顺序,交集按第一个分支的顺序。
+    fn collect_plan_ids(
+        &self,
+        collection: &str,
+        plan: &crate::index::planner::Plan,
+    ) -> Result<Vec<String>, DatabaseError> {
+        use crate::index::planner::Plan;
+        match plan {
+            Plan::CollScan => {
+                // 全表扫:直接列出全部主键(调用方通常不会走到这里)
+                let mut ids = Vec::new();
+                self.engine.for_each(collection, &mut |id, _| {
+                    ids.push(id.to_string());
+                    true // 继续遍历
+                })?;
+                Ok(ids)
+            }
+            Plan::IndexScan { index, bounds, .. } => Ok(self.engine.scan_index_range(
+                collection,
+                &index.field_signature(),
+                index.fields.len(),
+                bounds.lower.as_deref(),
+                bounds.upper.as_deref(),
+            )?),
+            Plan::Union { branches } => {
+                // 并集:按出现顺序收集,用 HashSet 去重
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for b in branches {
+                    for id in self.collect_plan_ids(collection, b)? {
+                        if seen.insert(id.clone()) {
+                            out.push(id);
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            Plan::Intersect { branches } => {
+                // 交集:以候选最少的分支作为基准,减少比对量
+                let mut sets: Vec<std::collections::HashSet<String>> = Vec::new();
+                for b in branches {
+                    sets.push(self.collect_plan_ids(collection, b)?.into_iter().collect());
+                }
+                let Some((smallest_idx, _)) = sets.iter().enumerate().min_by_key(|(_, s)| s.len())
+                else {
+                    return Ok(Vec::new());
+                };
+                let base: Vec<String> = sets[smallest_idx].iter().cloned().collect();
+                Ok(base
+                    .into_iter()
+                    .filter(|id| sets.iter().all(|s| s.contains(id)))
+                    .collect())
+            }
+        }
     }
 
     /// 生成查询计划描述(M24),用于观测是否命中索引。

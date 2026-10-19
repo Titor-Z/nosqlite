@@ -532,6 +532,96 @@ func TestExplain(t *testing.T) {
 		t.Fatalf("无索引应为 COLLSCAN,实际 %s", found)
 	}
 	t.Logf("explain stage = %s", found)
+
+	// 建索引后 explain 应变成 IXSCAN
+	name, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{bson.E{Key: "n", Value: 1}},
+	})
+	if err != nil {
+		t.Fatalf("createIndexes 失败: %v", err)
+	}
+	t.Logf("已创建索引: %s", name)
+
+	var after bson.M
+	if err := client.Database("gocompat").RunCommand(ctx, cmd).Decode(&after); err != nil {
+		t.Fatalf("建索引后 explain 失败: %v", err)
+	}
+	if stage := findStage(after); stage != "IXSCAN" {
+		t.Fatalf("建索引后应为 IXSCAN,实际 %s", stage)
+	}
+
+	// listIndexes 应能看到 _id_ 与 n_1
+	cur, err := coll.Indexes().List(ctx)
+	if err != nil {
+		t.Fatalf("listIndexes 失败: %v", err)
+	}
+	var specs []bson.M
+	if err := cur.All(ctx, &specs); err != nil {
+		t.Fatalf("读取索引清单失败: %v", err)
+	}
+	if len(specs) < 2 {
+		t.Fatalf("应至少有 _id_ 与 n_1 两个索引,实际 %d", len(specs))
+	}
+
+	// dropIndexes 后回到 COLLSCAN
+	if err := coll.Indexes().DropOne(ctx, name); err != nil {
+		t.Fatalf("dropIndexes 失败: %v", err)
+	}
+	var dropped bson.M
+	if err := client.Database("gocompat").RunCommand(ctx, cmd).Decode(&dropped); err != nil {
+		t.Fatalf("删索引后 explain 失败: %v", err)
+	}
+	if stage := findStage(dropped); stage != "COLLSCAN" {
+		t.Fatalf("删索引后应回到 COLLSCAN,实际 %s", stage)
+	}
+}
+
+// 复合索引经 wire 层创建后可用于前缀查询。
+func TestCompositeIndexOverWire(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("wirecomposite")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	docs := make([]interface{}, 0, 50)
+	for i := 0; i < 50; i++ {
+		docs = append(docs, bson.M{"tenant": i % 5, "n": i})
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	_, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{bson.E{Key: "tenant", Value: 1}, bson.E{Key: "n", Value: 1}},
+	})
+	if err != nil {
+		t.Fatalf("创建复合索引失败: %v", err)
+	}
+
+	cmd := bson.D{
+		bson.E{Key: "explain", Value: bson.M{
+			"find":   "wirecomposite",
+			"filter": bson.M{"tenant": 1},
+		}},
+	}
+	var res bson.M
+	if err := client.Database("gocompat").RunCommand(ctx, cmd).Decode(&res); err != nil {
+		t.Fatalf("explain 失败: %v", err)
+	}
+	if stage := findStage(res); stage != "IXSCAN" {
+		t.Fatalf("复合索引前缀查询应为 IXSCAN,实际 %s", stage)
+	}
+
+	n, err := coll.CountDocuments(ctx, bson.M{"tenant": 1})
+	if err != nil {
+		t.Fatalf("CountDocuments 失败: %v", err)
+	}
+	if n != 10 {
+		t.Fatalf("tenant=1 应有 10 条,实际 %d", n)
+	}
 }
 
 // findStage 在任意嵌套结构中查找 `stage` 字段。

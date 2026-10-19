@@ -1057,6 +1057,59 @@ impl Storage for RedbEngine {
                     dropped += 1;
                 }
             }
+            // 顺带清理该集合的全部索引定义与条目(M26)。
+            // 索引表 key 前缀同样是 `集合名\0`,与文档表的布局一致。
+            let idx_prefix = {
+                let mut k = Vec::new();
+                k.extend_from_slice(collection.as_bytes());
+                k.push(0);
+                k
+            };
+            let mut meta = write_tx
+                .open_table(INDEX_META_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开索引定义表失败: {}", e)))?;
+            let mut data = write_tx
+                .open_table(INDEX_DATA_TABLE)
+                .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
+
+            let mut stale_meta: Vec<Vec<u8>> = Vec::new();
+            let mut stale_data: Vec<Vec<u8>> = Vec::new();
+            {
+                let range = meta
+                    .range(idx_prefix.as_slice()..)
+                    .map_err(|e| StorageError::Other(format!("遍历索引定义失败: {}", e)))?;
+                for entry in range {
+                    let (k, _) = entry
+                        .map_err(|e| StorageError::Other(format!("读取索引定义失败: {}", e)))?;
+                    let kb = k.value();
+                    if !kb.starts_with(&idx_prefix) {
+                        break;
+                    }
+                    stale_meta.push(kb.to_vec());
+                }
+            }
+            {
+                let range = data
+                    .range(idx_prefix.as_slice()..)
+                    .map_err(|e| StorageError::Other(format!("遍历索引条目失败: {}", e)))?;
+                for entry in range {
+                    let (k, _) = entry
+                        .map_err(|e| StorageError::Other(format!("读取索引条目失败: {}", e)))?;
+                    let kb = k.value();
+                    if !kb.starts_with(&idx_prefix) {
+                        break;
+                    }
+                    stale_data.push(kb.to_vec());
+                }
+            }
+            for k in &stale_meta {
+                meta.remove(k.as_slice())
+                    .map_err(|e| StorageError::Other(format!("删除索引定义失败: {}", e)))?;
+            }
+            for k in &stale_data {
+                data.remove(k.as_slice())
+                    .map_err(|e| StorageError::Other(format!("删除索引条目失败: {}", e)))?;
+            }
         }
         write_tx
             .commit()

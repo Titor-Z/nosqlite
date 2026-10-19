@@ -227,7 +227,7 @@ fn dispatch(
     db: &Database,
     name: &str,
     cmd: &Map<String, Value>,
-    db_name: &str,
+    _db_name: &str,
     sequences: &[(String, Vec<Map<String, Value>>)],
 ) -> Map<String, Value> {
     // 命令名大小写不敏感(驱动可能发 isMaster/ismaster)
@@ -247,7 +247,9 @@ fn dispatch(
         "distinct" => cmd_distinct(db, cmd),
         "listcollections" => cmd_list_collections(db, cmd),
         "listdatabases" => cmd_list_databases(db, cmd),
-        "createindexes" => cmd_create_indexes(cmd, db_name),
+        "createindexes" => cmd_create_indexes(db, cmd),
+        "listindexes" => cmd_list_indexes(db, cmd),
+        "dropindexes" => cmd_drop_indexes(db, cmd),
         "drop" => cmd_drop(db, cmd),
         "dropdatabase" => cmd_drop_database(db),
         "buildinfo" | "buildinfo1" => build_info(),
@@ -946,12 +948,143 @@ fn cmd_list_databases(db: &Database, _cmd: &Map<String, Value>) -> Map<String, V
     ])
 }
 
-/// `createIndexes`:接受并返回成功(索引暂未实现,但不能报错,否则驱动建库失败)。
-fn cmd_create_indexes(_cmd: &Map<String, Value>, _db_name: &str) -> Map<String, Value> {
+/// `createIndexes`(M26 起真正建索引)。
+///
+/// 请求形态:
+/// ```json
+/// {"createIndexes": "users",
+///  "indexes": [{"key": {"a": 1, "b": -1}, "name": "a_1_b_-1", "unique": true}]}
+/// ```
+///
+/// `key` 是**有序**映射,键序即索引字段顺序(BSON 保留了顺序,解析后即为
+/// `serde_json::Map` 的迭代顺序);值为 `1`/`-1` 表示升降序,本引擎目前
+/// 只支持升序存储(降序可由反向遍历实现,尚未接),故 `-1` 也按字段顺序建。
+fn cmd_create_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let coll = cmd
+        .get("createIndexes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let Some(specs) = cmd.get("indexes").and_then(|v| v.as_array()) else {
+        return err_doc(2, "BadValue", "createIndexes 需要 indexes 数组");
+    };
+
+    let before = db.list_indexes(coll).map(|v| v.len()).unwrap_or(0);
+
+    for spec in specs {
+        let Some(obj) = spec.as_object() else {
+            continue;
+        };
+        let Some(key) = obj.get("key").and_then(|v| v.as_object()) else {
+            return err_doc(2, "BadValue", "索引缺少 key");
+        };
+        // 字段顺序 = key 文档的键序
+        let fields: Vec<&str> = key.keys().map(|s| s.as_str()).collect();
+        if fields.is_empty() {
+            return err_doc(2, "BadValue", "索引 key 不能为空");
+        }
+
+        // 未给 name 时按 MongoDB 惯例拼 `字段_方向`
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                key.iter()
+                    .map(|(f, d)| {
+                        let dir = d.as_i64().unwrap_or(1);
+                        format!("{}_{}", f, dir)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("_")
+            });
+
+        let unique = obj.get("unique").and_then(|v| v.as_bool()).unwrap_or(false);
+        let sparse = obj.get("sparse").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if let Err(e) = db.create_index_composite(coll, &name, &fields, unique, sparse) {
+            return err_doc(2, "BadValue", &e.to_string());
+        }
+    }
+
+    let after = db.list_indexes(coll).map(|v| v.len()).unwrap_or(before);
     ok_doc([
-        ("numIndexesBefore", json!(1)),
-        ("numIndexesAfter", json!(1)),
+        ("numIndexesBefore", json!(before)),
+        ("numIndexesAfter", json!(after)),
+        ("createdCollectionAutomatically", json!(false)),
     ])
+}
+
+/// `listIndexes`:返回索引清单。
+///
+/// MongoDB 的 `listIndexes` 通常以**游标**形式返回;驱动也能接受内联数组,
+/// 这里返回游标形态(`cursor.firstBatch`)以兼容驱动。
+fn cmd_list_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let coll = cmd
+        .get("listIndexes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let mut batch: Vec<Value> = Vec::new();
+    // 默认主键索引(虚拟,不落盘)
+    batch.push(json!({
+        "v": 2,
+        "key": {"_id": 1},
+        "name": "_id_",
+        "ns": format!("nosqlite.{}", coll),
+    }));
+
+    for def in db.list_indexes(coll).unwrap_or_default() {
+        let mut key = serde_json::Map::new();
+        for f in &def.fields {
+            key.insert(f.clone(), json!(1));
+        }
+        let mut doc = serde_json::Map::new();
+        doc.insert("v".into(), json!(2));
+        doc.insert("key".into(), Value::Object(key));
+        doc.insert("name".into(), json!(def.name));
+        doc.insert("ns".into(), json!(format!("nosqlite.{}", coll)));
+        if def.unique {
+            doc.insert("unique".into(), json!(true));
+        }
+        if def.sparse {
+            doc.insert("sparse".into(), json!(true));
+        }
+        batch.push(Value::Object(doc));
+    }
+
+    ok_doc([(
+        "cursor",
+        json!({
+            "id": json!({"$numberLong": "0"}),
+            "ns": format!("nosqlite.{}.$cmd.listIndexes", coll),
+            "firstBatch": batch,
+        }),
+    )])
+}
+
+/// `dropIndexes`:`*` 删除全部,或按名字删除。
+fn cmd_drop_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let coll = cmd
+        .get("dropIndexes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let target = cmd.get("index").and_then(|v| v.as_str()).unwrap_or("*");
+
+    let defs = db.list_indexes(coll).unwrap_or_default();
+    let before = defs.len();
+
+    if target == "*" {
+        for d in &defs {
+            if let Err(e) = db.drop_index(coll, &d.name) {
+                return err_doc(2, "BadValue", &e.to_string());
+            }
+        }
+    } else if let Err(e) = db.drop_index(coll, target) {
+        return err_doc(2, "BadValue", &e.to_string());
+    }
+
+    ok_doc([("nIndexesWas", json!(before + 1))])
 }
 
 /// `drop`

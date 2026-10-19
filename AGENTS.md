@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.5.3 M26 完成 —— `$or` 走索引(并集)+ 多索引交集(AND 计划)+ wire 层 `createIndexes`/`listIndexes`/`dropIndexes` 真正落地(Go 驱动可建索引);`drop_collection` 补清索引;修掉计划构造的无限递归与复合索引被交集抢占两个缺陷;**457 例全绿**。参见 [taolun #57](#57-v053-m26-设计or-走索引--索引交集计划--wire-createindexes) / [taolun #58](#58-v053-m26-执行or-走索引--索引交集--wire-createindexes) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.2 M25 完成 —— 复合索引(前缀原则 + multikey 笛卡尔积)+ wire 层 `explain`;条目 key 全面改为「编码值在前、长度后缀在后」;**449 例全绿**。参见 [taolun #55](#55-v052-m25-设计复合索引--wire-层-explain) / [taolun #56](#56-v052-m25-执行复合索引--wire-层-explain) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.1 M24 完成 —— 查询规划器:等值/范围自动选索引、`explain` 可观测;**修掉 M23b 遗留的索引 key 长度前缀破坏值序缺陷**(导致跨类型范围查询漏数据)+ 写事务内开读事务缺陷;+12 例共 **440 例全绿**。参见 [taolun #53](#53-v051-m24-设计查询规划器让索引真正被用上) / [taolun #54](#54-v051-m24-执行查询规划器) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.0 M23b 完成 —— 索引框架:order-preserving 编码(复用 `rank` 单一真相源)、独立索引表、**multikey/稀疏/唯一**、写路径同事务维护;**核心验收「编码序 == 比较序」两两穷举通过**(并抓到 `$oid` 分叉);+35 例共 **427 例全绿**。参见 [taolun #51](#51-v050-m23b-设计索引框架order-preserving-编码--独立索引表) / [taolun #52](#52-v050-m23b-执行索引框架编码--独立索引表--写路径维护) / [项目进度-已完成](#已完成)。
@@ -990,6 +991,37 @@
   - Go 驱动 +1 例(`TestExplain`,用递归查找兼容 BSON 嵌套类型的两种表示)。
   - 合计 **449 例全绿**,Go 13+1 项全通过,clippy 零警告。
 
+### 57. v0.5.3 M26 设计:$or 走索引 + 索引交集计划 + wire createIndexes
+
+- 背景:M25 交付了复合索引,但规划器仍只认「顶层字段条件的等值前缀」,并且 wire 层 `createIndexes` 只回 `ok`——**Go 驱动建不了索引**,这是实际缺口。
+- 范围(用户确认三项):
+  - **① `$or` 走索引**:`{$or: [{a:1},{a:2}]}` 拆成多个索引区间取并集(union plan);
+  - **② 索引交集(intersection)**:`{a:1, b:2}` 且分别有 `a`、`b` 两个索引时,取候选 doc_id 交集,再回表;
+  - **③ wire `createIndexes` 真正建索引**,并补 `listIndexes` / `dropIndexes`。
+- 设计要点:
+  - **并集/交集都只缩小候选集**,回表后一律再跑完整 `filter.matches()`——沿用既有铁律;
+  - **交集判定用 doc_id 集合**,不做「索引下推排序」,复杂度 `O(n log n)`,候选集通常远小于集合;
+  - **`$or` 的 union 仅在每个分支都能走索引时启用**,任一分支走不了就退回全表扫(避免「部分索引 + 部分扫描」的复杂度);
+  - **wire `createIndexes`** 解析 `{createIndexes: coll, indexes: [{key: {a:1,b:-1}, name, unique, sparse}]}`,返回真实 `numIndexesBefore/After`;
+  - **`drop_collection` 顺带清理该集合的索引定义与条目**(M25 遗留待补项)。
+- 明确不做:索引统计/区分度估算(需采样,收益不确定)、TTL 索引。
+
+### 58. v0.5.3 M26 执行:$or 走索引 + 索引交集 + wire createIndexes
+
+- **计划模型扩展**:`Plan` 新增 `Union { branches }`(`$or` 并集)与 `Intersect { branches }`(多索引交集);`stage()` 分别返回 `OR` / `AND`;`is_index_scan()` 改为 `!matches!(self, CollScan)`。
+- **`$or` 并集**:拆各分支单独规划,**全部分支都是索引计划**时才整体走索引,任一分支走不了就退回全表扫(不做「部分索引 + 部分扫描」的混合执行)。并集按出现顺序去重。
+- **索引交集**:顶层字段条件各自找以该字段开头的索引,分支数 >= 2 时取交集;执行时**以候选最少的分支为基准**再逐个校验其余集合。
+- **两个真实缺陷(写测试时暴露)**:
+  - **无限递归 → 栈溢出**:交集分支内部调 `plan_conjunction` 会再次尝试构造交集,形成 `conjunction → intersection → conjunction → …`。修法:`plan_conjunction_inner(..., allow_intersection: bool)`,分支内传 `false`。**教训:计划构造这类「生成器互相调用」的结构必须显式传递「禁止再生成」的开关**。
+  - **复合索引被交集抢占**:`{a,b}` 复合索引完整覆盖 filter 时,原本会退化成「a 索引 ∩ b 索引」两次扫描。修法:`primary` 是覆盖全部 filter 字段的复合索引时直接返回 `None`,不构造交集。
+- **`drop_collection` 补清索引**(M25 遗留):同事务内按 `集合名\0` 前缀清空索引定义表与索引数据表。
+- **wire 层三个命令真正落地**:
+  - `createIndexes`:解析 `{indexes: [{key, name, unique, sparse}]}`,**`key` 的键序即索引字段顺序**,返回真实 `numIndexesBefore/After`;未给 `name` 时按 MongoDB 惯例拼 `字段_方向`;
+  - `listIndexes`:返回游标形态(`cursor.firstBatch`),含虚拟主键索引 `_id_`;
+  - `dropIndexes`:`*` 全删或按名字删。
+- **BSON 编码补 `{"$numberLong": "..."}`**:游标 `id` 驱动要求 **int64**,而现有编码器对整数优先写 int32,导致驱动报「id should be an int64 but it is a BSON 32-bit integer」。用扩展 JSON 标记强制 64 位。
+- 测试:`tests/index_union_intersect.rs` **8 例**(OR 并集/去重/范围分支/分支不可索引时回退、交集/大量条件逐一对比/单索引不生成 AND、删集合清索引);Go 驱动 **+1 例**(`TestCompositeIndexOverWire`),原 `TestExplain` 升级为「建索引 → IXSCAN → listIndexes → dropIndexes → COLLSCAN」完整闭环。合计 **457 例全绿**,Go 15 项全通过,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -1043,7 +1075,7 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M26(下一里程碑)**:`$or` 走索引、intersection 计划、索引统计(区分度估算)、wire 层 `createIndexes` 真正建索引(当前只回 ok)。
+- **M27(下一里程碑)**:索引统计/区分度估算(让规划器在「索引扫描 vs 全表扫」之间做成本比较)、降序索引(当前 `-1` 按升序建)、TTL 索引。
 - **待补**:`drop_collection` 应同时清理该集合的索引定义与条目(当前只在重建索引时对齐)。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
@@ -1067,6 +1099,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M26(v0.5.3):`$or` 并集计划、多索引交集计划、wire createIndexes/listIndexes/dropIndexes;457 例全绿。
 - M25(v0.5.2):复合索引 + wire explain;449 例全绿。
 - M24(v0.5.1):查询规划器 —— 等值/范围走索引 + explain;440 例全绿。
 - M23b(v0.5.0):索引框架 —— 编码 + 独立索引表 + multikey/稀疏/唯一 + 写路径维护;427 例全绿。
