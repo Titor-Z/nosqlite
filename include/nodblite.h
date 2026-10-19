@@ -27,21 +27,21 @@ extern "C" {
 #endif
 
 /* 成功码(所有错误码均非 0) */
-#define NOSQLITE_OK 0
+#define NODBLITE_OK 0
 
 /* 稳定错误码(与 Rust 侧 ErrorCode::as_i32() 一一对应) */
-#define NOSQLITE_DUPLICATE_KEY      1
-#define NOSQLITE_INVALID_PATH       2
-#define NOSQLITE_INVALID_FORMAT     3
-#define NOSQLITE_VERSION_MISMATCH   4
-#define NOSQLITE_INVALID_COLLECTION 5
-#define NOSQLITE_INVALID_FILTER     6
-#define NOSQLITE_INVALID_UPDATE     7
-#define NOSQLITE_INVALID_SORT       8
-#define NOSQLITE_INVALID_PROJECTION 9
-#define NOSQLITE_INVALID_DOCUMENT   10
-#define NOSQLITE_IO_ERROR           11
-#define NOSQLITE_INTERNAL           99
+#define NODBLITE_DUPLICATE_KEY      1
+#define NODBLITE_INVALID_PATH       2
+#define NODBLITE_INVALID_FORMAT     3
+#define NODBLITE_VERSION_MISMATCH   4
+#define NODBLITE_INVALID_COLLECTION 5
+#define NODBLITE_INVALID_FILTER     6
+#define NODBLITE_INVALID_UPDATE     7
+#define NODBLITE_INVALID_SORT       8
+#define NODBLITE_INVALID_PROJECTION 9
+#define NODBLITE_INVALID_DOCUMENT   10
+#define NODBLITE_IO_ERROR           11
+#define NODBLITE_INTERNAL           99
 
 /* 字符串切片(UTF-8,不保证 NUL 结尾,用 len 定界) */
 typedef struct {

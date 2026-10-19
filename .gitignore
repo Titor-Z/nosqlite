@@ -3,3 +3,7 @@
 **/node_modules/
 **/.npm-cache/
 Cargo.lock.bak
+examples/javascript/*.dylib
+examples/javascript/*.so
+examples/javascript/*.dll
+examples/javascript/package*.json

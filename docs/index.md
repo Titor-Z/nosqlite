@@ -99,6 +99,7 @@ await users.insertOne({ name: '张三', age: 30 });
 
 - **[快速开始:Rust](quickstart/rust.md)** — 内嵌 API,5 分钟跑通
 - **[快速开始:C ABI](quickstart/c-api.md)** — 在 C/C++ 项目里使用
+- **[快速开始:JavaScript](quickstart/javascript.md)** — Node 通过 FFI 直连,或其他运行时走 wire 协议
 - **[快速开始:命令行](quickstart/cli.md)** — sqlite3 风格的 REPL
 - **[连接 MongoDB 驱动](quickstart/wire.md)** — 启动 server,现有驱动直连
 

@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
 
     /* ---------- 插入 ---------- */
     NodbliteResult *r = nodblite_insert(db, "users", "{\"name\":\"张三\",\"age\":30}");
-    CHECK(r->code == NOSQLITE_OK, "insert 应成功");
+    CHECK(r->code == NODBLITE_OK, "insert 应成功");
     char *id = dup_slice(r->value);
     CHECK(id != NULL && strlen(id) > 2, "insert 应返回 _id");
     nodblite_result_free(r);
@@ -58,28 +58,28 @@ int main(int argc, char **argv) {
     char doc[256];
     snprintf(doc, sizeof(doc), "{\"_id\":\"%s\",\"name\":\"重复\"}", id);
     r = nodblite_insert(db, "users", doc);
-    CHECK(r->code == NOSQLITE_DUPLICATE_KEY, "重复主键应返回 DUPLICATE_KEY");
+    CHECK(r->code == NODBLITE_DUPLICATE_KEY, "重复主键应返回 DUPLICATE_KEY");
     nodblite_result_free(r);
     {
         const NodbliteError *e = nodblite_last_error();
-        CHECK(e != NULL && e->code == NOSQLITE_DUPLICATE_KEY, "last_error 应给出冲突码");
+        CHECK(e != NULL && e->code == NODBLITE_DUPLICATE_KEY, "last_error 应给出冲突码");
         CHECK(e != NULL && e->op.len == 6, "last_error 应记录操作名 insert");
     }
 
     /* ---------- 批量插入 ---------- */
     r = nodblite_insert_many(db, "users",
                              "[{\"name\":\"李四\",\"age\":20},{\"name\":\"王五\",\"age\":40}]");
-    CHECK(r->code == NOSQLITE_OK, "insert_many 应成功");
+    CHECK(r->code == NODBLITE_OK, "insert_many 应成功");
     nodblite_result_free(r);
 
     /* ---------- count ---------- */
     r = nodblite_count(db, "users", NULL);
-    CHECK(r->code == NOSQLITE_OK && r->affected == 3, "count 应为 3");
+    CHECK(r->code == NODBLITE_OK && r->affected == 3, "count 应为 3");
     nodblite_result_free(r);
 
     /* ---------- find(一次性) ---------- */
     r = nodblite_find(db, "users", "{\"age\":{\"$gte\":30}}", "{\"age\":-1}", NULL, 0, 0, 1);
-    CHECK(r->code == NOSQLITE_OK && r->count == 2, "find 应返回 2 条");
+    CHECK(r->code == NODBLITE_OK && r->count == 2, "find 应返回 2 条");
     if (r->count == 2) {
         char *first = dup_slice(r->docs[0]);
         CHECK(first && strstr(first, "王五") != NULL, "排序后首条应为王五(age 40)");
@@ -109,12 +109,12 @@ int main(int argc, char **argv) {
 
     /* ---------- 更新(带新操作符) ---------- */
     r = nodblite_update(db, "users", "{\"name\":\"李四\"}", "{\"$inc\":{\"age\":1},\"$set\":{\"vip\":true}}");
-    CHECK(r->code == NOSQLITE_OK && r->affected == 1, "update 应修改 1 条");
+    CHECK(r->code == NODBLITE_OK && r->affected == 1, "update 应修改 1 条");
     nodblite_result_free(r);
 
     /* ---------- upsert:未命中则插入 ---------- */
     r = nodblite_upsert(db, "users", "{\"name\":\"赵六\"}", "{\"$set\":{\"age\":18}}");
-    CHECK(r->code == NOSQLITE_OK, "upsert 应成功");
+    CHECK(r->code == NODBLITE_OK, "upsert 应成功");
     {
         char *v = dup_slice(r->value);
         CHECK(v && strstr(v, "inserted") != NULL, "upsert 未命中应返回 inserted");
@@ -124,12 +124,12 @@ int main(int argc, char **argv) {
 
     /* ---------- get ---------- */
     r = nodblite_get(db, "users", id);
-    CHECK(r->code == NOSQLITE_OK && r->value.len > 0, "get 应返回文档");
+    CHECK(r->code == NODBLITE_OK && r->value.len > 0, "get 应返回文档");
     nodblite_result_free(r);
 
     /* ---------- 投影 ---------- */
     r = nodblite_find(db, "users", "{\"name\":\"张三\"}", NULL, "{\"name\":1,\"_id\":0}", 0, 0, 1);
-    CHECK(r->code == NOSQLITE_OK && r->count == 1, "投影查询应返回 1 条");
+    CHECK(r->code == NODBLITE_OK && r->count == 1, "投影查询应返回 1 条");
     if (r->count == 1) {
         char *doc2 = dup_slice(r->docs[0]);
         CHECK(doc2 && strstr(doc2, "age") == NULL, "投影应裁掉未列入字段");
@@ -139,22 +139,22 @@ int main(int argc, char **argv) {
 
     /* ---------- exec 兜底 ---------- */
     r = nodblite_exec(db, "{\"op\":\"count\",\"collection\":\"users\"}");
-    CHECK(r->code == NOSQLITE_OK && r->affected == 4, "exec count 应为 4");
+    CHECK(r->code == NODBLITE_OK && r->affected == 4, "exec count 应为 4");
     nodblite_result_free(r);
 
     /* ---------- 集合列表 ---------- */
     r = nodblite_list_collections(db);
-    CHECK(r->code == NOSQLITE_OK && r->count == 1, "应有 1 个集合");
+    CHECK(r->code == NODBLITE_OK && r->count == 1, "应有 1 个集合");
     nodblite_result_free(r);
 
     /* ---------- 删除 ---------- */
     r = nodblite_delete(db, "users", "{\"age\":{\"$lt\":25}}");
-    CHECK(r->code == NOSQLITE_OK && r->affected == 2, "delete 应删除 2 条");
+    CHECK(r->code == NODBLITE_OK && r->affected == 2, "delete 应删除 2 条");
     nodblite_result_free(r);
 
     /* ---------- 错误路径:非法 filter ---------- */
     r = nodblite_find(db, "users", "{bad json}", NULL, NULL, 0, 0, 1);
-    CHECK(r->code == NOSQLITE_INVALID_FILTER, "非法 filter 应返回 INVALID_FILTER");
+    CHECK(r->code == NODBLITE_INVALID_FILTER, "非法 filter 应返回 INVALID_FILTER");
     nodblite_result_free(r);
 
     /* ---------- open_ex:选项结构 + struct_size 校验 ---------- */
@@ -177,7 +177,7 @@ int main(int argc, char **argv) {
         opts.struct_size = 0;
         NodbliteDb *bad = nodblite_open_ex(ex_path, &opts);
         CHECK(bad == NULL, "open_ex(struct_size=0)应失败");
-        CHECK(nodblite_last_error_code() == NOSQLITE_INTERNAL,
+        CHECK(nodblite_last_error_code() == NODBLITE_INTERNAL,
               "open_ex 失败应给出 INTERNAL 码");
 
         /* flags 非 0 → 拒绝 */

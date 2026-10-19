@@ -149,7 +149,7 @@ fn header_macros_match_rust() {
     )
     .expect("应能读取头文件");
 
-    // 从 `#define NOSQLITE_<NAME> <num>` 中取出数值
+    // 从 `#define NODBLITE_<NAME> <num>` 中取出数值
     let find = |name: &str| -> Option<i32> {
         header
             .lines()
@@ -158,20 +158,20 @@ fn header_macros_match_rust() {
             .and_then(|n| n.parse::<i32>().ok())
     };
 
-    assert_eq!(find("NOSQLITE_OK"), Some(0), "成功码必须是 0");
+    assert_eq!(find("NODBLITE_OK"), Some(0), "成功码必须是 0");
     let pairs = [
-        ("NOSQLITE_DUPLICATE_KEY", ErrorCode::DuplicateKey),
-        ("NOSQLITE_INVALID_PATH", ErrorCode::InvalidPath),
-        ("NOSQLITE_INVALID_FORMAT", ErrorCode::InvalidFormat),
-        ("NOSQLITE_VERSION_MISMATCH", ErrorCode::VersionMismatch),
-        ("NOSQLITE_INVALID_COLLECTION", ErrorCode::InvalidCollection),
-        ("NOSQLITE_INVALID_FILTER", ErrorCode::InvalidFilter),
-        ("NOSQLITE_INVALID_UPDATE", ErrorCode::InvalidUpdate),
-        ("NOSQLITE_INVALID_SORT", ErrorCode::InvalidSort),
-        ("NOSQLITE_INVALID_PROJECTION", ErrorCode::InvalidProjection),
-        ("NOSQLITE_INVALID_DOCUMENT", ErrorCode::InvalidDocument),
-        ("NOSQLITE_IO_ERROR", ErrorCode::IoError),
-        ("NOSQLITE_INTERNAL", ErrorCode::Internal),
+        ("NODBLITE_DUPLICATE_KEY", ErrorCode::DuplicateKey),
+        ("NODBLITE_INVALID_PATH", ErrorCode::InvalidPath),
+        ("NODBLITE_INVALID_FORMAT", ErrorCode::InvalidFormat),
+        ("NODBLITE_VERSION_MISMATCH", ErrorCode::VersionMismatch),
+        ("NODBLITE_INVALID_COLLECTION", ErrorCode::InvalidCollection),
+        ("NODBLITE_INVALID_FILTER", ErrorCode::InvalidFilter),
+        ("NODBLITE_INVALID_UPDATE", ErrorCode::InvalidUpdate),
+        ("NODBLITE_INVALID_SORT", ErrorCode::InvalidSort),
+        ("NODBLITE_INVALID_PROJECTION", ErrorCode::InvalidProjection),
+        ("NODBLITE_INVALID_DOCUMENT", ErrorCode::InvalidDocument),
+        ("NODBLITE_IO_ERROR", ErrorCode::IoError),
+        ("NODBLITE_INTERNAL", ErrorCode::Internal),
     ];
     for (macro_name, code) in pairs {
         assert_eq!(
