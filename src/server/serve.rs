@@ -1334,9 +1334,7 @@ fn aggregate_group(
                 "$count" => 1.0,
                 "$sum" => match arg {
                     // 常量:每次加该常量
-                    Value::Number(_) | Value::Bool(_) | Value::Null => {
-                        arg.as_f64().unwrap_or(0.0)
-                    }
+                    Value::Number(_) | Value::Bool(_) | Value::Null => arg.as_f64().unwrap_or(0.0),
                     Value::String(path) if path.starts_with('$') => {
                         let p = &path[1..];
                         doc.get(p).and_then(|v| v.as_f64()).unwrap_or(0.0)

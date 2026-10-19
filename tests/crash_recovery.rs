@@ -43,10 +43,7 @@ fn truncated_file_rejected() {
     drop(f);
 
     let err = nosqlite::Database::open(&path);
-    assert!(
-        err.is_err(),
-        "截断文件必须被拒绝,实际却成功打开了"
-    );
+    assert!(err.is_err(), "截断文件必须被拒绝,实际却成功打开了");
 
     let _ = std::fs::remove_file(&path);
 }
@@ -76,10 +73,7 @@ fn corrupted_bytes_rejected_or_consistent() {
             // 若仍能打开,查询结果必须是「要么有正确数据、要么为空」,
             // 不能是序列化失败后的残缺文档
             let docs = db
-                .find(
-                    "items",
-                    &nosqlite::query::Filter::match_all(),
-                )
+                .find("items", &nosqlite::query::Filter::match_all())
                 .unwrap_or_default();
             for d in docs {
                 assert!(d.contains_key("_id"), "返回的文档必须结构完整");

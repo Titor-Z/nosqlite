@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.6.2 M30 完成 —— Node.js 官方驱动验收(12 项)、崩溃恢复测试(7 例,含真实 `abort` 验证事务原子性)、`$group` 真正分组聚合;修掉**截断文件导致进程 panic**的缺陷;新增 CHANGELOG、发布包瘦身至 280 KiB;**525 例全绿**。参见 [taolun #65](#65-v062-m30-设计工程化收尾node-驱动--崩溃恢复--发布准备) / [taolun #66](#66-v062-m30-执行工程化收尾node-驱动--崩溃恢复--聚合修复) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.6.1 M29 完成 —— 数组更新 `$pull`/`$pop`(含对象子集匹配)+ 投影位置运算符 `{"arr.$": 1}`;**517 例全绿**。参见 [taolun #63](#63-v061-m29-设计数组更新-pullpop--投影位置运算符) / [taolun #64](#64-v061-m29-执行数组更新-pullpop--投影位置运算符) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.6.0 M28 完成 —— 第一档语义补齐:`$exists`/`$type`/`$all`/`$size` + 投影运算符 `$slice`/`$elemMatch`;**493 例全绿**。参见 [taolun #61](#61-v060-m28-设计第一档语义补齐existsallsize--投影运算符) / [taolun #62](#62-v060-m28-执行第一档语义补齐existsallsize--投影运算符) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.4 M27 完成 —— 降序索引(`directions` 随定义持久化,条目编码不变、仅扫描方向相反);修正 `sortedByIndex` 未比对方向导致**返回顺序错**的缺口;**466 例全绿**。参见 [taolun #59](#59-v054-m27-设计降序索引修正--1-被静默当升序) / [taolun #60](#60-v054-m27-执行降序索引) / [项目进度-已完成](#已完成)。
@@ -1158,6 +1159,29 @@
   - CHANGELOG 汇总 v0.1.0 → v0.6.1。
 - 纪律:不改存储格式(v1);测试新增文件按功能拆分;崩溃测试必须用**真实进程终止**而非 mock,否则验证不到 fsync 边界。
 
+### 66. v0.6.2 M30 执行:工程化收尾(Node 驱动 + 崩溃恢复 + 聚合修复)
+
+- **Node.js 官方驱动验收**(`tests/node_compat/` + `tests/node_wire.rs`):与 Go 验收同构 —— Rust 集成测试拉起 `nosqlite-server`,把 `NOSQLITE_URI` 传给 `node --test`。**12 项**用例全通过。依赖缺失时**显式跳过并打印原因**,不静默通过。
+  - npm 安装踩坑:本机 `~/.npm` 缓存含 root-owned 文件导致 `EACCES`。解法是 `npm install --cache ./.npm-cache`(项目本地缓存),**不修改用户全局目录**。
+- **Node 验收发现真实缺口**:`$group` 的 `$sum` 只支持常量 1(当初只为 `countDocuments` 实现)。这是 Go 驱动没覆盖到的路径 —— **换一个驱动再跑一遍确实能捞到东西**。
+  - 重写为 `aggregate_group`:`_id` 支持常量与 `"$字段"`,累加器支持 `$sum`(常量/字段路径)与 `$count`;整数结果输出为整数(避免驱动看到 `3.0`)。
+- **崩溃恢复测试**(`tests/crash_recovery.rs`,7 例):
+  - `committed_writes_survive_abort`:子进程 `insert_many` 200 条后**立即 `std::process::abort()`**,父进程重开校验「**要么 200 条全在,要么一条没有**」—— 验证单事务原子性在真实进程终止下成立;
+  - `repeated_crash_recovery`:三轮「写入 → abort → 重开」不累积损坏;
+  - 截断 / 字节翻转 / 随机垃圾 / 空文件 / 非法后缀;崩溃后建索引并与全表扫对比。
+  - **必须用真实进程终止**而非 mock:只有真实崩溃才验证得到 fsync 与事务提交的边界。
+- **修掉一个会让用户进程崩溃的真缺陷**:redb 3.1.3 在文件被截断时走 `assert!(raw_file_len >= header.layout().len())`,**直接 panic 而非返回错误**。文件损坏是真实场景,必须在封装层挡住。
+  - 解法:`read_redb_declared_len()` 解析 redb 头部(9 字节魔数 + page_size/region 参数),按 `page_size + (regions-1)*full_region_len + last_region_len` 算出声明长度,与实际文件长度比对,不符则返回 `InvalidFormat`。
+  - **踩坑**:第一版凭猜测写头部偏移(以为 `[16..24)` 是 u64 总长)完全无效;必须去 `~/.cargo/registry/.../redb-3.1.3/src/tree_store/page_store/{header,layout}.rs` 读真实布局。
+  - **踩坑**:一次范围删除误伤了 `RedbEngine` 结构体与两个 `impl` 块(丢 484 行)。用 `git checkout HEAD --` 恢复后用**精确锚点**重做;教训是**大范围 `del lines[a:b]` 之后必须立刻 `cargo build` 并核对 `grep '^impl'` 数量**。
+- **发布准备**:
+  - `.gitignore` 增加 `node_modules` / `.npm-cache`;`Cargo.toml` 加 `exclude`,发布包从「含 node_modules」收敛到 **93 文件 / 280 KiB 压缩**;
+  - `cargo publish --dry-run` 通过;
+  - 新增 `CHANGELOG.md`,汇总 v0.1.0 → v0.6.2;
+  - README 补 Node 驱动片段,验收说明改为「Go + Node 双驱动」。
+- **仍未做(需维护者操作)**:`cargo publish` 本身需 `cargo login` 凭据。
+- 测试:合计 **525 例全绿**,Go **18 项**、Node **12 项**全通过,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -1211,7 +1235,8 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M30(下一里程碑,发布收尾)**:`cargo publish`、Node.js 驱动验证、崩溃恢复/一致性测试、索引统计(按需)。
+- **待维护者操作**:`cargo publish`(需 `cargo login`);干跑已通过。
+- **后续按需**:索引统计/区分度估算、TTL 索引、`$unwind`/`$lookup` 聚合、显式事务会话、Server 认证/副本集。
 - **待补**:`drop_collection` 应同时清理该集合的索引定义与条目(当前只在重建索引时对齐)。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
@@ -1235,6 +1260,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M30(v0.6.2):Node 驱动验收 12 项、崩溃恢复 7 例、`$group` 聚合、截断文件 panic 修复、CHANGELOG、发布包瘦身;525 例全绿。
 - M29(v0.6.1):`$pull`/`$pop` + 投影位置运算符 `arr.$`;517 例全绿。
 - M28(v0.6.0):`$exists`/`$type`/`$all`/`$size` + 投影 `$slice`/`$elemMatch`;493 例全绿。
 - M27(v0.5.4):降序索引;修正 sortedByIndex 未比对方向的顺序错缺口;466 例全绿。
