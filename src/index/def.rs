@@ -26,8 +26,10 @@ pub struct IndexDef {
     pub collection: String,
     /// 索引名(集合内唯一)。
     pub name: String,
-    /// 字段点号路径(如 `a.b`)。
-    pub field: String,
+    /// 字段点号路径列表。单字段索引为 1 个元素;复合索引按顺序排列。
+    ///
+    /// 复合索引遵循 **MongoDB 的前缀原则**:`{a,b}` 可服务 `{a}` 查询,反之不行。
+    pub fields: Vec<String>,
     /// 是否唯一索引。
     pub unique: bool,
     /// 是否稀疏索引(缺失/null 不入索引)。
@@ -37,22 +39,52 @@ pub struct IndexDef {
 }
 
 impl IndexDef {
-    /// 构造一个新定义(编码版本取当前值)。
+    /// 构造一个单字段索引定义。
     pub fn new(collection: &str, name: &str, field: &str, unique: bool, sparse: bool) -> Self {
+        Self::new_composite(collection, name, &[field], unique, sparse)
+    }
+
+    /// 构造一个复合索引定义。
+    pub fn new_composite(
+        collection: &str,
+        name: &str,
+        fields: &[&str],
+        unique: bool,
+        sparse: bool,
+    ) -> Self {
         IndexDef {
             collection: collection.to_string(),
             name: name.to_string(),
-            field: field.to_string(),
+            fields: fields.iter().map(|s| s.to_string()).collect(),
             unique,
             sparse,
             encoding_version: crate::engine::redb_engine::INDEX_ENCODING_VERSION,
         }
     }
 
+    /// 单字段索引的字段路径(复合索引返回第一个)。
+    ///
+    /// 保留该访问器是为了让既有调用点平滑过渡。
+    pub fn field(&self) -> &str {
+        self.fields.first().map(|s| s.as_str()).unwrap_or("")
+    }
+
+    /// 是否为复合索引。
+    pub fn is_composite(&self) -> bool {
+        self.fields.len() > 1
+    }
+
+    /// 字段路径拼接串(用于构造条目 key 的字段段)。
+    ///
+    /// 复合索引用 `,` 连接;单字段就是自身。该串唯一标识「哪些字段、什么顺序」。
+    pub fn field_signature(&self) -> String {
+        self.fields.join(",")
+    }
+
     /// 序列化为存储用的 JSON。
     pub fn to_json(&self) -> Vec<u8> {
         let v = json!({
-            "field": self.field,
+            "fields": self.fields,
             "unique": self.unique,
             "sparse": self.sparse,
             "encoding_version": self.encoding_version,
@@ -64,10 +96,22 @@ impl IndexDef {
     pub fn from_json(collection: &str, name: &str, bytes: &[u8]) -> Option<Self> {
         let v: Value = serde_json::from_slice(bytes).ok()?;
         let obj = v.as_object()?;
+        // 兼容旧格式(单字段 `field`)与新增的 `fields` 数组
+        let fields: Vec<String> = match obj.get("fields") {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            // 兼容旧格式(单字段 `field`)
+            _ => vec![obj.get("field").and_then(|v| v.as_str())?.to_string()],
+        };
+        if fields.is_empty() {
+            return None;
+        }
         Some(IndexDef {
             collection: collection.to_string(),
             name: name.to_string(),
-            field: obj.get("field")?.as_str()?.to_string(),
+            fields,
             unique: obj.get("unique").and_then(|v| v.as_bool()).unwrap_or(false),
             sparse: obj.get("sparse").and_then(|v| v.as_bool()).unwrap_or(false),
             encoding_version: obj
@@ -95,41 +139,96 @@ pub(crate) fn build_meta_prefix(collection: &str) -> Vec<u8> {
     key
 }
 
-/// 构造索引条目 key:`集合名\0字段路径\0编码值 + [长度后缀] + doc_id`。
+/// 构造索引条目 key:
+/// `集合名\0字段签名\0[段编码]...[段编码][总编码长度]doc_id`
 ///
-/// `encoded_value` 是已经 order-preserving 编码后的字节。长度用**后缀**存放,
-/// 以免参与值序比较(v0.5.1 修正)。
+/// **字段签名** = 字段路径用 `,` 连接(如 `a,b.c`),唯一标识索引的字段与顺序。
+///
+/// **段编码**:每个字段的值 order-preserving 编码后**依次拼接**。由于
+/// `encode_key` 的输出自定界(首字节是类型等级),拼接后的字节序等价于
+/// 「按字段顺序逐级比较」—— 这正是 MongoDB 复合索引的顺序语义。
+///
+/// **长度与值序的关系(v0.5.1 教训)**:长度信息一律**不得**插在编码值之前,
+/// 否则 B+树按字节比较时会破坏值序。这里把**各段长度**放在所有编码值之后,
+/// 使排序完全由编码值字节决定。
 pub(crate) fn build_entry_key(
     collection: &str,
-    field: &str,
-    encoded_value: &[u8],
+    field_signature: &str,
+    encoded_values: &[Vec<u8>],
     doc_id: &str,
 ) -> Vec<u8> {
-    let mut key =
-        Vec::with_capacity(collection.len() + field.len() + encoded_value.len() + doc_id.len() + 3);
+    let total: usize = encoded_values.iter().map(|v| v.len()).sum();
+    let mut key = Vec::with_capacity(
+        collection.len()
+            + field_signature.len()
+            + total
+            + 4 * encoded_values.len()
+            + doc_id.len()
+            + 2,
+    );
     key.extend_from_slice(collection.as_bytes());
     key.push(0);
-    key.extend_from_slice(field.as_bytes());
+    key.extend_from_slice(field_signature.as_bytes());
     key.push(0);
-    // v0.5.1 修正:长度前缀改为**后缀**。
-    // 原因:长度放在编码值之前会破坏值序 —— B+树按字节比较时,
-    // 「编码长度 2 的 bool」会排在「编码长度 9 的 number」之前,
-    // 与 compare_values 的结论相反,区间扫描因此漏数据。
-    // 放在编码值之后,排序仍由编码值的字节决定,长度只用于定界。
-    key.extend_from_slice(encoded_value);
-    key.extend_from_slice(&(encoded_value.len() as u32).to_be_bytes());
+    // 1. 全部编码值依次拼接(决定排序)
+    for v in encoded_values {
+        key.extend_from_slice(v);
+    }
+    // 2. 各段长度(定界用,不参与排序)
+    for v in encoded_values {
+        key.extend_from_slice(&(v.len() as u32).to_be_bytes());
+    }
+    // 3. doc_id
     key.extend_from_slice(doc_id.as_bytes());
     key
 }
 
-/// 集合的条目前缀:`集合名\0字段路径\0`(用于扫描某索引的全部条目)。
-pub(crate) fn build_entry_prefix(collection: &str, field: &str) -> Vec<u8> {
-    let mut key = Vec::with_capacity(collection.len() + field.len() + 2);
+/// 集合+字段签名的条目前缀(用于扫描某索引的全部条目)。
+pub(crate) fn build_entry_prefix(collection: &str, field_signature: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(collection.len() + field_signature.len() + 2);
     key.extend_from_slice(collection.as_bytes());
     key.push(0);
-    key.extend_from_slice(field.as_bytes());
+    key.extend_from_slice(field_signature.as_bytes());
     key.push(0);
     key
+}
+
+/// 从条目 key 的剩余部分切出 `(全部编码值, doc_id 字节)`。
+///
+/// 布局:`enc1..encN(总长 T) | len1..lenN(各 4 字节) | doc_id`。
+///
+/// 切分思路:遍历候选总长 `t`,读出 `segments` 个长度并校验其和等于 `t`,
+/// 且每个长度 > 0。编码值总长很小(<= 256),遍历开销可忽略。
+pub fn split_entry_multi(rest: &[u8], segments: usize) -> Option<(&[u8], &[u8])> {
+    if segments == 0 {
+        return None;
+    }
+    let lens_bytes = 4 * segments;
+    if rest.len() < lens_bytes + 1 {
+        return None;
+    }
+    let max_t = rest.len() - lens_bytes;
+    for t in 1..=max_t {
+        let mut sum = 0usize;
+        let mut ok = true;
+        for i in 0..segments {
+            let off = t + i * 4;
+            if off + 4 > rest.len() {
+                ok = false;
+                break;
+            }
+            let len = u32::from_be_bytes(rest[off..off + 4].try_into().ok()?) as usize;
+            if len == 0 {
+                ok = false;
+                break;
+            }
+            sum += len;
+        }
+        if ok && sum == t {
+            return Some((&rest[..t], &rest[t + lens_bytes..]));
+        }
+    }
+    None
 }
 
 /// 按点号路径取文档中的值(不穿透数组,与索引维护语义一致)。
@@ -143,17 +242,51 @@ pub fn field_value<'a>(doc: &'a Map<String, Value>, path: &str) -> Option<&'a Va
     Some(cur)
 }
 
-/// 计算一条文档在某个索引下的**全部条目编码值**(multikey 展开)。
+/// 计算一条文档在某个索引下的**全部条目编码值**。
 ///
-/// - 稀疏索引且值为 null/缺失 → 返回空(不入索引);
-/// - 数组字段 → 每个元素一条;
+/// 返回 `Vec<Vec<Vec<u8>>>`:外层是「多条目」(multikey 展开的结果),
+/// 内层是「该条目各字段的编码值」(复合索引有多个)。
+///
+/// - 稀疏索引且任一字段为 null/缺失 → 返回空(不入索引);
+/// - 任一字段是数组 → 按 multikey 展开(笛卡尔积,超过上限则整体不入索引);
 /// - 其余 → 单条。
-pub fn entry_values(def: &IndexDef, doc: &Map<String, Value>) -> Vec<Vec<u8>> {
-    let value = field_value(doc, &def.field);
-    if def.sparse && !is_indexable(value) {
-        return Vec::new();
+pub fn entry_values(def: &IndexDef, doc: &Map<String, Value>) -> Vec<Vec<Vec<u8>>> {
+    // 每个字段的候选值列表(数组字段已展开)
+    let mut per_field: Vec<Vec<Vec<u8>>> = Vec::with_capacity(def.fields.len());
+
+    for field in &def.fields {
+        let value = field_value(doc, field);
+        if def.sparse && !is_indexable(value) {
+            return Vec::new();
+        }
+        // multikey:数组字段每个元素一条
+        let vals = encode_index_values(value);
+        if vals.is_empty() {
+            // 空数组:该字段无候选值,整条文档不入索引
+            return Vec::new();
+        }
+        per_field.push(vals);
     }
-    encode_index_values(value)
+
+    // 笛卡尔积(单字段时就是它自己)
+    let mut combos: Vec<Vec<Vec<u8>>> = vec![Vec::new()];
+    for field_vals in per_field {
+        let mut next = Vec::with_capacity(combos.len() * field_vals.len());
+        for combo in &combos {
+            for v in &field_vals {
+                let mut c = combo.clone();
+                c.push(v.clone());
+                next.push(c);
+            }
+        }
+        // 上限保护:复合 multikey 的笛卡尔积可能爆炸
+        const MAX_COMBOS: usize = 128;
+        if next.len() > MAX_COMBOS {
+            return Vec::new();
+        }
+        combos = next;
+    }
+    combos
 }
 
 /// 判断两个条目值列表是否有交集(用于唯一索引冲突前置检查的辅助)。
@@ -175,27 +308,49 @@ mod tests {
     /// 条目 key 中的编码值含 0x00 时也能无歧义解析(长度后缀的意义)。
     #[test]
     fn entry_key_handles_zero_bytes() {
-        let key = build_entry_key("c", "f", &[0x02, 0x00, 0x01], "doc1");
+        let key = build_entry_key("c", "f", &[vec![0x02, 0x00, 0x01]], "doc1");
         let prefix = build_entry_prefix("c", "f");
         assert!(key.starts_with(&prefix));
-        // 编码值在前,长度**后缀**在后
+        // 编码值在前,长度后缀在后
         let rest = &key[prefix.len()..];
         assert_eq!(&rest[0..3], &[0x02, 0x00, 0x01]);
         let len = u32::from_be_bytes(rest[3..7].try_into().unwrap()) as usize;
         assert_eq!(len, 3);
         assert_eq!(&rest[7..], b"doc1");
+        // 解析回来应一致
+        let (enc, doc) = split_entry_multi(rest, 1).unwrap();
+        assert_eq!(enc, &[0x02, 0x00, 0x01]);
+        assert_eq!(doc, b"doc1");
     }
 
     /// 长度后缀不得影响值序:不同编码长度的值仍按编码字节排序。
     #[test]
     fn length_suffix_preserves_value_order() {
         // number 编码 [0x02,...](长 9)应排在 bool [0x08,0x01](长 2)之前
-        let num_key = build_entry_key("c", "f", &[0x02, 0xc0, 0, 0, 0, 0, 0, 0, 0], "docB");
-        let bool_key = build_entry_key("c", "f", &[0x08, 0x01], "docA");
+        let num_key = build_entry_key("c", "f", &[vec![0x02, 0xc0, 0, 0, 0, 0, 0, 0, 0]], "docB");
+        let bool_key = build_entry_key("c", "f", &[vec![0x08, 0x01]], "docA");
         assert!(
             num_key < bool_key,
             "number 应排在 bool 前:长度后缀不能破坏值序"
         );
+    }
+
+    /// 复合索引:多段编码依次拼接,顺序即字段顺序。
+    #[test]
+    fn composite_entry_key_order() {
+        let a1b1 = build_entry_key("c", "a,b", &[vec![0x02, 0x01], vec![0x02, 0x01]], "d1");
+        let a1b2 = build_entry_key("c", "a,b", &[vec![0x02, 0x01], vec![0x02, 0x02]], "d2");
+        let a2b1 = build_entry_key("c", "a,b", &[vec![0x02, 0x02], vec![0x02, 0x01]], "d3");
+        // 先按 a 排,再按 b 排
+        assert!(a1b1 < a1b2, "a 相同则比 b");
+        assert!(a1b2 < a2b1, "a 不同则先比 a");
+
+        // 解析回来
+        let prefix = build_entry_prefix("c", "a,b");
+        let rest = &a1b2[prefix.len()..];
+        let (enc, doc) = split_entry_multi(rest, 2).unwrap();
+        assert_eq!(enc, &[0x02, 0x01, 0x02, 0x02]);
+        assert_eq!(doc, b"d2");
     }
 
     /// 定义 JSON 往返。
@@ -244,7 +399,10 @@ mod tests {
         let doc = json!({"a": {"b": 42}}).as_object().unwrap().clone();
         let vals = entry_values(&def, &doc);
         assert_eq!(vals.len(), 1);
-        assert_eq!(vals[0], crate::index::key::encode_key(Some(&json!(42))));
+        assert_eq!(
+            vals[0],
+            vec![crate::index::key::encode_key(Some(&json!(42)))]
+        );
     }
 
     /// 重复检测(唯一索引前置检查用)。

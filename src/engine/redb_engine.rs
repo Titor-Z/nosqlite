@@ -229,16 +229,16 @@ impl RedbEngine {
 
         // 2. 唯一索引前置检查:重复值直接拒绝(不写任何东西)
         if def.unique {
-            let mut seen: Vec<Vec<u8>> = Vec::new();
+            let mut seen: Vec<Vec<Vec<u8>>> = Vec::new();
             for (_, doc) in &parsed {
-                for val in entry_values(def, doc) {
-                    if seen.contains(&val) {
+                for combo in entry_values(def, doc) {
+                    if seen.contains(&combo) {
                         return Err(StorageError::UniqueViolation {
                             collection: def.collection.clone(),
                             index: def.name.clone(),
                         });
                     }
-                    seen.push(val);
+                    seen.push(combo);
                 }
             }
         }
@@ -257,7 +257,8 @@ impl RedbEngine {
                 .map_err(|e| StorageError::Other(format!("打开索引数据表失败: {}", e)))?;
 
             // 清掉该集合该字段的旧条目
-            let prefix = crate::index::def::build_entry_prefix(&def.collection, &def.field);
+            let prefix =
+                crate::index::def::build_entry_prefix(&def.collection, &def.field_signature());
             let mut stale: Vec<Vec<u8>> = Vec::new();
             {
                 let range = data
@@ -287,8 +288,9 @@ impl RedbEngine {
 
             // 回填条目
             for (doc_id, doc) in &parsed {
-                for val in entry_values(def, doc) {
-                    let key = build_entry_key(&def.collection, &def.field, &val, doc_id);
+                for combo in entry_values(def, doc) {
+                    let key =
+                        build_entry_key(&def.collection, &def.field_signature(), &combo, doc_id);
                     data.insert(key.as_slice(), b"".as_slice())
                         .map_err(|e| StorageError::Other(format!("写入索引条目失败: {}", e)))?;
                 }
@@ -310,11 +312,12 @@ impl RedbEngine {
     pub fn scan_index_range(
         &self,
         collection: &str,
-        field: &str,
+        field_signature: &str,
+        segments: usize,
         lower: Option<&[u8]>,
         upper: Option<&[u8]>,
     ) -> Result<Vec<String>, StorageError> {
-        let prefix = crate::index::def::build_entry_prefix(collection, field);
+        let prefix = crate::index::def::build_entry_prefix(collection, field_signature);
         let read_tx = self
             .db
             .begin_read()
@@ -355,14 +358,13 @@ impl RedbEngine {
             if !key.starts_with(&prefix) {
                 break;
             }
-            // 解析:prefix + 编码值(变长) + [4 字节长度后缀] + doc_id(变长)
+            // 解析:prefix | enc1..encN(共 `total` 字节) | len1..lenN(各 4 字节) | doc_id
             //
-            // 长度后缀的作用是从右侧定界:先假设 doc_id 长度未知,但长度后缀
-            // 的数值 = 编码值长度,所以我们可以用「长度后缀的数值 + 自身 4 字节」
-            // 反推编码值起点是否正确。做法:遍历可能的切分位置校验自洽。
-            // 由于 encode_key 首字节即类型等级,且长度 <= 64,可用小范围试探。
+            // 由于编码值本身可含 0x00 且变长,这里用「遍历候选总长,校验各段长度自洽」定位。
             let rest = &key[prefix.len()..];
-            let Some((encoded, doc_id_bytes)) = split_entry(rest) else {
+            let Some((encoded, doc_id_bytes)) =
+                crate::index::def::split_entry_multi(rest, segments)
+            else {
                 continue;
             };
 
@@ -393,7 +395,7 @@ impl RedbEngine {
         let Some(def) = defs.iter().find(|d| d.name == name) else {
             return Ok(false);
         };
-        let field = def.field.clone();
+        let field_sig = def.field_signature();
 
         let write_tx = self
             .db
@@ -410,7 +412,7 @@ impl RedbEngine {
             meta.remove(build_meta_key(collection, name).as_slice())
                 .map_err(|e| StorageError::Other(format!("删除索引定义失败: {}", e)))?;
 
-            let prefix = crate::index::def::build_entry_prefix(collection, &field);
+            let prefix = crate::index::def::build_entry_prefix(collection, &field_sig);
             let mut stale: Vec<Vec<u8>> = Vec::new();
             {
                 let range = data
@@ -430,29 +432,13 @@ impl RedbEngine {
                 data.remove(key.as_slice())
                     .map_err(|e| StorageError::Other(format!("删除索引条目失败: {}", e)))?;
             }
-            let _ = IndexDef::new(collection, name, &field, false, false);
+            let _ = IndexDef::new(collection, name, &field_sig, false, false);
         }
         write_tx
             .commit()
             .map_err(|e| StorageError::Other(format!("提交索引删除失败: {}", e)))?;
         Ok(true)
     }
-}
-
-/// 从条目 key 的剩余部分切出 `(编码值, doc_id 字节)`。
-///
-/// 布局:`编码值(变长) + [4 字节长度后缀] + doc_id(变长)`。
-///
-/// 切分思路:遍历候选切分点 `i`(编码值长度),若 `rest[i..i+4]` 读出的 u32
-/// 恰好等于 `i`,则切分自洽。编码值长度很小(<= 64),遍历开销可忽略。
-fn split_entry(rest: &[u8]) -> Option<(&[u8], &[u8])> {
-    for i in 1..=rest.len().saturating_sub(5) {
-        let len = u32::from_be_bytes(rest[i..i + 4].try_into().ok()?) as usize;
-        if len == i {
-            return Some((&rest[..i], &rest[i + 4..]));
-        }
-    }
-    None
 }
 
 /// 在写事务内**删除**某条文档的全部索引条目(基于旧文档内容)。
@@ -476,8 +462,8 @@ fn remove_index_entries(
         return Ok(());
     };
     for def in defs {
-        for val in entry_values(def, map) {
-            let key = build_entry_key(collection, &def.field, &val, doc_id);
+        for combo in entry_values(def, map) {
+            let key = build_entry_key(collection, &def.field_signature(), &combo, doc_id);
             data.remove(key.as_slice())
                 .map_err(|e| StorageError::Other(format!("删除索引条目失败: {}", e)))?;
         }
@@ -501,22 +487,27 @@ fn write_index_entries(
         return Ok(());
     };
     for def in defs {
-        for val in entry_values(def, map) {
-            let key = build_entry_key(collection, &def.field, &val, doc_id);
-            // 唯一索引:同字段同值已存在其他文档 → 冲突。
+        for combo in entry_values(def, map) {
+            let key = build_entry_key(collection, &def.field_signature(), &combo, doc_id);
+            // 唯一索引:同值组合已存在其他文档 → 冲突。
             //
-            // 用 `prefix + enc` 作 probe 前缀扫描;若存在 doc_id 不同于自身的条目 → 冲突。
+            // 判断方式:用「prefix + 本组合全部编码值」作 probe 前缀扫描。
+            // 由于 key 布局为 `prefix | enc1..encN | len1..lenN | doc_id`,
+            // probe 恰好覆盖到编码值末尾,后续是长度数组与 doc_id。
             if def.unique {
                 let mut probe = Vec::new();
                 probe.extend_from_slice(collection.as_bytes());
                 probe.push(0);
-                probe.extend_from_slice(def.field.as_bytes());
+                probe.extend_from_slice(def.field_signature().as_bytes());
                 probe.push(0);
-                probe.extend_from_slice(&val);
+                for seg in &combo {
+                    probe.extend_from_slice(seg);
+                }
 
                 let range = data
                     .range(probe.as_slice()..)
                     .map_err(|e| StorageError::Other(format!("扫描索引条目失败: {}", e)))?;
+                let lens_bytes = 4 * combo.len();
                 let mut conflict = false;
                 for entry in range {
                     let (k, _) = entry
@@ -525,17 +516,25 @@ fn write_index_entries(
                     if !k2.starts_with(&probe) {
                         break;
                     }
-                    // probe 已含 prefix + enc,剩下的是 `[4 字节长度后缀] + doc_id`
                     let rest = &k2[probe.len()..];
-                    if rest.len() < 4 {
+                    if rest.len() < lens_bytes {
                         continue;
                     }
-                    let len = u32::from_be_bytes(rest[0..4].try_into().unwrap()) as usize;
-                    // 长度必须等于已知编码值长度,否则是「更长值以该编码为前缀」,不算同值
-                    if len != val.len() {
+                    // 校验各段长度与当前组合一致,排除「更长值以该编码为前缀」
+                    let mut ok = true;
+                    for (i, seg) in combo.iter().enumerate() {
+                        let off = i * 4;
+                        let len =
+                            u32::from_be_bytes(rest[off..off + 4].try_into().unwrap()) as usize;
+                        if len != seg.len() {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if !ok {
                         continue;
                     }
-                    let doc = &rest[4..];
+                    let doc = &rest[lens_bytes..];
                     if doc != doc_id.as_bytes() {
                         conflict = true;
                         break;

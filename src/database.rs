@@ -442,7 +442,8 @@ impl Database {
                 // 1. 索引区间扫描 → 候选 doc_id(按索引序)
                 let ids = self.engine.scan_index_range(
                     collection,
-                    &index.field,
+                    &index.field_signature(),
+                    index.fields.len(),
                     bounds.lower.as_deref(),
                     bounds.upper.as_deref(),
                 )?;
@@ -507,6 +508,33 @@ impl Database {
         sparse: bool,
     ) -> Result<(), DatabaseError> {
         let def = crate::index::def::IndexDef::new(collection, name, field, unique, sparse);
+        self.engine.create_index(&def)?;
+        Ok(())
+    }
+
+    /// 创建**复合索引**(M25)。
+    ///
+    /// 遵循 MongoDB 的**前缀原则**:`{a, b}` 可服务 `{a: v}` 与 `{a: v, b: w}` 查询,
+    /// 但**不能**服务 `{b: w}`。
+    ///
+    /// - `fields` 按索引顺序排列,顺序影响可用性;
+    /// - 任一字段是数组时按 multikey 展开(笛卡尔积有上限保护);
+    /// - `unique` 作用于**整个字段组合**。
+    pub fn create_index_composite(
+        &self,
+        collection: &str,
+        name: &str,
+        fields: &[&str],
+        unique: bool,
+        sparse: bool,
+    ) -> Result<(), DatabaseError> {
+        if fields.is_empty() {
+            return Err(DatabaseError::Storage(crate::engine::StorageError::Other(
+                "复合索引至少需要一个字段".to_string(),
+            )));
+        }
+        let def =
+            crate::index::def::IndexDef::new_composite(collection, name, fields, unique, sparse);
         self.engine.create_index(&def)?;
         Ok(())
     }

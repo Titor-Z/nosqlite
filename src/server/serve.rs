@@ -253,6 +253,7 @@ fn dispatch(
         "buildinfo" | "buildinfo1" => build_info(),
         "getsessioninfo" => ok_doc([]),
         "aggregate" => cmd_aggregate(db, cmd),
+        "explain" => cmd_explain(db, cmd),
         other => err_doc(
             59,
             "CommandNotFound",
@@ -1087,6 +1088,36 @@ fn cmd_aggregate(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> 
                 .unwrap_or(101);
             build_cursor_response(coll, projected, batch_size, "firstBatch")
         }
+        Err(e) => err_doc(2, "BadValue", &e.to_string()),
+    }
+}
+
+/// `explain`:`{explain: {find: "coll", filter: {...}, sort: {...}}}`
+///
+/// 返回形态贴近 MongoDB:`{queryPlanner: {winningPlan: {...}}, ok: 1}`。
+fn cmd_explain(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+    // explain 的值是一个「被解释的命令」文档
+    let Some(inner) = cmd.get("explain").and_then(|v| v.as_object()) else {
+        return err_doc(2, "BadValue", "explain 需要一个命令对象");
+    };
+    let coll = inner.get("find").and_then(|v| v.as_str()).unwrap_or("");
+    let filter = inner
+        .get("filter")
+        .cloned()
+        .unwrap_or(Value::Object(Map::new()));
+    let sort = inner
+        .get("sort")
+        .filter(|v| v.as_object().is_some_and(|m| !m.is_empty()))
+        .and_then(|v| SortSpec::from_value(v).ok());
+
+    match db.explain(coll, &filter, sort.as_ref()) {
+        Ok(plan) => ok_doc([(
+            "queryPlanner",
+            json!({
+                "namespace": format!("nosqlite.{}", coll),
+                "winningPlan": plan,
+            }),
+        )]),
         Err(e) => err_doc(2, "BadValue", &e.to_string()),
     }
 }

@@ -492,3 +492,77 @@ func TestLimitWithBatchSize(t *testing.T) {
 		t.Fatalf("limit=12 应返回 12 条,实际 %d", len(results))
 	}
 }
+
+// explain:验证 wire 层能返回查询计划(索引命中可见)。
+func TestExplain(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("explainme")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	docs := make([]interface{}, 0, 20)
+	for i := 0; i < 20; i++ {
+		docs = append(docs, bson.M{"n": i})
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	// 用 bson.M 解码,再逐层断言(嵌套类型统一)
+	cmd := bson.D{
+		bson.E{Key: "explain", Value: bson.M{
+			"find":   "explainme",
+			"filter": bson.M{"n": bson.M{"$gte": 10}},
+		}},
+	}
+	var res bson.M
+	if err := client.Database("gocompat").RunCommand(ctx, cmd).Decode(&res); err != nil {
+		t.Fatalf("explain 失败: %v", err)
+	}
+
+	// 递归找 winningPlan(嵌套类型可能是 bson.M 或 bson.D)
+	found := findStage(res)
+	if found == "" {
+		t.Fatalf("未找到 stage: %v", res)
+	}
+	if found != "COLLSCAN" {
+		t.Fatalf("无索引应为 COLLSCAN,实际 %s", found)
+	}
+	t.Logf("explain stage = %s", found)
+}
+
+// findStage 在任意嵌套结构中查找 `stage` 字段。
+func findStage(v interface{}) string {
+	switch doc := v.(type) {
+	case bson.M:
+		if s, ok := doc["stage"].(string); ok {
+			return s
+		}
+		for _, child := range doc {
+			if s := findStage(child); s != "" {
+				return s
+			}
+		}
+	case bson.D:
+		for _, e := range doc {
+			if e.Key == "stage" {
+				if s, ok := e.Value.(string); ok {
+					return s
+				}
+			}
+			if s := findStage(e.Value); s != "" {
+				return s
+			}
+		}
+	case []interface{}:
+		for _, child := range doc {
+			if s := findStage(child); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}

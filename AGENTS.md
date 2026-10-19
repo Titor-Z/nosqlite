@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.5.2 M25 完成 —— 复合索引(前缀原则 + multikey 笛卡尔积)+ wire 层 `explain`;条目 key 全面改为「编码值在前、长度后缀在后」;**449 例全绿**。参见 [taolun #55](#55-v052-m25-设计复合索引--wire-层-explain) / [taolun #56](#56-v052-m25-执行复合索引--wire-层-explain) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.1 M24 完成 —— 查询规划器:等值/范围自动选索引、`explain` 可观测;**修掉 M23b 遗留的索引 key 长度前缀破坏值序缺陷**(导致跨类型范围查询漏数据)+ 写事务内开读事务缺陷;+12 例共 **440 例全绿**。参见 [taolun #53](#53-v051-m24-设计查询规划器让索引真正被用上) / [taolun #54](#54-v051-m24-执行查询规划器) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.0 M23b 完成 —— 索引框架:order-preserving 编码(复用 `rank` 单一真相源)、独立索引表、**multikey/稀疏/唯一**、写路径同事务维护;**核心验收「编码序 == 比较序」两两穷举通过**(并抓到 `$oid` 分叉);+35 例共 **427 例全绿**。参见 [taolun #51](#51-v050-m23b-设计索引框架order-preserving-编码--独立索引表) / [taolun #52](#52-v050-m23b-执行索引框架编码--独立索引表--写路径维护) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.4.1 M23a 完成 —— 类型序修正为 **MongoDB 官方 BSON 序**(MinKey<Null<Number<String<Object<Array<Binary<ObjectId<Bool<Date<Timestamp<Regex<MaxKey),补 MinKey/MaxKey/Timestamp;**破坏性变更**(跨类型比较);+10 例共 **392 例全绿**。参见 [taolun #49](#49-v041-m23a-设计类型序修正为-bson-官方序破坏性) / [taolun #50](#50-v041-m23a-执行类型序修正为-bson-官方序) / [项目进度-已完成](#已完成)。
@@ -948,6 +949,47 @@
 - 测试:新增 `tests/index_planner.rs` **12 例**,核心是 **`index_results_match_collscan`**:同一批 filter 分别在「不建索引」与「建索引」两条路径跑,断言 `_id` 集合完全一致(覆盖等值/范围/跨类型/无命中/非索引字段)。另有排序分页一致性、multikey、更新/删除后索引同步、explain 标记等。
   - 合计 **440 例全绿**;Go 驱动验收仍全通过;clippy 零警告。
 
+### 55. v0.5.2 M25 设计:复合索引 + wire 层 explain
+
+- 现状:M24 的单字段索引 + 规划器已可用,但有两个明显缺口。
+- **缺口一:复合索引**。CMS 里最常见的查询是 `{tenant: "t1", status: "ok"}` 或
+  `{tenant: "t1", createdAt: {$gte: ...}}`,单字段索引只能命中其中一个条件。
+- **缺口二:wire 层没有 `explain`**。驱动/`mongosh` 无法观测计划,M24 的能力在服务端不可见。
+
+- 设计:
+
+| 项 | 方案 |
+|---|---|
+| 复合索引编码 | `IndexDef.fields: Vec<String>`,条目 key = `集合\0字段路径串\0编码值1 编码值2 ... 后缀长度 doc_id`。**前缀原则**:`{a:1,b:1}` 可服务 `{a:...}` 查询,反之不行 |
+| 规划器 | 按「前缀匹配」打分:等值字段越多、越靠前,优先级越高;范围字段只能出现在最后一个等值字段之后 |
+| multikey 复合 | 任一字段是数组即展开(笛卡尔积上限保护,超过则不入索引) |
+| wire explain | 新增 `explain` 命令,返回 `{queryPlanner: {...}}`,形态贴近 MongoDB |
+| 兼容性 | `IndexDef` 增加 `fields` 字段,同时保留单字段 path;旧索引数据(单字段)仍可读 —— `encoding_version` 由 1 升到 2 触发重建 |
+
+- **关键约束**:复合索引的条目 key 必须保持 order-preserving —— 每个字段的编码值**依次拼接**,
+  由于 `encode_key` 的输出自定界(首字节类型 + 长度后缀在整体末尾),拼接后的字节序仍等价于
+  「按字段顺序逐级比较」,这正是 MongoDB 复合索引的顺序语义。
+- 验收:沿用 M24 的铁律 —— **索引路径与全表扫结果必须完全一致**,复合索引亦然。
+
+### 56. v0.5.2 M25 执行:复合索引 + wire 层 explain
+
+- **`IndexDef` 改造**:`field: String` → `fields: Vec<String>`(保留 `field()` 访问器做兼容);新增 `new_composite`/`is_composite`/`field_signature`(字段用 `,` 连接,唯一标识索引的字段与顺序)。
+  - JSON 序列化改为 `fields`,**读取时兼容旧的 `field` 单字段格式**。
+- **条目 key 布局(复合)**:`集合\0字段签名\0[enc1..encN][len1..lenN]doc_id`。
+  - 各字段编码值**依次拼接** —— 因 `encode_key` 输出自定界(首字节即类型),拼接后的字节序恰好等价于「按字段顺序逐级比较」,正是 MongoDB 复合索引的顺序语义;
+  - **所有长度后缀统一放在编码值之后**(M24 教训的推广),确保排序只由编码值决定;
+  - `split_entry_multi(rest, segments)` 用「遍历候选总长 + 校验各段长度之和」定位切分。
+- **multikey 复合**:任一字段是数组即参与笛卡尔积展开,上限 128 组(超限整体不入索引),防止字段组合爆炸。
+- **规划器(前缀原则)**:索引 `{a,b}` 可服务 `{a}` 与 `{a,b}`,不能服务 `{b}`;范围条件只能出现在最后一个等值前缀字段之后。多候选时按「前缀字段数 > 是否全等值」择优。
+- **公开 API**:`Database::create_index_composite(collection, name, fields, unique, sparse)`。
+- **wire 层 `explain`**:`{explain: {find: "coll", filter: {...}, sort: {...}}}` → `{queryPlanner: {namespace, winningPlan: {stage, indexName, bounds, sortedByIndex, filterApplied}}, ok: 1}`。
+- **过程中修的结构性问题**:多轮机械替换把 `redb_engine.rs` 弄出重复块(两处 `impl RedbEngine`、重复的 `split_entry`/`write_index_entries`),靠 `grep '^impl'`/行号定位删除修复;`split_entry_multi` 从引擎层**移入 `index/def.rs`**(它只依赖 key 布局,与 redb 无关)。
+- 测试:
+  - `tests/index_composite.rs` **8 例** —— 前缀可用/后缀不可用、复合+范围、**`composite_results_match_collscan`(多条件组合与全表扫逐一对比)**、复合唯一、复合 multikey、更新同步、单字段回归;
+  - `src/index/def.rs` 3 例(key 含 0x00、长度后缀不破坏值序、**复合 key 逐级排序**);
+  - Go 驱动 +1 例(`TestExplain`,用递归查找兼容 BSON 嵌套类型的两种表示)。
+  - 合计 **449 例全绿**,Go 13+1 项全通过,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -1001,7 +1043,7 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M25(下一里程碑)**:复合索引、`$or` 走索引、intersection 计划、wire 层 `explain` 命令、索引统计。
+- **M26(下一里程碑)**:`$or` 走索引、intersection 计划、索引统计(区分度估算)、wire 层 `createIndexes` 真正建索引(当前只回 ok)。
 - **待补**:`drop_collection` 应同时清理该集合的索引定义与条目(当前只在重建索引时对齐)。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
@@ -1025,6 +1067,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M25(v0.5.2):复合索引 + wire explain;449 例全绿。
 - M24(v0.5.1):查询规划器 —— 等值/范围走索引 + explain;440 例全绿。
 - M23b(v0.5.0):索引框架 —— 编码 + 独立索引表 + multikey/稀疏/唯一 + 写路径维护;427 例全绿。
 - M23a(v0.4.1):类型序对齐 MongoDB 官方 BSON 序 + MinKey/MaxKey/Timestamp;392 例全绿。

@@ -69,7 +69,7 @@ fn create_and_list_index() {
     let indexes = db.list_indexes("users").unwrap();
     assert_eq!(indexes.len(), 1);
     assert_eq!(indexes[0].name, "age_1");
-    assert_eq!(indexes[0].field, "age");
+    assert_eq!(indexes[0].field(), "age");
     assert!(!indexes[0].unique);
     assert_eq!(indexes[0].encoding_version, 1);
 

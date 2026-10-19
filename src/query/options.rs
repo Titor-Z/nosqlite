@@ -64,6 +64,11 @@ impl SortSpec {
         Ok(SortSpec { fields })
     }
 
+    /// 全部排序字段的路径段列表(供查询规划器判断能否利用索引序)。
+    pub fn field_paths(&self) -> Vec<&[String]> {
+        self.fields.iter().map(|f| f.path.as_slice()).collect()
+    }
+
     /// 若排序规格恰好只有一个字段,返回该字段的路径段(供查询规划器判断能否利用索引序)。
     pub fn single_field_path(&self) -> Option<&[String]> {
         if self.fields.len() == 1 {
