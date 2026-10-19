@@ -251,7 +251,10 @@ impl Database {
 
         // 5. 字段投影(0.2.0):在排序/分页之后裁剪,保证排序字段可用
         if let Some(projection) = &options.projection {
-            docs = docs.iter().map(|doc| projection.apply(doc)).collect();
+            docs = docs
+                .iter()
+                .map(|doc| projection.apply_with_filter(doc, Some(filter)))
+                .collect();
         }
 
         Ok(docs)
@@ -476,7 +479,10 @@ impl Database {
             docs.truncate(limit);
         }
         if let Some(projection) = &options.projection {
-            docs = docs.iter().map(|doc| projection.apply(doc)).collect();
+            docs = docs
+                .iter()
+                .map(|doc| projection.apply_with_filter(doc, Some(filter)))
+                .collect();
         }
         Ok(docs)
     }
@@ -920,7 +926,10 @@ impl Database {
 
         // ---------- 字段投影(排序/分页之后应用) ----------
         if let Some(projection) = projection {
-            out = out.iter().map(|doc| projection.apply(doc)).collect();
+            out = out
+                .iter()
+                .map(|doc| projection.apply_with_filter(doc, Some(filter)))
+                .collect();
         }
         Ok((total, out))
     }

@@ -97,6 +97,26 @@ struct PushSpec {
     sort: Option<Value>,
 }
 
+/// `$pull` 的解析结果(v0.6.1)。
+#[derive(Debug)]
+struct PullSpec {
+    /// 字段路径。
+    path: Vec<String>,
+    /// 原字段名(构造元素探针用,`matcher` 的条件以它为键)。
+    field: String,
+    /// 匹配条件:带 `$` 键的对象按查询操作符解释,否则按等值。
+    matcher: crate::query::filter::Condition,
+}
+
+/// `$pop` 的解析结果(v0.6.1)。
+#[derive(Debug)]
+struct PopSpec {
+    /// 字段路径。
+    path: Vec<String>,
+    /// `1` 移除最后一个,`-1` 移除第一个。
+    last: bool,
+}
+
 /// `$addToSet` 的解析结果。
 #[derive(Debug)]
 struct AddToSetSpec {
@@ -132,10 +152,14 @@ pub struct Update {
     add_to_set_fields: Vec<AddToSetSpec>,
     /// `$currentDate` 的字段路径列表。
     current_date_fields: Vec<Vec<String>>,
+    /// `$pull` 列表(v0.6.1)。
+    pull_fields: Vec<PullSpec>,
+    /// `$pop` 列表(v0.6.1)。
+    pop_fields: Vec<PopSpec>,
 }
 
 /// 已知的更新操作符。
-const KNOWN_OPS: [&str; 10] = [
+const KNOWN_OPS: [&str; 12] = [
     "$set",
     "$unset",
     "$inc",
@@ -146,6 +170,8 @@ const KNOWN_OPS: [&str; 10] = [
     "$push",
     "$addToSet",
     "$currentDate",
+    "$pull",
+    "$pop",
 ];
 
 /// 把点号路径字符串拆成路径段,并校验不含空段。
@@ -243,6 +269,16 @@ impl Update {
             "$currentDate",
             UpdateError::InvalidUpdate("$currentDate 的值必须是 JSON 对象".to_string()),
         )?;
+        let pull_map = op_object(
+            map,
+            "$pull",
+            UpdateError::InvalidUpdate("$pull 的值必须是 JSON 对象".to_string()),
+        )?;
+        let pop_map = op_object(
+            map,
+            "$pop",
+            UpdateError::InvalidUpdate("$pop 的值必须是 JSON 对象".to_string()),
+        )?;
 
         // 至少要有一个非空操作符
         let any_non_empty = [
@@ -256,6 +292,8 @@ impl Update {
             push_map,
             add_to_set_map,
             current_date_map,
+            pull_map,
+            pop_map,
         ]
         .into_iter()
         .flatten()
@@ -360,6 +398,39 @@ impl Update {
             current_date_fields.push(path);
         }
 
+        // ---------- $pull ----------
+        let mut pull_fields = Vec::new();
+        for (key, value) in pull_map.into_iter().flatten() {
+            let path = parse_path(key)?;
+            if path.first().map(|s| s.as_str()) == Some("_id") {
+                return Err(UpdateError::InvalidUpdate("不允许修改主键 _id".to_string()));
+            }
+            pull_fields.push(PullSpec {
+                path,
+                field: key.to_string(),
+                matcher: parse_pull_matcher(key, value)?,
+            });
+        }
+
+        // ---------- $pop ----------
+        let mut pop_fields = Vec::new();
+        for (key, value) in pop_map.into_iter().flatten() {
+            let path = parse_path(key)?;
+            if path.first().map(|s| s.as_str()) == Some("_id") {
+                return Err(UpdateError::InvalidUpdate("不允许修改主键 _id".to_string()));
+            }
+            let last = match value.as_i64() {
+                Some(1) => true,
+                Some(-1) => false,
+                _ => {
+                    return Err(UpdateError::InvalidModifier(
+                        "$pop 的值只能是 1(移除最后一个)或 -1(移除第一个)".to_string(),
+                    ));
+                }
+            };
+            pop_fields.push(PopSpec { path, last });
+        }
+
         Ok(Update {
             set_fields,
             unset_fields,
@@ -371,6 +442,8 @@ impl Update {
             push_fields,
             add_to_set_fields,
             current_date_fields,
+            pull_fields,
+            pop_fields,
         })
     }
 
@@ -480,6 +553,50 @@ impl Update {
                 {
                     arr.push(value.clone());
                 }
+            }
+            set_in_map(doc, &spec.path, &Value::Array(arr))?;
+        }
+
+        // $pull:移除所有满足条件的元素
+        for spec in &self.pull_fields {
+            check_not_id(&spec.path)?;
+            let Some(current) = resolve_owned(doc, &spec.path) else {
+                continue; // 字段缺失 → 无操作
+            };
+            let Value::Array(arr) = current else {
+                return Err(UpdateError::TypeMismatch {
+                    op: "$pull".to_string(),
+                    path: spec.path.join("."),
+                    expected: "数组".to_string(),
+                });
+            };
+            let kept: Vec<Value> = arr
+                .into_iter()
+                .filter(|el| !pull_matches(&spec.matcher, &spec.field, el))
+                .collect();
+            set_in_map(doc, &spec.path, &Value::Array(kept))?;
+        }
+
+        // $pop:移除首/尾元素
+        for spec in &self.pop_fields {
+            check_not_id(&spec.path)?;
+            let Some(current) = resolve_owned(doc, &spec.path) else {
+                continue; // 字段缺失 → 无操作
+            };
+            let Value::Array(mut arr) = current else {
+                return Err(UpdateError::TypeMismatch {
+                    op: "$pop".to_string(),
+                    path: spec.path.join("."),
+                    expected: "数组".to_string(),
+                });
+            };
+            if arr.is_empty() {
+                continue; // 空数组 → 无操作
+            }
+            if spec.last {
+                arr.pop();
+            } else {
+                arr.remove(0);
             }
             set_in_map(doc, &spec.path, &Value::Array(arr))?;
         }
@@ -691,6 +808,59 @@ fn parse_add_to_set(key: &str, value: &Value) -> Result<AddToSetSpec, UpdateErro
         }
     }
     Ok(AddToSetSpec { path, values })
+}
+
+/// 解析 `$pull` 的匹配条件(v0.6.1)。
+///
+/// - 值是含 `$` 键的对象 → 按**查询操作符**解释(复用 `filter::Condition`,
+///   如 `{"$gt": 5}` / `{"$in": ["a","b"]}`);
+/// - 否则按**等值/子集**匹配:标量走整体相等,对象走「字段子集匹配」
+///   (MongoDB 语义:`$pull: {r: {score: 8}}` 移除所有 `score == 8` 的对象,
+///   不要求对象只有这一个字段)。
+fn parse_pull_matcher(
+    key: &str,
+    value: &Value,
+) -> Result<crate::query::filter::Condition, UpdateError> {
+    use crate::query::filter::Condition;
+    let err = |e: crate::query::filter::FilterError| {
+        UpdateError::InvalidModifier(format!("$pull 条件无效: {}", e))
+    };
+    if let Value::Object(obj) = value
+        && obj.keys().any(|k| k.starts_with('$'))
+    {
+        // 操作符形态:构造 `{字段名: 操作符对象}` 交给查询侧解析
+        let mut wrapper = serde_json::Map::new();
+        wrapper.insert(key.to_string(), value.clone());
+        return Condition::from_field_object(&wrapper).map_err(err);
+    }
+    // 对象形态 → **子集匹配**:把对象的字段展开成字段条件
+    // (MongoDB 语义:`$pull: {r: {score: 8}}` 移除所有 score==8 的对象,
+    //  不要求对象只有这一个字段)。这依赖 `Condition::matches_value` 在
+    //  元素是对象时按对象自身的字段求值。
+    if let Value::Object(obj) = value {
+        return Condition::from_field_object(obj).map_err(err);
+    }
+    // 标量/数组等 → 等值
+    let mut wrapper = serde_json::Map::new();
+    wrapper.insert(key.to_string(), value.clone());
+    Condition::from_field_object(&wrapper).map_err(err)
+}
+
+/// 判断单个数组元素是否满足 `$pull` 的条件。
+///
+/// `matcher` 是按「字段名 → 条件」构造的,路径段就是原字段名;这里把元素
+/// 包成 `{字段名: 元素}` 再求值,于是操作符作用于元素本身、对象则按字段求值。
+fn pull_matches(matcher: &crate::query::filter::Condition, field: &str, element: &Value) -> bool {
+    match element {
+        // 子集匹配:条件直接作用在对象自身的字段上
+        Value::Object(map) => matcher.matches(map),
+        // 操作符形态:把标量包成 `{字段: 值}` 让其作用于元素本身
+        other => {
+            let mut probe = serde_json::Map::new();
+            probe.insert(field.to_string(), other.clone());
+            matcher.matches(&probe)
+        }
+    }
 }
 
 /// 对数组应用 `$push`(含 `$position`/`$sort`/`$slice` 修饰符)。

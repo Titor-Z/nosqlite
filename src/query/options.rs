@@ -189,6 +189,10 @@ pub enum ProjectionOp {
     ///
     /// 内部条件复用过滤器的解析结果,语义与查询完全一致。
     ElemMatch(Box<crate::query::filter::Condition>),
+    /// 位置运算符 `{"arr.$": 1}`(v0.6.1):只保留 **filter 命中的那个元素**。
+    ///
+    /// 需要运行时把查询条件传进投影,所以 `Projection::apply` 多了一个 `filter` 参数。
+    Position { field: String },
 }
 
 /// 投影规格错误。
@@ -239,6 +243,21 @@ impl Projection {
         let mut keep_id = true;
         let mut operators: Vec<(Vec<String>, ProjectionOp)> = Vec::new();
         for (key, value) in map {
+            // 位置运算符 `{"arr.$": 1}`:末段是 `$`,需要 filter 参与
+            if let Some(field) = key.strip_suffix(".$")
+                && matches!(value, Value::Number(n) if n.as_i64() == Some(1))
+            {
+                let field = field.to_string();
+                let path: Vec<String> = key.split('.').map(|s| s.to_string()).collect();
+                operators.push((
+                    path.clone(),
+                    ProjectionOp::Position {
+                        field: field.clone(),
+                    },
+                ));
+                // 不加入 include_fields:它的真实取值路径由 operators 处理
+                continue;
+            }
             // 投影运算符(`$slice` / `$elemMatch`)先于普通标志解析
             if let Value::Object(op_map) = value
                 && op_map.keys().any(|k| k.starts_with('$'))
@@ -296,7 +315,27 @@ impl Projection {
     }
 
     /// 对一条文档应用投影,返回新文档(不修改原文档)。
+    ///
+    /// `filter` 仅在含位置运算符(`{"arr.$": 1}`)时需要,用于定位命中的数组元素;
+    /// 其余情况可传 `None`。
+    pub fn apply_with_filter(
+        &self,
+        doc: &Map<String, Value>,
+        filter: Option<&crate::query::filter::Filter>,
+    ) -> Map<String, Value> {
+        self.apply_inner(doc, filter)
+    }
+
+    /// 对一条文档应用投影(无位置运算符时用,等价于 `apply_with_filter(doc, None)`)。
     pub fn apply(&self, doc: &Map<String, Value>) -> Map<String, Value> {
+        self.apply_inner(doc, None)
+    }
+
+    fn apply_inner(
+        &self,
+        doc: &Map<String, Value>,
+        filter: Option<&crate::query::filter::Filter>,
+    ) -> Map<String, Value> {
         if self.include {
             let mut out = Map::new();
             if self.keep_id
@@ -311,11 +350,18 @@ impl Projection {
             }
             // 应用投影运算符(在取出的字段上做局部变换)
             for (path, op) in &self.operators {
-                let Some(value) = get_path(doc, path) else {
+                // 位置运算符的路径末段是 `$`,真实取值路径要去掉它
+                let real_path: Vec<String> = match op {
+                    ProjectionOp::Position { .. } => {
+                        path.iter().take(path.len() - 1).cloned().collect()
+                    }
+                    _ => path.clone(),
+                };
+                let Some(value) = get_path(doc, &real_path) else {
                     continue;
                 };
-                if let Some(transformed) = op.apply(value) {
-                    insert_path(&mut out, path, transformed);
+                if let Some(transformed) = op.apply(value, filter) {
+                    insert_path(&mut out, &real_path, transformed);
                 } else {
                     remove_path(&mut out, path);
                 }
@@ -336,7 +382,7 @@ impl Projection {
 
 impl ProjectionOp {
     /// 对字段值应用运算符;返回 `None` 表示该字段应被移除。
-    fn apply(&self, value: &Value) -> Option<Value> {
+    fn apply(&self, value: &Value, filter: Option<&crate::query::filter::Filter>) -> Option<Value> {
         match self {
             ProjectionOp::Slice { skip, limit } => {
                 let Value::Array(arr) = value else {
@@ -364,6 +410,33 @@ impl ProjectionOp {
                     .find(|el| match el {
                         Value::Object(m) => cond.matches(m),
                         _ => false,
+                    })
+                    .map(|el| Value::Array(vec![el.clone()]))
+                    .or(Some(Value::Array(Vec::new())))
+            }
+            ProjectionOp::Position { field, .. } => {
+                let Value::Array(arr) = value else {
+                    return Some(value.clone());
+                };
+                // 没有 filter、或 filter 里没有该数组的元素级条件时,
+                // MongoDB 返回**空数组**(而不是整个数组),保持一致。
+                let Some(f) = filter else {
+                    return Some(Value::Array(Vec::new()));
+                };
+                // 用该字段的查询条件逐个测元素,取第一个命中者
+                let Some(cond) = f.array_element_condition(field) else {
+                    return Some(Value::Array(Vec::new()));
+                };
+                arr.iter()
+                    .find(|el| match el {
+                        // 元素是对象:条件直接作用于对象自身字段
+                        Value::Object(m) => cond.matches(m),
+                        // 标量元素:包成探针文档,让操作符作用在值上
+                        other => {
+                            let mut probe = Map::new();
+                            probe.insert("v".to_string(), (*other).clone());
+                            cond.matches(&probe)
+                        }
                     })
                     .map(|el| Value::Array(vec![el.clone()]))
                     .or(Some(Value::Array(Vec::new())))

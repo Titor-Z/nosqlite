@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.6.1 M29 完成 —— 数组更新 `$pull`/`$pop`(含对象子集匹配)+ 投影位置运算符 `{"arr.$": 1}`;**517 例全绿**。参见 [taolun #63](#63-v061-m29-设计数组更新-pullpop--投影位置运算符) / [taolun #64](#64-v061-m29-执行数组更新-pullpop--投影位置运算符) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.6.0 M28 完成 —— 第一档语义补齐:`$exists`/`$type`/`$all`/`$size` + 投影运算符 `$slice`/`$elemMatch`;**493 例全绿**。参见 [taolun #61](#61-v060-m28-设计第一档语义补齐existsallsize--投影运算符) / [taolun #62](#62-v060-m28-执行第一档语义补齐existsallsize--投影运算符) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.4 M27 完成 —— 降序索引(`directions` 随定义持久化,条目编码不变、仅扫描方向相反);修正 `sortedByIndex` 未比对方向导致**返回顺序错**的缺口;**466 例全绿**。参见 [taolun #59](#59-v054-m27-设计降序索引修正--1-被静默当升序) / [taolun #60](#60-v054-m27-执行降序索引) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.3 M26 完成 —— `$or` 走索引(并集)+ 多索引交集(AND 计划)+ wire 层 `createIndexes`/`listIndexes`/`dropIndexes` 真正落地(Go 驱动可建索引);`drop_collection` 补清索引;修掉计划构造的无限递归与复合索引被交集抢占两个缺陷;**457 例全绿**。参见 [taolun #57](#57-v053-m26-设计or-走索引--索引交集计划--wire-createindexes) / [taolun #58](#58-v053-m26-执行or-走索引--索引交集--wire-createindexes) / [项目进度-已完成](#已完成)。
@@ -1099,6 +1100,45 @@
   - 合计 **493 例全绿**,Go **17 项**全通过,clippy 零警告。
 - 明确未做:MongoDB 的位置运算符 `{"arr.$": 1}` —— 它需要回传 filter 匹配的**数组下标**,涉及过滤与投影的耦合,留 M29。
 
+### 63. v0.6.1 M29 设计:数组更新 `$pull`/`$pop` + 投影位置运算符
+
+- 背景:第一档(M28)补齐了过滤与投影的语义缺口。剩下三项是数组相关的真实缺口:`$pull`/`$pop`(数组更新)、位置运算符 `{"arr.$": 1}`(投影取 filter 命中的那个元素)。
+- **`$pull`**:`{f: {$pull: <value>}}` 或 `{f: {$pull: {$in: [...]}}}` / `{$gt: 5}` / 文档条件。
+  - 语义:从数组里移除**所有**满足条件的元素;字段不是数组时**报错**(与 `$push` 一致),字段缺失时**无操作**;
+  - 值是「带 `$` 键的对象」→ 按**查询操作符**解释(复用 `filter::Condition`);否则按**等值**匹配(含数组元素级的 MongoDB 相等);
+  - **返回是否实际改动**——与 M9 的「无变化不计入 modified」纪律一致。
+- **`$pop`**:`{f: {$pop: 1}}` 移除最后一个,`{f: {$pop: -1}}` 移除第一个。
+  - 只接受 `1`/`-1`(MongoDB 语义);空数组无操作;非数组报错;字段缺失无操作。
+- **投影位置运算符 `{"arr.$": 1}`**:
+  - 需要知道 **filter 在哪个元素上命中**,所以 `Projection::apply` 必须拿到 filter —— 接口从 `apply(doc)` 改为 `apply(doc, filter: Option<&Filter>)`;
+  - 实现:`find_planned` / `find_with_options` 在应用投影时把 filter 传进去;投影内部对该路径的数组逐个元素用 filter 的**该字段条件**测试,取**第一个**命中的元素(与 `$elemMatch` 投影语义一致);
+  - 路径写法 `arr.$`:解析时把末段 `$` 记为「位置占位」,不当作普通字段名;
+  - **找不到匹配元素时返回空数组**(不报错),与 MongoDB 一致。
+- 明确不做:数组过滤器 `$[]` / `$[identifier]`(需要额外语义,留后续)。
+- 纪律:不动存储格式(v1);`$pull`/`$pop` 与既有「无变化不写回」的 `modified` 语义一致;投影接口变更需同步 C ABI 与 wire 层调用点。
+
+### 64. v0.6.1 M29 执行:数组更新 `$pull`/`$pop` + 投影位置运算符
+
+- **`$pull`**:`PullSpec { path, field, matcher: filter::Condition }`。
+  - **两种形态**:值含 `$` 键 → 按查询操作符解释(复用 `Condition::from_field_object`);**普通对象 → 展开成字段条件做子集匹配**(`$pull: {r: {score: 8}}` 移除所有 `score == 8` 的对象,不要求对象只有这一字段);标量/数组 → 等值。
+  - 字段缺失 → 无操作;非数组 → `TypeMismatch` 报错;`_id` 禁止。
+  - **无元素被移除时不虚增 `modified`** —— 这条由既有的「内容无变化则不写回」机制自动保证,测试 `pull_no_change_not_counted` 锁死。
+- **`$pop`**:`PopSpec { path, last }`。只接受 `1`(移除末尾)/ `-1`(移除开头);空数组与字段缺失均无操作;非法值解析期报错。
+- **投影位置运算符 `{"arr.$": 1}`**:`ProjectionOp::Position { field }`。
+  - **接口变更**:`Projection::apply(doc)` 保留,新增 `apply_with_filter(doc, Option<&Filter>)`;`find_with_options` / `find_planned` 的投影调用改传 `Some(filter)`。
+  - **新增 `Filter::array_element_condition(field)`**:把 filter 里以 `数组字段.` 为前缀的条件**剥掉前缀**后返回,使其能对单个数组元素求值。支持顶层单字段条件与顶层 `And`(收集全部匹配项合成 `And`)。
+  - 路径末段 `$` 不进入 `include_fields`,由 `operators` 单独处理;取值时用去掉 `$` 的真实路径。
+  - **没有 filter、或 filter 无该数组的元素级条件时返回空数组**(MongoDB 语义),不是返回整个数组。
+- 过程中踩的坑(值得记住):
+  1. **`find_planned` 有第三处投影调用点**没被前面的批量替换命中,导致位置运算符在该路径下拿到 `filter=None` 而静默返回空数组。**用批量字符串替换改调用点时,必须事后 `grep` 全部调用点核对**,而不是相信替换的覆盖面。
+  2. `Filter::field_condition` 最初插进了 `impl Condition` 而非 `impl Filter`(报 `no field root`),且语义也不对——需要的是「剥前缀」而非「字段名相等」。
+- 测试:
+  - `tests/array_update.rs` **17 例** —— `$pull` 标量/`$in`/范围/**对象子集**/字段缺失无操作/非数组报错/全删/`_id` 拒绝;`$pop` 首尾/空数组/缺失/非法值/单元素;`$pull`+`$push` 组合、无变化不计数、持久化。
+  - `tests/projection_position.rs` **7 例** —— 命中元素、多个命中取首个、空数组、与其他字段共存、保留 `_id`、非数组透传、**索引规划路径下同样生效**。
+  - Go 驱动 **+1 例**(`TestArrayUpdateOperatorsOverWire`)。
+  - 合计 **517 例全绿**,Go **18 项**全通过,clippy 零警告。
+- 明确不做:数组过滤器 `$[]` / `$[identifier]`。
+
 ## Agents
 
 ### 规范
@@ -1152,7 +1192,7 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M29(下一里程碑)**:`$pull`/`$pop`(数组更新操作符)、投影位置运算符 `{"arr.$": 1}`、索引统计/区分度估算。
+- **M30(下一里程碑,发布收尾)**:`cargo publish`、Node.js 驱动验证、崩溃恢复/一致性测试、索引统计(按需)。
 - **待补**:`drop_collection` 应同时清理该集合的索引定义与条目(当前只在重建索引时对齐)。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
@@ -1176,6 +1216,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M29(v0.6.1):`$pull`/`$pop` + 投影位置运算符 `arr.$`;517 例全绿。
 - M28(v0.6.0):`$exists`/`$type`/`$all`/`$size` + 投影 `$slice`/`$elemMatch`;493 例全绿。
 - M27(v0.5.4):降序索引;修正 sortedByIndex 未比对方向的顺序错缺口;466 例全绿。
 - M26(v0.5.3):`$or` 并集计划、多索引交集计划、wire createIndexes/listIndexes/dropIndexes;457 例全绿。

@@ -66,9 +66,10 @@ fn empty_update_object_rejected() {
 /// 注:`$inc`/`$push` 等已在 v0.1.4 支持,这里改用仍未实现的 `$pull`。
 #[test]
 fn unknown_operator_rejected() {
-    let err = try_update(r#"{"$pull":{"tags":"x"}}"#).expect_err("未知操作符应被拒绝");
+    // `$pull` 自 v0.6.1 起已支持,改用真正未知的操作符验证报错路径
+    let err = try_update(r#"{"$nosuchop":{"tags":"x"}}"#).expect_err("未知操作符应被拒绝");
     assert!(
-        matches!(err, UpdateError::InvalidUpdate(ref m) if m.contains("$pull")),
+        matches!(err, UpdateError::InvalidUpdate(ref m) if m.contains("$nosuchop")),
         "应报不支持的操作符并回显操作符名,实际: {:?}",
         err
     );

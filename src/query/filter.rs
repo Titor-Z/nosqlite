@@ -286,6 +286,51 @@ impl Filter {
     pub fn matches(&self, doc: &Map<String, Value>) -> bool {
         self.root.matches(doc)
     }
+
+    /// 取出作用在**数组元素内部路径**上的条件(供投影位置运算符定位元素)。
+    ///
+    /// 例:filter `{"items.qty": {"$gt": 10}}` 对数组字段 `items` 而言,
+    /// 返回的是「把路径前缀 `items.` 剥掉后」的条件(`{"qty": {"$gt": 10}}`),
+    /// 这样就能对单个元素求值。
+    ///
+    /// 只处理顶层 `And` 里的单层字段条件;其余形态(逻辑组合、多个条件)
+    /// 返回 `None`,投影保守地不做选取。
+    pub fn array_element_condition(&self, field: &str) -> Option<Condition> {
+        let prefix = format!("{}.", field);
+        let convert = |f: &FieldCondition| -> Option<Condition> {
+            // 路径形如 [field, rest...]:剥掉首段即元素内部路径
+            if f.path.first().map(|s| s.as_str()) != Some(field) || f.path.len() < 2 {
+                return None;
+            }
+            Some(Condition::Field(FieldCondition {
+                path: f.path[1..].to_vec(),
+                ops: f.ops.clone(),
+            }))
+        };
+        match &self.root {
+            Condition::Field(f) => convert(f),
+            // 多字段:收集所有以该数组字段为前缀的条件,合成 And
+            Condition::And(conds) => {
+                let mut picked: Vec<Condition> = Vec::new();
+                for c in conds {
+                    if let Condition::Field(f) = c
+                        && let Some(inner) = convert(f)
+                    {
+                        picked.push(inner);
+                    }
+                }
+                match picked.len() {
+                    0 => None,
+                    1 => picked.pop(),
+                    _ => Some(Condition::And(picked)),
+                }
+            }
+            _ => {
+                let _ = prefix;
+                None
+            }
+        }
+    }
 }
 
 impl Condition {
@@ -438,6 +483,14 @@ impl Condition {
 }
 
 impl Condition {
+    /// 判断**单个值**是否满足本条件(v0.6.1,供 `$pull` 等数组操作复用)。
+    ///
+    /// 把 `value` 当作「当前字段值」求值:操作符直接作用于它;
+    /// 若 `value` 是对象且本条件是字段条件,则按对象的字段求值(子集匹配)。
+    pub fn matches_value(&self, value: &Value) -> bool {
+        self.matches_field(&[value])
+    }
+
     /// 把「字段名 → 条件」的对象解析成一条完整条件(v0.6.0,供投影 `$elemMatch` 复用)。
     ///
     /// 与顶层 filter 的解析规则完全一致:值若是含 `$` 键的对象则按操作符解释,

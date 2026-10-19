@@ -746,6 +746,72 @@ func TestNewFilterOperatorsOverWire(t *testing.T) {
 	}
 }
 
+// 数组更新操作符 $pull / $pop 经 wire 层验证(M29)。
+func TestArrayUpdateOperatorsOverWire(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("arrayops")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	if _, err := coll.InsertOne(ctx, bson.M{
+		"_id":   "doc1",
+		"tags":  []string{"a", "b", "a", "c"},
+		"nums":  []int{1, 5, 10, 15},
+		"items": []bson.M{{"score": 8}, {"score": 9}, {"score": 8}},
+	}); err != nil {
+		t.Fatalf("InsertOne 失败: %v", err)
+	}
+
+	// $pull 标量等值
+	if _, err := coll.UpdateOne(ctx,
+		bson.M{"_id": "doc1"},
+		bson.M{"$pull": bson.M{"tags": "a"}},
+	); err != nil {
+		t.Fatalf("$pull 失败: %v", err)
+	}
+	// $pull 范围
+	if _, err := coll.UpdateOne(ctx,
+		bson.M{"_id": "doc1"},
+		bson.M{"$pull": bson.M{"nums": bson.M{"$gte": 10}}},
+	); err != nil {
+		t.Fatalf("$pull 范围失败: %v", err)
+	}
+	// $pull 对象子集
+	if _, err := coll.UpdateOne(ctx,
+		bson.M{"_id": "doc1"},
+		bson.M{"$pull": bson.M{"items": bson.M{"score": 8}}},
+	); err != nil {
+		t.Fatalf("$pull 对象失败: %v", err)
+	}
+	// $pop 首个
+	if _, err := coll.UpdateOne(ctx,
+		bson.M{"_id": "doc1"},
+		bson.M{"$pop": bson.M{"tags": -1}},
+	); err != nil {
+		t.Fatalf("$pop 失败: %v", err)
+	}
+
+	var got bson.M
+	if err := coll.FindOne(ctx, bson.M{"_id": "doc1"}).Decode(&got); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	tags := got["tags"].(bson.A)
+	if len(tags) != 1 || tags[0] != "c" {
+		t.Fatalf("tags 应为 [c],实际 %v", tags)
+	}
+	nums := got["nums"].(bson.A)
+	if len(nums) != 2 {
+		t.Fatalf("nums 应为 2 个元素,实际 %v", nums)
+	}
+	items := got["items"].(bson.A)
+	if len(items) != 1 {
+		t.Fatalf("items 应剩 1 个,实际 %v", items)
+	}
+}
+
 // keyDirection 从索引规格文档里取某字段的索引方向(兼容 bson.M / bson.D)。
 func keyDirection(v interface{}, field string) int64 {
 	switch doc := v.(type) {

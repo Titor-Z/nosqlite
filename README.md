@@ -73,8 +73,8 @@ nosqlite 有两个形态,共用同一套查询语义:
 
 ### 仍未支持
 
-- **更新操作符**:无 `$pull`/`$pop`,无数组过滤器 `$[]`/`$[id]`
-- **投影**:有 `$slice`/`$elemMatch`,无位置运算符 `{"arr.$": 1}`
+- **更新操作符**:无数组过滤器 `$[]`/`$[id]`
+- **投影**:`$slice`/`$elemMatch`/位置运算符 `{"arr.$": 1}` 均已支持
 - **upsert 的初始值**:仅能由 filter 的**顶层等值字段**反推;filter 含 `$gt` 等操作符时报错(不猜)
 - **聚合管道**:仅 `$match`/`$sort`/`$limit`/`$skip`/`$project`/`$group`/`$addFields`;无 `$unwind`/`$lookup`/`$facet`
 - **索引**:无 TTL 索引;规划器是纯规则的,无区分度估算
@@ -273,7 +273,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 493 例测试
+cargo test --all-targets     # 517 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

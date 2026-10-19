@@ -117,7 +117,8 @@ fn invalid_filter_code() {
 /// 更新非法 → `INVALID_UPDATE`。
 #[test]
 fn invalid_update_code() {
-    let err = Update::from_value(&json!({"$pull": {"a": 1}})).expect_err("未知操作符应报错");
+    // `$pull` 自 v0.6.1 起已支持,这里用一个真正未知的操作符
+    let err = Update::from_value(&json!({"$nosuchop": {"a": 1}})).expect_err("未知操作符应报错");
     let db_err: nosqlite::DatabaseError = err.into();
     assert_eq!(db_err.code(), ErrorCode::InvalidUpdate);
     assert_eq!(db_err.code().as_str(), "INVALID_UPDATE");
