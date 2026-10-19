@@ -102,6 +102,49 @@ NodbliteDb *nodblite_open_ex(const char *path, const NodbliteOpenOptions *opts);
 /* 关闭句柄。 */
 void nodblite_close(NodbliteDb *db);
 
+/* ---------- 索引 ---------- */
+
+/* 创建单字段索引。unique/sparse 非 0 即为真。value = 索引名。 */
+NodbliteResult *nodblite_create_index(NodbliteDb *db, const char *collection,
+                                      const char *name, const char *field,
+                                      uint8_t unique, uint8_t sparse);
+
+/*
+ * 创建复合索引(含方向)。
+ * fields_json 形如 ["a","b"];directions_json 形如 [1,-1],传 NULL 等价全升序。
+ */
+NodbliteResult *nodblite_create_index_composite(NodbliteDb *db, const char *collection,
+                                                const char *name, const char *fields_json,
+                                                const char *directions_json,
+                                                uint8_t unique, uint8_t sparse);
+
+/* 列出索引定义。value = JSON 数组:
+ * [{"name":"a_1","fields":["a"],"directions":[1],"unique":false,"sparse":false}] */
+NodbliteResult *nodblite_list_indexes(NodbliteDb *db, const char *collection);
+
+/* 删除索引。value = "true"(删了)/ "false"(本来就不存在)。 */
+NodbliteResult *nodblite_drop_index(NodbliteDb *db, const char *collection, const char *name);
+
+/* ---------- 观测与分页 ---------- */
+
+/*
+ * 生成查询计划。value = JSON,形如 {"stage":"IXSCAN","indexName":"age_1"}。
+ * sort_json 可传 NULL。
+ */
+NodbliteResult *nodblite_explain(NodbliteDb *db, const char *collection,
+                                 const char *filter_json, const char *sort_json);
+
+/*
+ * 分页查询:同时返回匹配总数与当页文档。
+ *   affected = 匹配总数(不受 skip/limit 影响)
+ *   docs     = 当页文档
+ * limit_is_null 非 0 表示不限制条数。
+ */
+NodbliteResult *nodblite_find_page(NodbliteDb *db, const char *collection,
+                                   const char *filter_json, const char *sort_json,
+                                   const char *fields_json,
+                                   uint64_t skip, uint64_t limit, uint8_t limit_is_null);
+
 /* ---------- 写入 ---------- */
 
 /* 插入一条文档(JSON 对象字符串)。value = _id 的 JSON(带引号)。 */

@@ -32,7 +32,7 @@ use crate::error::ErrorCode;
 use crate::query::{Filter, FindOptions, Projection, SortSpec, Update};
 
 /// 成功码。
-pub const NOSQLITE_OK: i32 = 0;
+pub const NODBLITE_OK: i32 = 0;
 
 // ==================== 数据结构 ====================
 
@@ -158,7 +158,7 @@ fn set_error_msg(op: &str, code: ErrorCode, msg: &str) -> i32 {
 /// 构造成功的空结果。
 fn ok_empty() -> *mut NodbliteResult {
     Box::into_raw(Box::new(NodbliteResult {
-        code: NOSQLITE_OK,
+        code: NODBLITE_OK,
         count: 0,
         affected: 0,
         docs: std::ptr::null_mut(),
@@ -192,7 +192,7 @@ fn ok_value(value: &str) -> *mut NodbliteResult {
     };
     std::mem::forget(c); // 由 result_free 通过 Box::from_raw 回收
     Box::into_raw(Box::new(NodbliteResult {
-        code: NOSQLITE_OK,
+        code: NODBLITE_OK,
         count: 0,
         affected: 0,
         docs: std::ptr::null_mut(),
@@ -219,7 +219,7 @@ fn ok_docs(docs: &[Map<String, Value>], affected: u64) -> *mut NodbliteResult {
     std::mem::forget(slices);
     std::mem::forget(owned);
     Box::into_raw(Box::new(NodbliteResult {
-        code: NOSQLITE_OK,
+        code: NODBLITE_OK,
         count,
         affected,
         docs: ptr,
@@ -895,6 +895,375 @@ pub unsafe extern "C" fn nodblite_list_collections(db: *mut NodbliteDb) -> *mut 
     }
 }
 
+/// 创建索引。
+///
+/// `field` 支持点号路径;`unique`/`sparse` 非 0 即为真。
+/// 复合索引请用 [`nodblite_create_index_composite`]。
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_create_index(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+    name: *const c_char,
+    field: *const c_char,
+    unique: u8,
+    sparse: u8,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "create_index",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let (Some(coll), Some(nm), Some(f)) = (
+        unsafe { read_str(collection, "create_index", "collection") },
+        unsafe { read_str(name, "create_index", "name") },
+        unsafe { read_str(field, "create_index", "field") },
+    ) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+
+    match db
+        .inner
+        .create_index(&coll, &nm, &f, unique != 0, sparse != 0)
+    {
+        Ok(()) => ok_value(&nm),
+        Err(e) => err_result(set_error("create_index", &e)),
+    }
+}
+
+/// 创建复合索引(含方向)。
+///
+/// - `fields_json`:`["a","b"]`
+/// - `directions_json`:`[1,-1]`(可传 NULL,等价于全升序)
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_create_index_composite(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+    name: *const c_char,
+    fields_json: *const c_char,
+    directions_json: *const c_char,
+    unique: u8,
+    sparse: u8,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "create_index_composite",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let (Some(coll), Some(nm), Some(fields_text)) = (
+        unsafe { read_str(collection, "create_index_composite", "collection") },
+        unsafe { read_str(name, "create_index_composite", "name") },
+        unsafe { read_str(fields_json, "create_index_composite", "fields_json") },
+    ) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+
+    let fields: Vec<String> = match serde_json::from_str(&fields_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return err_result(set_error_msg(
+                "create_index_composite",
+                ErrorCode::InvalidDocument,
+                &format!("fields_json 必须是字符串数组: {}", e),
+            ));
+        }
+    };
+    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+
+    // 方向可省略 → 全升序
+    let directions: Vec<i8> = if directions_json.is_null() {
+        vec![1; field_refs.len()]
+    } else {
+        let Some(text) = (unsafe { read_str(directions_json, "create_index_composite", "dirs") })
+        else {
+            return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+        };
+        match serde_json::from_str::<Vec<i64>>(&text) {
+            Ok(v) => v.into_iter().map(|n| if n < 0 { -1 } else { 1 }).collect(),
+            Err(e) => {
+                return err_result(set_error_msg(
+                    "create_index_composite",
+                    ErrorCode::InvalidDocument,
+                    &format!("directions_json 必须是整数数组: {}", e),
+                ));
+            }
+        }
+    };
+
+    match db.inner.create_index_with_directions(
+        &coll,
+        &nm,
+        &field_refs,
+        &directions,
+        unique != 0,
+        sparse != 0,
+    ) {
+        Ok(()) => ok_value(&nm),
+        Err(e) => err_result(set_error("create_index_composite", &e)),
+    }
+}
+
+/// 列出集合的索引定义(返回 JSON 数组字符串,放在 `value` 里)。
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_list_indexes(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "list_indexes",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let Some(coll) = (unsafe { read_str(collection, "list_indexes", "collection") }) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+
+    match db.inner.list_indexes(&coll) {
+        Ok(defs) => {
+            let items: Vec<serde_json::Value> = defs
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "name": d.name,
+                        "fields": d.fields,
+                        "directions": d.directions,
+                        "unique": d.unique,
+                        "sparse": d.sparse,
+                    })
+                })
+                .collect();
+            ok_value(&serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string()))
+        }
+        Err(e) => err_result(set_error("list_indexes", &e)),
+    }
+}
+
+/// 删除索引。
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_drop_index(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+    name: *const c_char,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "drop_index",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let (Some(coll), Some(nm)) = (
+        unsafe { read_str(collection, "drop_index", "collection") },
+        unsafe { read_str(name, "drop_index", "name") },
+    ) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+
+    match db.inner.drop_index(&coll, &nm) {
+        // affected = 1 表示确实删了,0 表示本来就不存在
+        Ok(dropped) => ok_value(if dropped { "true" } else { "false" }),
+        Err(e) => err_result(set_error("drop_index", &e)),
+    }
+}
+
+/// 生成查询计划(用于判断是否命中索引)。
+///
+/// 返回 JSON 字符串(放在 `value` 里),形如
+/// `{"stage":"IXSCAN","indexName":"age_1",...}`。
+/// `sort_json` 可传 NULL。
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_explain(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+    filter_json: *const c_char,
+    sort_json: *const c_char,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "explain",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let (Some(coll), Some(filter_text)) = (
+        unsafe { read_str(collection, "explain", "collection") },
+        unsafe { read_str(filter_json, "explain", "filter_json") },
+    ) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+
+    let filter: serde_json::Value = match serde_json::from_str(&filter_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return err_result(set_error_msg(
+                "explain",
+                ErrorCode::InvalidFilter,
+                &format!("filter JSON 非法: {}", e),
+            ));
+        }
+    };
+
+    // 排序可选
+    let sort = if sort_json.is_null() {
+        None
+    } else {
+        let Some(text) = (unsafe { read_str(sort_json, "explain", "sort_json") }) else {
+            return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+        };
+        match crate::query::SortSpec::from_value(
+            &serde_json::from_str(&text).unwrap_or(serde_json::Value::Null),
+        ) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return err_result(set_error_msg(
+                    "explain",
+                    ErrorCode::InvalidSort,
+                    &e.to_string(),
+                ));
+            }
+        }
+    };
+
+    match db.inner.explain(&coll, &filter, sort.as_ref()) {
+        Ok(plan) => ok_value(&serde_json::to_string(&plan).unwrap_or_else(|_| "{}".to_string())),
+        Err(e) => err_result(set_error("explain", &e)),
+    }
+}
+
+/// 分页查询:同时返回**匹配总数**与**当页文档**。
+///
+/// - `affected` = 匹配总数(不受 skip/limit 影响)
+/// - `docs` = 当页文档
+///
+/// 相比「先 count 再 find」省掉一次全表扫描。
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_find_page(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+    filter_json: *const c_char,
+    sort_json: *const c_char,
+    fields_json: *const c_char,
+    skip: u64,
+    limit: u64,
+    limit_is_null: u8,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "find_page",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let (Some(coll), Some(filter_text)) = (
+        unsafe { read_str(collection, "find_page", "collection") },
+        unsafe { read_str(filter_json, "find_page", "filter_json") },
+    ) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+
+    let filter_json: serde_json::Value = match serde_json::from_str(&filter_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return err_result(set_error_msg(
+                "find_page",
+                ErrorCode::InvalidFilter,
+                &format!("filter JSON 非法: {}", e),
+            ));
+        }
+    };
+    let filter = match crate::query::Filter::from_value(&filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            return err_result(set_error_msg(
+                "find_page",
+                ErrorCode::InvalidFilter,
+                &e.to_string(),
+            ));
+        }
+    };
+
+    let sort = if sort_json.is_null() {
+        None
+    } else {
+        let Some(text) = (unsafe { read_str(sort_json, "find_page", "sort_json") }) else {
+            return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+        };
+        match crate::query::SortSpec::from_value(
+            &serde_json::from_str(&text).unwrap_or(serde_json::Value::Null),
+        ) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return err_result(set_error_msg(
+                    "find_page",
+                    ErrorCode::InvalidSort,
+                    &e.to_string(),
+                ));
+            }
+        }
+    };
+
+    let projection = if fields_json.is_null() {
+        None
+    } else {
+        let Some(text) = (unsafe { read_str(fields_json, "find_page", "fields_json") }) else {
+            return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+        };
+        match crate::query::Projection::from_value(
+            &serde_json::from_str(&text).unwrap_or(serde_json::Value::Null),
+        ) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                return err_result(set_error_msg(
+                    "find_page",
+                    ErrorCode::InvalidProjection,
+                    &e.to_string(),
+                ));
+            }
+        }
+    };
+
+    match db.inner.find_page_total(
+        &coll,
+        &filter,
+        sort.as_ref(),
+        skip as usize,
+        (limit_is_null == 0).then_some(limit as usize),
+        projection.as_ref(),
+    ) {
+        Ok((total, docs)) => ok_docs(&docs, total as u64),
+        Err(e) => err_result(set_error("find_page", &e)),
+    }
+}
+
 /// 把字符串列表打包成结果(每个元素一个 JSON 字符串切片)。
 fn ok_strings(items: &[String]) -> *mut NodbliteResult {
     let owned: Vec<CString> = items
@@ -911,7 +1280,7 @@ fn ok_strings(items: &[String]) -> *mut NodbliteResult {
     std::mem::forget(slices);
     std::mem::forget(owned);
     Box::into_raw(Box::new(NodbliteResult {
-        code: NOSQLITE_OK,
+        code: NODBLITE_OK,
         count,
         affected: 0,
         docs: ptr,

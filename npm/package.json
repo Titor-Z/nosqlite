@@ -1,0 +1,37 @@
+{
+  "name": "nodblite",
+  "version": "0.1.0",
+  "description": "单文件 NoSQL 文档数据库 —— MongoDB 风格查询,零配置,无需服务进程",
+  "keywords": ["database", "nosql", "embedded", "document", "mongodb", "sqlite"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Titor-Z/nosqlite"
+  },
+  "homepage": "https://titor-z.github.io/nosqlite/",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "prebuilds", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
