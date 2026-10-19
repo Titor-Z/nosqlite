@@ -262,6 +262,7 @@ nosqlite> .import users backup.jsonl
 ## 内存与持久化语义
 
 - **内存**:除旧接口 `scan`(全量物化,标注 deprecated)外,`find/count/update/delete` 均流式处理;带排序的查询用 `find_page`(两遍法:先收集「排序键 + _id」排序,再按主键回取页内文档),内存 O(n × 排序键大小),与命中文档大小无关。
+- **流式扫描会话**:`Database::scan()` 返回持有读事务的游标(`next_batch(n)` 从上次位置续取,内存 O(一批)),是索引扫描与 wire 协议真流式游标的基础;会话期间数据为一致快照(MVCC)。
 - **持久化**:每次写事务提交都会落盘(redb 默认 `Durability::Immediate`)。**不提供**关闭落盘的选项 —— 防止静默丢写入;需要吞吐时用 `insert_many` / 批量 `update` / 批量 `delete` 把 N 次提交合并为 1 次。
 - **批量写的原子性**:`insert_many`、`update`(多命中)与 `delete`(多命中)都在单个写事务内完成 —— 要么全部生效,要么整体回滚。代价是收集阶段内存为 O(命中数)。
 - **崩溃恢复**:单文件 B+树(redb),进程崩溃后文件保持一致。
@@ -270,7 +271,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 372 例测试
+cargo test --all-targets     # 382 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

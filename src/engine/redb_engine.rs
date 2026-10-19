@@ -33,7 +33,7 @@ const KEY_VERSION: &str = "version";
 ///
 /// key = `集合名(0x00)doc_id` 字节拼接,value = 文档 JSON bytes。
 /// redb B+树天然按 key 有序,集合内 doc_id 有序即为主键索引。
-const DOCS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("nosqlite_docs");
+pub(crate) const DOCS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("nosqlite_docs");
 /// 集合名与 doc_id 的分隔符(集合名不允许包含该字节)。
 const KEY_SEPARATOR: u8 = 0x00;
 
@@ -248,47 +248,23 @@ impl Storage for RedbEngine {
         collection: &str,
         visit: &mut dyn FnMut(&str, &[u8]) -> bool,
     ) -> Result<(), StorageError> {
-        // 1. 校验集合名
-        validate_collection(collection)?;
-
-        // 2. 构造前缀 = 集合名(0x00),集合内所有文档的 key 均以该前缀开头
-        let prefix = build_doc_key(collection, "");
-
-        // 3. 读取事务 + 打开文档表
-        let read_tx = self
-            .db
-            .begin_read()
-            .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
-        let table = match read_tx.open_table(DOCS_TABLE) {
-            Ok(table) => table,
-            // 文档表尚不存在(从未插入过文档)→ 该集合为空
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
-            Err(e) => return Err(StorageError::Other(format!("打开文档表失败: {}", e))),
-        };
-
-        // 4. 从前缀处开始迭代,B+树按 key 有序,集合内 doc_id 即按序返回
-        let range = table
-            .range(prefix.as_slice()..)
-            .map_err(|e| StorageError::Other(format!("遍历文档表失败: {}", e)))?;
-        for entry in range {
-            let (key, value) =
-                entry.map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
-            let key_bytes = key.value();
-            // 不再是该集合前缀 → 该集合文档已遍历完毕
-            if !key_bytes.starts_with(&prefix) {
-                break;
+        // M22 起内部改为基于 scan_session:保持回调语义,但复用同一套流式实现,
+        // 避免两份几乎相同的遍历代码各自演化。
+        const BATCH: usize = 1024;
+        let mut session = self.scan_session(collection)?;
+        loop {
+            let batch = session.next_batch(BATCH)?;
+            if batch.is_empty() {
+                return Ok(());
             }
-            // key = 前缀 + doc_id
-            let doc_id = String::from_utf8_lossy(&key_bytes[prefix.len()..]).into_owned();
-            // 回调返回 false → 提前终止(后续文档不再读取)
-            if !visit(&doc_id, value.value()) {
-                break;
+            for (doc_id, bytes) in &batch {
+                if !visit(doc_id, bytes) {
+                    return Ok(());
+                }
             }
         }
-        Ok(())
     }
 
-    /// 按主键读取单条文档:直接用 redb 主键 `get`,O(log n),不经全表扫描。
     fn get(&self, collection: &str, doc_id: &str) -> Result<Option<Vec<u8>>, StorageError> {
         // 1. 校验集合名
         validate_collection(collection)?;
@@ -310,6 +286,33 @@ impl Storage for RedbEngine {
             .get(&key[..])
             .map_err(|e| StorageError::Other(format!("读取文档失败: {}", e)))?;
         Ok(value.map(|guard| guard.value().to_vec()))
+    }
+
+    fn scan_session(
+        &self,
+        collection: &str,
+    ) -> Result<Box<dyn super::storage::ScanSession>, StorageError> {
+        // 1. 校验集合名
+        validate_collection(collection)?;
+
+        // 2. 构造前缀 = 集合名(0x00)
+        let prefix = build_doc_key(collection, "");
+
+        // 3. 开启读事务;redb 的 Range 自持读事务,故可安全地跨调用存活
+        let read_tx = self
+            .db
+            .begin_read()
+            .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
+
+        match super::scan::open_range(&read_tx, &prefix)? {
+            Some(iter) => Ok(Box::new(super::scan::RedbScanSession::new(
+                prefix, read_tx, iter,
+            ))),
+            // 文档表不存在(空库)→ 返回一个立即耗尽的会话
+            None => Ok(Box::new(super::scan::RedbScanSession::empty(
+                prefix, read_tx,
+            ))),
+        }
     }
 
     /// 单事务批量插入:所有文档在同一写事务内写入并一次性提交。

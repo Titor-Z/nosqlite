@@ -11,7 +11,9 @@
 //! - 打开时校验魔数串与格式版本,确保文件确实是 nosqlite 创建。
 
 pub mod redb_engine;
+pub mod scan;
 pub mod storage;
 
 pub use redb_engine::RedbEngine;
-pub use storage::{Storage, StorageError};
+pub use scan::RedbScanSession;
+pub use storage::{ScanSession, Storage, StorageError};

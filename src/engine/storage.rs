@@ -70,6 +70,23 @@ impl From<std::io::Error> for StorageError {
     }
 }
 
+/// 流式扫描会话(M22)。
+///
+/// 由 [`Storage::scan_session`] 创建。调用方反复调用 [`next_batch`](Self::next_batch)
+/// 取数据,直到返回空 `Vec`(已耗尽)。
+///
+/// 会话**自持有**底层读事务,不借用 `Database`,因此调用方可以在持有游标时
+/// 继续使用或移动数据库句柄。
+///
+/// 不直接返回 Rust `Iterator` 的原因:该接口还要同时服务 C ABI 与 MongoDB wire 协议,
+/// "从当前位置取一批" 能直接映射成两边的游标语义。
+pub trait ScanSession {
+    /// 推进并返回下一批 `(doc_id, 文档字节)`,最多 `max` 条。
+    ///
+    /// 返回空 `Vec` 表示已耗尽;耗尽后再调用仍返回空(幂等)。
+    fn next_batch(&mut self, max: usize) -> Result<Vec<(String, Vec<u8>)>, StorageError>;
+}
+
 /// 存储引擎抽象接口。
 ///
 /// 后期自研引擎只需实现本 trait,即可无缝替换 redb。
@@ -119,6 +136,18 @@ pub trait Storage {
         collection: &str,
         visit: &mut dyn FnMut(&str, &[u8]) -> bool,
     ) -> Result<(), StorageError>;
+
+    /// 开始一次**流式扫描会话**(M22 新增)。
+    ///
+    /// 与 [`Storage::for_each`] 的区别:会话**持有读事务与 B+树迭代器**,
+    /// 可以跨多次调用持续推进([`crate::engine::RedbScanSession::next_batch`]),
+    /// 因此能做到:
+    ///
+    /// - 游标真流式(wire 协议的 `getMore` 无需缓存整个结果集);
+    /// - **索引扫描**可行(从索引取一批 doc_id → 回表读文档,本来就要跨调用)。
+    ///
+    /// 内存 O(一批),不随集合大小增长。会话期间数据是一致快照(MVCC)。
+    fn scan_session(&self, collection: &str) -> Result<Box<dyn ScanSession>, StorageError>;
 
     /// 单事务批量插入(M11 新增,一次提交摊薄 fsync 成本)。
     ///

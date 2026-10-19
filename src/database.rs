@@ -103,6 +103,32 @@ impl From<SortError> for DatabaseError {
     }
 }
 
+/// 流式扫描游标(M22)。
+///
+/// 由 [`Database::scan`] 创建。每次 [`next_batch`](Self::next_batch) 从上次位置继续,
+/// 返回空 `Vec` 表示耗尽。
+pub struct ScanCursor {
+    /// 底层存储会话(自持有读事务,不借用 `Database`)。
+    session: Box<dyn crate::engine::ScanSession>,
+}
+
+impl ScanCursor {
+    /// 取下一批文档(最多 `max` 条),空表示已耗尽。
+    pub fn next_batch(&mut self, max: usize) -> Result<Vec<(String, Vec<u8>)>, DatabaseError> {
+        Ok(self.session.next_batch(max)?)
+    }
+
+    /// 取下一批并反序列化为文档,空表示已耗尽。
+    pub fn next_docs(&mut self, max: usize) -> Result<Vec<Map<String, Value>>, DatabaseError> {
+        let batch = self.session.next_batch(max)?;
+        let mut out = Vec::with_capacity(batch.len());
+        for (_, bytes) in batch {
+            out.push(Document::from_bytes(&bytes)?.as_map().clone());
+        }
+        Ok(out)
+    }
+}
+
 /// upsert 的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpsertResult {
@@ -388,6 +414,18 @@ impl Database {
     }
 
     // ==================== M11 新增:主键直接寻址与批量写入 ====================
+
+    /// 开一个**流式扫描会话**(M22 新增,内存 O(一批))。
+    ///
+    /// 与 [`find`](Self::find) 的区别:会话持有读事务,可跨多次
+    /// [`ScanCursor::next_batch`] 推进,**不把整个集合读进内存**。
+    ///
+    /// 这是索引扫描与 wire 协议真流式游标的基础设施。
+    /// 会话期间数据是一致快照(MVCC 语义)。
+    pub fn scan(&self, collection: &str) -> Result<ScanCursor, DatabaseError> {
+        let session = self.engine.scan_session(collection)?;
+        Ok(ScanCursor { session })
+    }
 
     /// 按主键读取单条文档(M11 新增)。
     ///

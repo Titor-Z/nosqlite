@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.4.0 M22 完成 —— `ScanSession` 真流式(会话自持读事务,`next_batch` 续取);`for_each` 改为其封装;+10 例共 **382 例全绿**。同时确立定位:**部署形态学 SQLite,数据模型/索引/游标语义 100% 学 MongoDB**。参见 [taolun #47](#47-v040-m22-设计scansession活游标--索引总方案) / [taolun #48](#48-v040-m22-执行scansession活游标) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.3.1 M21 完成 —— 真实游标:`getMore`/`killCursors` 落地,`batchSize` 分批生效,`limit` 语义修正(只约束总结果数);`aggregate` 同步接入游标;Go 驱动 13 项全通过,总 **372 例全绿**。参见 [taolun #45](#45-v031-m21-设计真实游标getmore--killcursors) / [taolun #46](#46-v031-m21-执行真实游标getmore--killcursors) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.3.0 M20 完成(阶段 2) —— **nosqlite-server 落地**:MongoDB wire 协议(OP_MSG + BSON 编解码 + 命令分发),**Go 官方驱动 9 项验收全通过**;367 例全绿。踩坑三条(section 1 / cursor.id 必须 int64 / OP_REPLY 长度)已写入认知修正。参见 [taolun #43](#43-v030-m20-设计阶段-2--nosqlite-servermongodb-wire-协议) / [taolun #44](#44-v030-m20-执行阶段-2--nosqlite-servermongodb-wire-协议) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.2 M19 完成(阶段 1.5) —— C ABI 收尾:新增 `open_ex`(兑现 `struct_size` 版本化)、`release.yml` 产出 `nosqlite-ffi-<platform>` 库包(动态库+静态库+头文件+SHA256)、README 补「获取库」「各语言接入」;**354 例全绿**。参见 [taolun #41](#41-v022-m19-设计阶段-15--c-abi-收尾可用性而非功能) / [taolun #42](#42-v022-m19-执行阶段-15--c-abi-收尾) / [项目进度-已完成](#已完成)。
@@ -773,6 +774,31 @@
   - Rust +5 例游标单测(分批耗尽、kill、单批内 id=0、超批 id≠0、`batchSize=0` 钳制)。
   - 合计 **372 例全绿**,Go 端 13 项全通过,clippy 零警告。
 
+### 47. v0.4.0 M22 设计:ScanSession(活游标)+ 索引总方案
+
+- **定位澄清**(见「双形态路线」):部署形态学 SQLite,数据模型/索引/游标语义 100% 学 MongoDB。
+- **M22:ScanSession** —— 引擎内部真流式,是 SQLite `sqlite3_stmt` 的等价物。
+  - 现状缺陷:`Storage::for_each` 是回调式,回调结束读事务即关闭 → 游标只能缓存整个结果集;索引扫描(索引取 id → 回表)也无法跨调用进行。
+  - 新增 `Storage::scan_session(collection) -> Box<dyn ScanSession + '_>`;`ScanSession::next_batch(max)` **从当前迭代器位置继续**,不重扫。
+  - **不返回 `Iterator` 而返回 `next_batch(max)`**:C ABI 拿不了 Rust 迭代器;`next_batch` 能直接映射成 C 游标与 wire 的 `getMore`;也避免 redb guard 的生命周期体操。
+  - `for_each` 保留(内部改用 scan_session 实现),确保 372 例测试不破。
+  - 对外接口本里程碑**不暴露**,纯内部重构,测试全绿后再作为后续出口。
+- **索引总方案(M23–M25,本次只定框架不实现)**:
+  - 索引表 `(集合名\0字段路径\0编码值\0doc_id) -> ()`,独立 B+树,与 MongoDB 的「独立索引」结构一致。
+  - **类型序编码**:把 MongoDB/BSON 类型序落成字节序 —— 缺失 < null < number < string < object/array < bool < date。**这是我们比较语义(M13)的直接投影,不是自创**;索引序与查询比较序必须完全一致,否则会静默漏数据。
+  - **multikey 从第一天进模型**:索引条目结构即为 `(集合, 字段路径, 编码值, doc_id)`;数组字段展开为多条条目只是「一次插入写 N 条」,存储格式不变。M23 可先只处理标量,M24 加查询时不改格式。
+  - **编码版本化**:索引表内记录 `encoding_version`;未来升级编码时检测旧版本自动重建(重建期间回退全表扫,数据不丢)。现在做成本为 0,以后补要处理存量。
+  - 游标必须有**超时自动清理**(对齐 MongoDB `cursorTimeoutMillis` 默认 10 分钟),防止客户端崩溃后游标占内存至上限。
+
+### 48. v0.4.0 M22 执行:ScanSession(活游标)
+
+- **`Storage::scan_session(collection) -> Box<dyn ScanSession>`**:会话持有 redb 读事务与 B+树迭代器,`next_batch(max)` **从上次位置继续**,不重扫。
+- **关键设计决策(被编译器逼出来的,值得记住)**:会话一开始设计成 `Box<dyn ScanSession + '_>` 借用 `&Database` → 借用检查直接否决:用户持有游标时无法再移动/释放 `Database`,可用性极差。改为**会话自持有 `redb::ReadTransaction`**(redb 的 `Range<'static>` 本就自持读事务),`ScanCursor` 因此**没有生命周期参数**。这是"现在就该设计"的最好例证 —— 接口形态一旦定错,后面索引扫描和 C ABI 出口都要跟着返工。
+- `for_each` 内部改为基于 `scan_session` 实现(每批 1024 条):消除两份几乎相同的遍历代码,且**回调语义完全不变**,372 例既有测试零修改通过。
+- 新增 `Database::scan()` → `ScanCursor { next_batch / next_docs }`,**纯内部能力,暂不对外暴露**(C ABI 与 wire 层留到 M23 之后接入)。
+- `RedbScanSession` 为 `empty()` 场景(表不存在)保留读事务,行为一致。
+- 测试:新增 `tests/scan_session.rs` **10 例** —— 分批恰好覆盖全量无重复遗漏、`next_docs` 与 `find` 结果一致、耗尽幂等、空集合、`max=0` 不推进、集合隔离、**会话快照隔离(MVCC:会话中途插入不影响已开会话,新会话能看到)**、500 条小批次、主键有序、大文档不截断。合计 **382 例全绿**,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -786,8 +812,19 @@
 
 ### 双形态路线(v0.2 起的总纲)
 
-> 定位:**端侧像 SQLite(嵌入式),服务端对 MongoDB 生态透明(可替换 mongodb-server)。**
-> 两者共用同一套查询语义,这是本项目区别于任何单一形态产品的立足点。
+> 定位:**单文件嵌入式 + MongoDB 语义 100% 兼容。**
+>
+> **关键澄清(v0.4 讨论确立)**:「像 SQLite」只约束**部署形态**,不约束**数据模型与工程取舍**。
+>
+> | 维度 | 学谁 | 说明 |
+> |---|---|---|
+> | 部署形态(单文件 / 进程内 / 零配置) | **SQLite** | 这是「像 SQLite」的唯一含义 |
+> | 数据模型 / 查询语义 / 索引模型 / 游标 / 协议 | **MongoDB** | 目标 100% 对齐,**不得**因为「嵌入式」而降级 |
+> | 引擎内部实现手法(如持有活游标的 `stmt` 式扫描) | 可借 SQLite 工程手法 | 只是实现手段,不得改变对外语义 |
+>
+> **nosqlite 是 SQLite 在文档领域的对立面竞争者,不是「另一款 SQLite」。**
+> 因此索引必须按 MongoDB 的模型做(multikey、复合索引前缀原则、BSON 类型序),
+> 绝不能采用关系型引擎的取舍。
 
 - **形态 A —— 嵌入式(C ABI)**:`.nodb` 由宿主进程独占,像 SQLite 一样被任何语言**进程内**调用。
   - 适用:本地 GUI/App(Electron/Tauri/Go/Wails)、CLI 工具、桌面软件。
@@ -815,7 +852,10 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **阶段 3(未排期)**:二级索引(非 `_id` 查询全表扫)、语义向 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
+- **M23(下一里程碑)**:索引框架 —— 类型序编码 + 独立索引表 + 写路径维护(含 multikey 模型)+ 编码版本化。
+- **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
+- **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
+- **阶段 3**:语义向 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - **语义长期目标**:向最新 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - crates.io 发布:干跑已通过,**按用户决定暂缓**(GitHub Release v0.1.0 已发);待需要 crates.io 分发时 `cargo login` 后 `cargo publish` 即可。
 - CMS 项目启动后进入维护模式:真实场景验收(CMS 作为第一个真实用户)优先于新功能。
@@ -835,6 +875,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M22(v0.4.0):ScanSession 真流式(活游标,自持读事务);382 例全绿。
 - M21(v0.3.1):真实游标 —— `getMore`/`killCursors`/`batchSize`,`limit` 语义修正;372 例全绿。
 - M20(v0.3.0,阶段 2):nosqlite-server(MongoDB wire 协议),Go 官方驱动验收通过;367 例全绿。
 - M19(v0.2.2,阶段 1.5):C ABI 收尾 —— `open_ex` + 三平台库产物 + 分发文档;354 例全绿。
