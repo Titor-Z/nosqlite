@@ -196,7 +196,9 @@ coll.InsertOne(ctx, bson.M{"name": "张三", "age": 30})
 
 验收方式:`tests/go_compat/` 用 **Go 官方驱动 `mongo-driver/v2`** 跑 9 项端到端测试(插入/查询/游标/更新/删除/findAndModify/upsert/Date/主键冲突)。
 
-尚未支持:认证、副本集、分片、changeStream、真实游标分批(`getMore`,当前一次返回)。
+游标:支持 `batchSize` 分批与 `getMore`/`killCursors`,大结果集不会一次性全部返回。
+
+尚未支持:认证、副本集、分片、changeStream。
 
 ## 快速上手
 
@@ -268,7 +270,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 367 例测试
+cargo test --all-targets     # 372 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

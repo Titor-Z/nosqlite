@@ -342,3 +342,153 @@ func TestDuplicateKey(t *testing.T) {
 		t.Fatalf("错误应为 DuplicateKey,实际: %v", err)
 	}
 }
+
+// 真实游标:batchSize 分批 + 多次 getMore,驱动会自动发 getMore。
+func TestCursorBatching(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("batched")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	// 120 条 > 首批 101 条,必然触发 getMore
+	docs := make([]interface{}, 0, 120)
+	for i := 0; i < 120; i++ {
+		docs = append(docs, bson.M{"n": i})
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	// 小 batchSize 强制多次 getMore
+	cur, err := coll.Find(ctx, bson.M{},
+		options.Find().SetSort(bson.D{bson.E{Key: "n", Value: 1}}).SetBatchSize(7))
+	if err != nil {
+		t.Fatalf("Find 失败: %v", err)
+	}
+	defer cur.Close(ctx)
+
+	count := 0
+	lastN := int32(-1)
+	for cur.Next(ctx) {
+		var doc bson.M
+		if err := cur.Decode(&doc); err != nil {
+			t.Fatalf("Decode 失败: %v", err)
+		}
+		n, _ := doc["n"].(int32)
+		if int32(lastN) >= 0 && n != lastN+1 {
+			t.Fatalf("顺序不连续: %d 之后是 %d", lastN, n)
+		}
+		lastN = n
+		count++
+	}
+	if err := cur.Err(); err != nil {
+		t.Fatalf("游标遍历出错: %v", err)
+	}
+	if count != 120 {
+		t.Fatalf("应遍历 120 条,实际 %d", count)
+	}
+}
+
+// 游标提前关闭(killCursors)。
+func TestCursorEarlyClose(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("closeme")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	docs := make([]interface{}, 0, 200)
+	for i := 0; i < 200; i++ {
+		docs = append(docs, bson.M{"n": i})
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	cur, err := coll.Find(ctx, bson.M{}, options.Find().SetBatchSize(5))
+	if err != nil {
+		t.Fatalf("Find 失败: %v", err)
+	}
+	// 只读 3 条就关闭 → 触发 killCursors,不应报错
+	for i := 0; i < 3 && cur.Next(ctx); i++ {
+	}
+	if err := cur.Close(ctx); err != nil {
+		t.Fatalf("提前关闭游标失败: %v", err)
+	}
+}
+
+// 聚合管道结果同样走游标。
+func TestAggregateCursor(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("aggr")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	docs := make([]interface{}, 0, 150)
+	for i := 0; i < 150; i++ {
+		docs = append(docs, bson.M{"n": i})
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	cur, err := coll.Aggregate(ctx, bson.A{
+		bson.M{"$match": bson.M{"n": bson.M{"$gte": 100}}},
+		bson.M{"$sort": bson.M{"n": 1}},
+	}, options.Aggregate().SetBatchSize(10))
+	if err != nil {
+		t.Fatalf("Aggregate 失败: %v", err)
+	}
+	defer cur.Close(ctx)
+
+	var results []bson.M
+	if err := cur.All(ctx, &results); err != nil {
+		t.Fatalf("聚合遍历失败: %v", err)
+	}
+	if len(results) != 50 {
+		t.Fatalf("应返回 50 条,实际 %d", len(results))
+	}
+}
+
+// limit 约束结果总数,不受 batchSize 影响。
+func TestLimitWithBatchSize(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("limited")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	docs := make([]interface{}, 0, 50)
+	for i := 0; i < 50; i++ {
+		docs = append(docs, bson.M{"n": i})
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	cur, err := coll.Find(ctx, bson.M{},
+		options.Find().SetSort(bson.D{bson.E{Key: "n", Value: 1}}).
+			SetLimit(12).SetBatchSize(5))
+	if err != nil {
+		t.Fatalf("Find 失败: %v", err)
+	}
+	defer cur.Close(ctx)
+
+	var results []bson.M
+	if err := cur.All(ctx, &results); err != nil {
+		t.Fatalf("遍历失败: %v", err)
+	}
+	if len(results) != 12 {
+		t.Fatalf("limit=12 应返回 12 条,实际 %d", len(results))
+	}
+}

@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.3.1 M21 完成 —— 真实游标:`getMore`/`killCursors` 落地,`batchSize` 分批生效,`limit` 语义修正(只约束总结果数);`aggregate` 同步接入游标;Go 驱动 13 项全通过,总 **372 例全绿**。参见 [taolun #45](#45-v031-m21-设计真实游标getmore--killcursors) / [taolun #46](#46-v031-m21-执行真实游标getmore--killcursors) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.3.0 M20 完成(阶段 2) —— **nosqlite-server 落地**:MongoDB wire 协议(OP_MSG + BSON 编解码 + 命令分发),**Go 官方驱动 9 项验收全通过**;367 例全绿。踩坑三条(section 1 / cursor.id 必须 int64 / OP_REPLY 长度)已写入认知修正。参见 [taolun #43](#43-v030-m20-设计阶段-2--nosqlite-servermongodb-wire-协议) / [taolun #44](#44-v030-m20-执行阶段-2--nosqlite-servermongodb-wire-协议) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.2 M19 完成(阶段 1.5) —— C ABI 收尾:新增 `open_ex`(兑现 `struct_size` 版本化)、`release.yml` 产出 `nosqlite-ffi-<platform>` 库包(动态库+静态库+头文件+SHA256)、README 补「获取库」「各语言接入」;**354 例全绿**。参见 [taolun #41](#41-v022-m19-设计阶段-15--c-abi-收尾可用性而非功能) / [taolun #42](#42-v022-m19-执行阶段-15--c-abi-收尾) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.2.1 M18 完成(阶段 1) —— **C ABI 落地**:`src/ffi.rs` + `include/nosqlite.h`,产出 cdylib/staticlib;骨架照搬 SQLite(不透明句柄 + 错误码 + 游标),现代化三点(arena 结果 / 结构化错误 / 版本化 options);真实 C 程序冒烟 + Python ctypes 实证;**354 例全绿**。参见 [taolun #39](#39-v021-m18-设计阶段-1--nosqlite-ffic-abi) / [taolun #40](#40-v021-m18-执行阶段-1--nosqlite-ffic-abi) / [项目进度-已完成](#已完成)。
@@ -735,6 +736,43 @@
   - 合计 **367 例全绿**,clippy 零警告。
 - 未做(留待后续):认证、副本集、分片、changeStream、真实游标(`getMore` 分批,当前一次性返回并置 `id=0`)、完整 `$group` 累加器、索引。
 
+### 45. v0.3.1 M21 设计:真实游标(`getMore` / `killCursors`)
+
+- 现状缺陷:阶段 2 的 `find` 一次性返回全部结果并把 `cursor.id` 置 0。后果:
+  - 大结果集会**一次性全部读进内存**(与 M11 花大力气消除的 O(集合大小) 目标相悖);
+  - 驱动的 `batchSize` 只能靠 `limit` 模拟,语义不准;
+  - `getMore`/`killCursors` 是空实现,驱动真发 `getMore` 时会拿到空结果。
+- 设计:
+  - **服务端维护游标注册表**:`HashMap<i64, CursorState>`,进程级共享(`Mutex`),游标 ID 为自增 i64(必须 > 0,0 表示"已耗尽")。
+  - `CursorState`:集合名 + 剩余文档列表 + 已读偏移 + 投影/排序参数。
+  - **简化但仍正确的实现**:`find` 时完成过滤+排序+投影,把**结果集**存在游标里,按 `batchSize` 分批返回。这样:
+    - 驱动侧语义正确(`getMore` 能继续取、`batchSize` 生效、`id` 非 0);
+    - 内存上限是「本次查询结果集」,而非整个集合 —— 比现状严格更好;
+    - 不触碰 `Storage` 抽象。
+  - 真正的「边扫边吐」需要可持有的迭代器(会动 `Storage`),留到有明确内存压力时再做。
+  - `getMore: {getMore: <id>, collection, batchSize}` → 返回下一批;耗尽时 `id: 0` 并移除游标。
+  - `killCursors: {killCursors: "<coll>", cursors: [<id>...]}` → 删除并回 `cursorsKilled/cursorsNotFound`。
+  - 游标在连接断开时不强制清理(简化),但提供上限保护:单进程游标数超阈值(如 1000)时拒绝新游标,避免泄漏打爆内存。
+- `aggregate` 同样接入游标(输出管道结果)。
+- 验收:Go 驱动 `SetBatchSize` 分页遍历、`getMore` 多次调用、结果数量与内容正确。
+
+### 46. v0.3.1 M21 执行:真实游标(`getMore` / `killCursors`)
+
+- **游标注册表**:`CursorRegistry`(进程级 `OnceLock`),`Mutex<HashMap<i64, CursorState>>` + `AtomicI64` 自增 ID(始终 > 0);上限 1000 个,超限返回 `InternalError` 而非默默泄漏。
+- **`find` 语义修正**:
+  - `limit` 现在只约束**结果总数**,不再被 `batchSize` 夹取;
+  - `batchSize` 只决定**首批条数**(缺省 101,与 MongoDB 一致);
+  - 结果集超过一批时注册游标并返回非 0 ID,否则 `id = 0`(不注册)。
+  - 顺带修掉阶段 2 的语义错误:之前把 `min(limit, batchSize)` 当作 limit,导致 `limit=12 & batchSize=5` 只返回 5 条。已由 Go 测试 `TestLimitWithBatchSize` 锁定。
+- **`getMore`**:按 `batchSize` 续取;取完最后一批时注册表移除游标并回 `id = 0`;游标不存在回 `CursorNotFound(43)`。
+- **`killCursors`**:逐个删除,回 `cursorsKilled` / `cursorsNotFound`(此前是空实现,驱动提前关游标时会拿不到反馈)。
+- **`aggregate` 接入游标**:支持 `cursor.batchSize`,大管道不再一次性全部返回。
+- **内存取舍(写进代码注释)**:游标保存的是**已过滤/排序/投影后的结果集**,不是底层迭代器。内存上限从「整个集合」降为「本次查询结果集」,比阶段 2 严格更好;真正的边扫边吐需要可持有的 `Storage` 迭代器,留到有明确内存压力时再做。
+- 测试:
+  - Go 驱动 +4 例:`TestCursorBatching`(120 条 + `batchSize=7`,强制多次 `getMore` 且校验顺序连续)、`TestCursorEarlyClose`(读 3 条即关,触发 `killCursors`)、`TestAggregateCursor`、`TestLimitWithBatchSize`。
+  - Rust +5 例游标单测(分批耗尽、kill、单批内 id=0、超批 id≠0、`batchSize=0` 钳制)。
+  - 合计 **372 例全绿**,Go 端 13 项全通过,clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -776,7 +814,7 @@
 
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
-- **阶段 2 已完成**(v0.3.0)。后续按需:真实游标(`getMore` 分批)、认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容。
+- **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
 - **阶段 3(未排期)**:二级索引(非 `_id` 查询全表扫)、语义向 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - **语义长期目标**:向最新 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
 - crates.io 发布:干跑已通过,**按用户决定暂缓**(GitHub Release v0.1.0 已发);待需要 crates.io 分发时 `cargo login` 后 `cargo publish` 即可。
@@ -797,6 +835,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M21(v0.3.1):真实游标 —— `getMore`/`killCursors`/`batchSize`,`limit` 语义修正;372 例全绿。
 - M20(v0.3.0,阶段 2):nosqlite-server(MongoDB wire 协议),Go 官方驱动验收通过;367 例全绿。
 - M19(v0.2.2,阶段 1.5):C ABI 收尾 —— `open_ex` + 三平台库产物 + 分发文档;354 例全绿。
 - M18(v0.2.1,阶段 1):C ABI(`nosqlite-ffi`)—— 句柄/错误码/游标 + arena 结果 + 结构化错误;真实 C 与 Python 双验证;354 例全绿。

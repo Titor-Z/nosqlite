@@ -3,11 +3,12 @@
 //! 连接模型:每个连接一个线程,共享同一个 `Arc<Database>`。
 //! `.nodb` 仍由本进程独占,因此 redb 的单写者约束天然满足。
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
@@ -19,6 +20,89 @@ use super::wire::{
     HEADER_LEN, OP_MSG, OP_QUERY, build_op_msg_response, build_op_reply, err_doc, ok_doc,
     parse_op_msg, parse_op_query,
 };
+
+/// 单个游标的状态。
+///
+/// 实现说明:这里保存**已经过滤/排序/投影后的结果集**,而不是底层迭代器。
+/// 代价是单个大查询的结果集仍在内存里,但:
+/// - 内存上限是「本次查询结果集」而非整个集合,比一次性物化严格更好;
+/// - 驱动侧语义完全正确(`getMore` 可续取、`batchSize` 生效、`id` 非 0)。
+///
+/// 真正的「边扫边吐」需要可持有的存储层迭代器,留到有明确内存压力时再做。
+#[derive(Debug)]
+struct CursorState {
+    /// 所属集合名。
+    collection: String,
+    /// 结果集(已排序/投影)。
+    docs: Vec<Map<String, Value>>,
+    /// 下一次返回的起始下标。
+    offset: usize,
+}
+
+/// 游标注册表(进程级共享)。
+struct CursorRegistry {
+    /// 游标 ID → 状态。
+    cursors: Mutex<HashMap<i64, CursorState>>,
+    /// ID 自增器(保证 > 0)。
+    next_id: AtomicI64,
+}
+
+impl CursorRegistry {
+    fn new() -> Self {
+        CursorRegistry {
+            cursors: Mutex::new(HashMap::new()),
+            next_id: AtomicI64::new(1),
+        }
+    }
+
+    /// 注册一个游标,返回其 ID;超过上限时返回 None(防止泄漏打爆内存)。
+    fn register(&self, collection: &str, docs: Vec<Map<String, Value>>) -> Option<i64> {
+        const MAX_CURSORS: usize = 1000;
+        let mut guard = self.cursors.lock().ok()?;
+        if guard.len() >= MAX_CURSORS {
+            return None;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        guard.insert(
+            id,
+            CursorState {
+                collection: collection.to_string(),
+                docs,
+                offset: 0,
+            },
+        );
+        Some(id)
+    }
+
+    /// 取下一批(最多 `batch_size` 条);耗尽或不存在时返回 None 表示游标结束。
+    fn next_batch(&self, id: i64, batch_size: usize) -> Option<(String, Vec<Map<String, Value>>)> {
+        let mut guard = self.cursors.lock().ok()?;
+        let state = guard.get_mut(&id)?;
+        let start = state.offset;
+        let end = (start + batch_size.max(1)).min(state.docs.len());
+        let batch: Vec<Map<String, Value>> = state.docs[start..end].to_vec();
+        state.offset = end;
+        let collection = state.collection.clone();
+        if end >= state.docs.len() {
+            guard.remove(&id);
+        }
+        Some((collection, batch))
+    }
+
+    /// 关闭游标,返回是否确实存在。
+    fn kill(&self, id: i64) -> bool {
+        self.cursors
+            .lock()
+            .map(|mut g| g.remove(&id).is_some())
+            .unwrap_or(false)
+    }
+}
+
+/// 全局游标注册表。
+fn cursors() -> &'static CursorRegistry {
+    static REGISTRY: OnceLock<CursorRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(CursorRegistry::new)
+}
 
 /// 服务端配置。
 #[derive(Debug, Clone)]
@@ -151,7 +235,9 @@ fn dispatch(
     match lower.as_str() {
         "hello" | "ismaster" => hello_response(),
         "ping" => ok_doc([]),
-        "endsessions" | "killcursors" => ok_doc([("cursorsKilled", json!([]))]),
+        "endsessions" => ok_doc([]),
+        "getmore" => cmd_get_more(cmd),
+        "killcursors" => cmd_kill_cursors(cmd),
         "insert" => cmd_insert(db, cmd, sequences),
         "find" => cmd_find(db, cmd),
         "update" => cmd_update(db, cmd, sequences),
@@ -333,17 +419,15 @@ fn cmd_find(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
         Some(l) if l < 0 => Some((-l) as usize),
         _ => None,
     };
-    // batchSize 影响单批返回量,先做「一次取完」的简化(游标 id 恒为 0)
+    // 驱动期望的首批条数(MongoDB 默认首批 101 条)
     let batch_size = cmd
         .get("batchSize")
         .and_then(|v| v.as_i64())
-        .filter(|n| *n > 0)
-        .map(|n| n as usize);
-    let effective_limit = match (limit, batch_size) {
-        (Some(l), Some(b)) => Some(l.min(b)),
-        (None, Some(b)) => Some(b),
-        (l, None) => l,
-    };
+        .filter(|n| *n >= 0)
+        .map(|n| n as usize)
+        .unwrap_or(101);
+    // `limit` 约束的是**结果总数**,不是单批条数
+    let effective_limit = limit;
 
     let result = if sort.is_some() || projection.is_some() {
         db.find_page_total(
@@ -370,23 +454,118 @@ fn cmd_find(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
     };
 
     match result {
-        Ok(docs) => {
-            let first_batch = docs
-                .iter()
-                .map(|d| Value::Object(d.clone()))
-                .collect::<Vec<_>>();
+        Ok(docs) => build_cursor_response(coll, docs, batch_size, "firstBatch"),
+        Err(e) => err_doc(2, "BadValue", &e.to_string()),
+    }
+}
+
+/// 把结果集打包成游标响应:首批取 `batch_size` 条,剩余注册为可续取的游标。
+///
+/// `field` 是首批的字段名(`find` 用 `firstBatch`,`getMore` 用 `nextBatch`)。
+fn build_cursor_response(
+    coll: &str,
+    docs: Vec<Map<String, Value>>,
+    batch_size: usize,
+    field: &str,
+) -> Map<String, Value> {
+    let ns = format!("nosqlite.{}", coll);
+    let total = docs.len();
+    let take = batch_size.max(1).min(total);
+    let first: Vec<Value> = docs[..take].iter().cloned().map(Value::Object).collect();
+
+    // 全部取完(或刚好一批):id = 0,不注册游标
+    if take >= total {
+        return ok_doc([(
+            "cursor",
+            json!({
+                field: first,
+                // 规范要求 cursor.id 是 int64,故用 Extended JSON 显式标注
+                "id": {"$numberLong": "0"},
+                "ns": ns,
+            }),
+        )]);
+    }
+
+    // 还有剩余:注册游标,返回其 ID
+    match cursors().register(coll, docs) {
+        Some(id) => {
+            // 注册后立刻消费掉第一批(注册表保存的是完整结果集)
+            let _ = cursors().next_batch(id, take);
             ok_doc([(
                 "cursor",
                 json!({
-                    "firstBatch": first_batch,
-                    // 规范要求 cursor.id 是 int64,故用 Extended JSON 显式标注
-                    "id": {"$numberLong": "0"},
-                    "ns": format!("{}.{}", "nosqlite", coll),
+                    field: first,
+                    "id": {"$numberLong": id.to_string()},
+                    "ns": ns,
                 }),
             )])
         }
-        Err(e) => err_doc(2, "BadValue", &e.to_string()),
+        None => err_doc(
+            1,
+            "InternalError",
+            "游标数量超过上限(1000),请关闭不再使用的游标",
+        ),
     }
+}
+
+/// `getMore`:`{getMore: <cursorId>, collection: "coll", batchSize: N}`
+fn cmd_get_more(cmd: &Map<String, Value>) -> Map<String, Value> {
+    let Some(id) = cmd.get("getMore").and_then(|v| v.as_i64()) else {
+        return err_doc(2, "BadValue", "getMore 需要一个 int64 游标 ID");
+    };
+    let batch_size = cmd
+        .get("batchSize")
+        .and_then(|v| v.as_i64())
+        .filter(|n| *n > 0)
+        .map(|n| n as usize)
+        .unwrap_or(101);
+
+    match cursors().next_batch(id, batch_size) {
+        Some((coll, batch)) => {
+            let ns = format!("nosqlite.{}", coll);
+            let docs: Vec<Value> = batch.into_iter().map(Value::Object).collect();
+            // 游标是否耗尽:registry 在取完最后一批时会移除,故再查一次
+            let still_exists = cursors()
+                .cursors
+                .lock()
+                .map(|g| g.contains_key(&id))
+                .unwrap_or(false);
+            let next_id = if still_exists {
+                json!({"$numberLong": id.to_string()})
+            } else {
+                json!({"$numberLong": "0"})
+            };
+            ok_doc([(
+                "cursor",
+                json!({"nextBatch": docs, "id": next_id, "ns": ns}),
+            )])
+        }
+        None => err_doc(43, "CursorNotFound", "游标不存在或已耗尽"),
+    }
+}
+
+/// `killCursors`:`{killCursors: "coll", cursors: [<id>...]}`
+fn cmd_kill_cursors(cmd: &Map<String, Value>) -> Map<String, Value> {
+    let ids: Vec<i64> = cmd
+        .get("cursors")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+    let mut killed: Vec<Value> = Vec::new();
+    let mut not_found: Vec<Value> = Vec::new();
+    for id in ids {
+        if cursors().kill(id) {
+            killed.push(json!({"$numberLong": id.to_string()}));
+        } else {
+            not_found.push(json!({"$numberLong": id.to_string()}));
+        }
+    }
+    ok_doc([
+        ("cursorsKilled", Value::Array(killed)),
+        ("cursorsNotFound", Value::Array(not_found)),
+        ("cursorsAlive", json!([])),
+        ("cursorsUnknown", json!([])),
+    ])
 }
 
 /// `update`:`{update: "coll", updates: [{q, u, upsert, multi}]}`
@@ -874,7 +1053,7 @@ fn cmd_aggregate(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> 
     match result {
         Ok(docs) => {
             // 简单的 $project / $addFields:按字段包含裁剪(仅供驱动内部探测)
-            let batch: Vec<Value> = match &project_stage {
+            let projected: Vec<Map<String, Value>> = match &project_stage {
                 Some(proj) => docs
                     .into_iter()
                     .map(|d| {
@@ -892,15 +1071,21 @@ fn cmd_aggregate(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> 
                         if let Some(id) = d.get("_id") {
                             map.insert("_id".to_string(), id.clone());
                         }
-                        Value::Object(map)
+                        map
                     })
                     .collect(),
-                None => docs.into_iter().map(Value::Object).collect(),
+                None => docs,
             };
-            ok_doc([(
-                "cursor",
-                json!({"firstBatch": batch, "id": {"$numberLong": "0"}, "ns": format!("nosqlite.{}", coll)}),
-            )])
+            // 聚合结果同样走游标:大管道不再一次性全部返回
+            let batch_size = cmd
+                .get("cursor")
+                .and_then(|v| v.as_object())
+                .and_then(|o| o.get("batchSize"))
+                .and_then(|v| v.as_i64())
+                .filter(|n| *n > 0)
+                .map(|n| n as usize)
+                .unwrap_or(101);
+            build_cursor_response(coll, projected, batch_size, "firstBatch")
         }
         Err(e) => err_doc(2, "BadValue", &e.to_string()),
     }
@@ -972,6 +1157,86 @@ fn aggregate_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 游标注册 → 分批取 → 耗尽自动移除。
+    #[test]
+    fn cursor_batches_until_exhausted() {
+        let reg = CursorRegistry::new();
+        let docs: Vec<Map<String, Value>> = (0..5)
+            .map(|i| json!({"n": i}).as_object().unwrap().clone())
+            .collect();
+        let id = reg.register("c", docs).expect("应能注册");
+
+        // 第一批 2 条,游标仍存在
+        let (coll, batch) = reg.next_batch(id, 2).expect("应有第一批");
+        assert_eq!(coll, "c");
+        assert_eq!(batch.len(), 2);
+        assert!(reg.cursors.lock().unwrap().contains_key(&id));
+
+        // 第二批 2 条
+        let (_, batch) = reg.next_batch(id, 2).expect("应有第二批");
+        assert_eq!(batch.len(), 2);
+
+        // 第三批 1 条,随后游标被移除
+        let (_, batch) = reg.next_batch(id, 2).expect("应有第三批");
+        assert_eq!(batch.len(), 1);
+        assert!(!reg.cursors.lock().unwrap().contains_key(&id));
+
+        // 再取应返回 None
+        assert!(reg.next_batch(id, 2).is_none());
+    }
+
+    /// 关闭游标返回是否确实存在。
+    #[test]
+    fn cursor_kill() {
+        let reg = CursorRegistry::new();
+        let docs: Vec<Map<String, Value>> = (0..3)
+            .map(|i| json!({"n": i}).as_object().unwrap().clone())
+            .collect();
+        let id = reg.register("c", docs).unwrap();
+        assert!(reg.kill(id), "第一次关闭应成功");
+        assert!(!reg.kill(id), "重复关闭应返回 false");
+    }
+
+    /// 全部装入一批时不注册游标,直接 id = 0。
+    #[test]
+    fn cursor_zero_when_fits_in_one_batch() {
+        let docs: Vec<Map<String, Value>> = (0..3)
+            .map(|i| json!({"n": i}).as_object().unwrap().clone())
+            .collect();
+        let resp = build_cursor_response("c", docs, 10, "firstBatch");
+        let cursor = resp["cursor"].as_object().unwrap();
+        assert_eq!(cursor["id"]["$numberLong"], json!("0"));
+        assert_eq!(cursor["firstBatch"].as_array().unwrap().len(), 3);
+    }
+
+    /// 超过一批时返回非 0 的游标 ID,且首批只含 batchSize 条。
+    #[test]
+    fn cursor_nonzero_when_exceeds_batch() {
+        let docs: Vec<Map<String, Value>> = (0..10)
+            .map(|i| json!({"n": i}).as_object().unwrap().clone())
+            .collect();
+        let resp = build_cursor_response("c", docs, 3, "firstBatch");
+        let cursor = resp["cursor"].as_object().unwrap();
+        assert_eq!(cursor["firstBatch"].as_array().unwrap().len(), 3);
+        let id_str = cursor["id"]["$numberLong"].as_str().unwrap();
+        assert_ne!(id_str, "0", "应返回有效游标 ID");
+        // 清理,避免污染全局注册表
+        cursors().kill(id_str.parse::<i64>().unwrap());
+    }
+
+    /// `batchSize: 0` 在 MongoDB 里表示只建立游标不返回数据(此处按 1 处理,保证驱动能推进)。
+    #[test]
+    fn batch_size_zero_is_clamped() {
+        let docs: Vec<Map<String, Value>> = (0..4)
+            .map(|i| json!({"n": i}).as_object().unwrap().clone())
+            .collect();
+        let resp = build_cursor_response("c", docs, 0, "firstBatch");
+        let cursor = resp["cursor"].as_object().unwrap();
+        assert_eq!(cursor["firstBatch"].as_array().unwrap().len(), 1);
+        let id_str = cursor["id"]["$numberLong"].as_str().unwrap();
+        cursors().kill(id_str.parse::<i64>().unwrap());
+    }
 
     /// hello 响应必须带足够高的 maxWireVersion,否则驱动拒连。
     #[test]
