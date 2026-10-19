@@ -1,6 +1,6 @@
 [package]
 name = "nodblite"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2024"
 rust-version = "1.85"
 description = "一个像 SQLite 一样小巧的单文件 NoSQL 数据库(.nodb):MongoDB 风格文档模型,单文件零配置部署"

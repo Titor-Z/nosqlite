@@ -2,6 +2,8 @@
 
 **像 SQLite 一样小巧的单文件 NoSQL 数据库** —— MongoDB 风格的文档模型,单文件(`.nodb`)零配置部署。
 
+📖 **[完整文档](https://titor-z.github.io/nosqlite/)** · [快速开始](https://titor-z.github.io/nosqlite/quickstart/rust/) · [与 MongoDB 的差异](https://titor-z.github.io/nosqlite/reference/compatibility/)
+
 ```bash
 cargo add nodblite
 ```

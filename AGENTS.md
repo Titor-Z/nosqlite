@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.6.5 M31 完成 —— 文档站(GitHub Pages + MkDocs Material,14 页),含「与 MongoDB 的差异」「FAQ」等高价值页面;`--strict` 构建零警告。参见 [taolun #69](#69-v065-m31-文档站github-pages--mkdocs-material)。
 - 2026.09.16: v0.6.4 完成 —— **改名 nosqlite → nodblite**(crates.io 同名已被占用且定位重合);只改对外标识,存储格式与 `.nodb` 后缀不动,并用 worktree 跨版本验证旧库可读;**526 例全绿**。参见 [taolun #68](#68-v064-改名nosqlite--nodblite)。
 - 2026.09.16: v0.6.3 完成 —— 新增索引性能基准,实测发现并修掉**唯一索引建索引 O(n²)** 缺陷(10 万条 74 s → 2.4 s,31 倍);固化索引性能数据与选型提示;**526 例全绿**。参见 [taolun #67](#67-v063-执行性能实测--修掉唯一索引-on²-缺陷)。
 - 2026.09.16: v0.6.2 M30 完成 —— Node.js 官方驱动验收(12 项)、崩溃恢复测试(7 例,含真实 `abort` 验证事务原子性)、`$group` 真正分组聚合;修掉**截断文件导致进程 panic**的缺陷;新增 CHANGELOG、发布包瘦身至 280 KiB;**525 例全绿**。参见 [taolun #65](#65-v062-m30-设计工程化收尾node-驱动--崩溃恢复--发布准备) / [taolun #66](#66-v062-m30-执行工程化收尾node-驱动--崩溃恢复--聚合修复) / [项目进度-已完成](#已完成)。
@@ -1235,6 +1236,25 @@
   2. `Cargo.toml` 的 `repository` 与 README 链接被改成 `Titor-Z/nodblite`,但 **GitHub 仓库尚未改名**,会导致 404 —— 已回指现有仓库,等仓库真正改名后再统一更新。
 - 测试:**526 例全绿**,Go 18 项 / Node 12 项双驱动全通过,clippy 零警告。
 
+### 69. v0.6.5 M31 文档站(GitHub Pages + MkDocs Material)
+
+- **动机**:README 已很长,但它和 `AGENTS.md` 里的知识是「开发者视角」的(设计决策、踩坑记录)。使用者真正需要的是**结构化文档**:怎么装、怎么用、哪些语义和 MongoDB 不同、什么时候不该用。
+- **选型**:MkDocs Material。
+  - 纯 Markdown 写、配置极简、搜索开箱即用;
+  - GitHub Pages 部署只需一个 workflow;
+  - `--strict` 能把「链接失效 / 锚点不存在」变成构建失败,防止文档慢慢腐化。
+- **结构**(14 页):
+  - `index.md` —— 是什么 / **何时该用** / **何时别用**(诚实列出不适用场景);
+  - `quickstart/` —— Rust / C ABI / CLI / wire 驱动四条入口;
+  - `guide/` —— 查询 / 更新 / 投影 / 索引 / 聚合;
+  - `reference/` —— **与 MongoDB 的差异** / 性能 / FAQ。
+- **内容原则**:
+  - **写作素材必须来自实际代码与实测**,不凭印象。落笔前发现 README 的「仍未支持」段落已过时(把 wire 协议写成未实现、把 `distinct`/`explain` 列进未支持),按实际能力重写;
+  - 高价值页面是 `compatibility.md` 与 `faq.md` —— 决定别人要不要用你的库的就是这两页;
+  - 坑要写进去:`$exists` vs `$eq: null`、`$all: []` 不匹配、低选择率索引收益有限、macOS fsync 慢 66 倍。
+- **部署**:`.github/workflows/docs.yml`,仅当 `docs/**` 或 `mkdocs.yml` 变更时触发,避免代码改动引起无谓重建;`site/` 与 `.npm-cache` 加入 `.gitignore`。
+- **待办(用户侧)**:仓库 Settings → Pages → Source 选 **GitHub Actions**,否则工作流推送后站点不会上线。
+
 ## Agents
 
 ### 规范
@@ -1313,6 +1333,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- v0.6.5:文档站(GitHub Pages + MkDocs Material,14 页)。
 - v0.6.4:改名 nodblite(crates.io 原名称已占用);526 例全绿。
 - v0.6.3:索引性能基准 + 修掉唯一索引 O(n²)(31 倍);526 例全绿。
 - M30(v0.6.2):Node 驱动验收 12 项、崩溃恢复 7 例、`$group` 聚合、截断文件 panic 修复、CHANGELOG、发布包瘦身;525 例全绿。
