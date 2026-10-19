@@ -54,6 +54,63 @@ pub(crate) const INDEX_DATA_TABLE: TableDefinition<&[u8], &[u8]> =
 /// 索引编码版本:编码规则变更时递增,用于检测并重建索引。
 pub(crate) const INDEX_ENCODING_VERSION: u32 = 1;
 
+/// 一个有效 `.nodb` 文件的最小长度。
+///
+/// 低于这个值几乎必然是被截断的文件,提前拒绝以免 redb 内部断言 panic。
+const MIN_VALID_FILE_LEN: u64 = 4096;
+
+/// 读取 redb 文件头部声明的**文件总长度**,用于检测截断(v0.6.2)。
+///
+/// redb 3.x 头部(`header.rs`)布局:
+/// - `[0..9)`   魔数 `redb\x1A\n\xA9\r\n`
+/// - `[9]`      god byte
+/// - `[12..16)` page_size(u32 LE)
+/// - `[16..20)` region_header_pages(u32 LE)
+/// - `[20..24)` region_max_data_pages(u32 LE)
+/// - `[24..28)` num_full_regions(u32 LE)
+/// - `[28..32)` trailing_region_data_pages(u32 LE)
+///
+/// 总长 = `page_size + (regions-1) * full_region_len + last_region_len`。
+///
+/// **为什么要自己算**:redb 3.1.3 在文件被截断时走的是
+/// `assert!(raw_file_len >= header.layout().len())`,直接 panic 而非返回错误。
+/// 文件损坏是真实场景,必须在封装层挡住。
+fn read_redb_declared_len(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 32];
+    f.read_exact(&mut head).ok()?;
+    if &head[0..9] != b"redb\x1a\n\xa9\r\n" {
+        return None;
+    }
+    let u32_at = |off: usize| u32::from_le_bytes(head[off..off + 4].try_into().unwrap());
+    let page_size = u64::from(u32_at(12));
+    if page_size == 0 || !page_size.is_power_of_two() || page_size > (1 << 20) {
+        return None;
+    }
+    let header_pages = u64::from(u32_at(16));
+    let max_data_pages = u64::from(u32_at(20));
+    let full_regions = u64::from(u32_at(24));
+    let trailing_pages = u64::from(u32_at(28));
+
+    let full_region_len = (header_pages + max_data_pages) * page_size;
+    let regions = if trailing_pages > 0 {
+        full_regions + 1
+    } else {
+        full_regions
+    };
+    if regions == 0 {
+        return None;
+    }
+    let last_len = if trailing_pages > 0 {
+        (header_pages + trailing_pages) * page_size
+    } else {
+        full_region_len
+    };
+    let expected = page_size + (regions - 1) * full_region_len + last_len;
+    (expected > 0 && expected < (1u64 << 48)).then_some(expected)
+}
+
 /// 校验集合名:非空,且不包含分隔符 `\0`。
 fn validate_collection(collection: &str) -> Result<(), StorageError> {
     if collection.is_empty() {
@@ -589,6 +646,28 @@ impl Storage for RedbEngine {
     fn open(path: &Path) -> Result<Self, StorageError> {
         // 1. 后缀校验:非 .nodb 一律拒绝
         Self::validate_path(path)?;
+
+        // 1.5 损坏预检(v0.6.2):redb 在文件被截断时会 assert panic,
+        //     提前用头部声明的长度比对实际长度,把崩溃变成明确错误。
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() < MIN_VALID_FILE_LEN {
+                return Err(StorageError::InvalidFormat(format!(
+                    "{} 文件过短({} 字节),疑似被截断,不是有效的 nosqlite 数据库",
+                    path.display(),
+                    meta.len()
+                )));
+            }
+            if let Some(expected) = read_redb_declared_len(path)
+                && meta.len() < expected
+            {
+                return Err(StorageError::InvalidFormat(format!(
+                    "{} 被截断(声明 {} 字节,实际只有 {} 字节)",
+                    path.display(),
+                    expected,
+                    meta.len()
+                )));
+            }
+        }
 
         // 2. 打开 redb 数据库(文件不存在或非 redb 格式都会失败)
         let db = Database::open(path).map_err(|_| {

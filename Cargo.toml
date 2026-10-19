@@ -9,6 +9,8 @@ repository = "https://github.com/Titor-Z/nosqlite"
 keywords = ["database", "nosql", "embedded", "document", "single-file"]
 categories = ["database-implementations"]
 readme = "README.md"
+# 测试用的 Node 依赖体积大且与 crate 无关,不打进发布包
+exclude = ["tests/node_compat/node_modules", "tests/node_compat/.npm-cache"]
 
 [dependencies]
 redb = "3"

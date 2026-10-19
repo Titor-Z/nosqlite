@@ -1,2 +1,4 @@
 /target
-/test.nodb
+**/node_modules/
+**/.npm-cache/
+Cargo.lock.bak

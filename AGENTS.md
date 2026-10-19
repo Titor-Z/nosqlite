@@ -1139,6 +1139,25 @@
   - 合计 **517 例全绿**,Go **18 项**全通过,clippy 零警告。
 - 明确不做:数组过滤器 `$[]` / `$[identifier]`。
 
+### 65. v0.6.2 M30 设计:工程化收尾(Node 驱动 + 崩溃恢复 + 发布准备)
+
+- 背景:第一档语义(M28/M29)已补齐,剩余是**敢让人用**所需的工程化验证。`cargo publish` 需维护者凭据,不在本里程碑内执行,只做准备与验证。
+- **① Node.js 驱动兼容验证**:
+  - 用官方 `mongodb` npm 包(与 Go 驱动同一套 wire 协议)做端到端验收,证明「协议层不是只对 Go 调过」;
+  - 覆盖:连接握手、insertMany、find 游标分批、update/delete、`$pull` 新操作符、索引 `createIndexes`、`explain`、`countDocuments`;
+  - 测试脚本放 `tests/node_compat/`,用 Rust 集成测试 `tests/node_wire.rs` 拉起 server 并执行 `node`(与 Go 的做法对齐:`go_compat` 已有先例)。**若本机无 `mongodb` npm 包装成功则跳过并显式提示**,不静默通过。
+- **② 崩溃恢复 / 一致性测试**(`tests/crash_recovery.rs`):
+  - **未提交写事务不得可见**:模拟「写入过程中不 commit」,重开后数据必须回到事务前状态(redb 的原子性由引擎保证,这里验证我们的封装没破坏它);
+  - **写一半进程被杀**:用子进程执行「插入 N 条 + 立刻 `std::process::abort()`」,父进程重开库校验**要么全部 N 条、要么一条没有**(不允许部分写入);
+  - **损坏文件拒绝打开**:截断 `.nodb` 文件、翻转中间字节、写入随机垃圾 → 必须返回明确错误而不是 panic 或返回空数据;
+  - **索引与文档一致性**:崩溃后用 `explain` 验证索引仍可用,且索引查询结果与全表扫一致。
+- **③ 发布准备**:
+  - `Cargo.toml` 元数据复核(`description`/`keywords`/`categories`/`repository`/`license`/`rust-version`);
+  - `cargo publish --dry-run` 通过;
+  - README 补 Node 驱动片段;
+  - CHANGELOG 汇总 v0.1.0 → v0.6.1。
+- 纪律:不改存储格式(v1);测试新增文件按功能拆分;崩溃测试必须用**真实进程终止**而非 mock,否则验证不到 fsync 边界。
+
 ## Agents
 
 ### 规范

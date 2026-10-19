@@ -1,0 +1,10 @@
+{
+  "name": "nosqlite-node-compat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "nosqlite wire 协议的 Node.js 官方驱动验收",
+  "type": "module",
+  "dependencies": {
+    "mongodb": "^6.10.0"
+  }
+}
