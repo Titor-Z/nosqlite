@@ -95,9 +95,10 @@ pub(crate) fn build_meta_prefix(collection: &str) -> Vec<u8> {
     key
 }
 
-/// 构造索引条目 key:`集合名\0字段路径\0编码值\0doc_id`。
+/// 构造索引条目 key:`集合名\0字段路径\0编码值 + [长度后缀] + doc_id`。
 ///
-/// `encoded_value` 是已经 order-preserving 编码后的字节。
+/// `encoded_value` 是已经 order-preserving 编码后的字节。长度用**后缀**存放,
+/// 以免参与值序比较(v0.5.1 修正)。
 pub(crate) fn build_entry_key(
     collection: &str,
     field: &str,
@@ -110,9 +111,13 @@ pub(crate) fn build_entry_key(
     key.push(0);
     key.extend_from_slice(field.as_bytes());
     key.push(0);
-    // 编码值本身可能含 0x00,故用长度前缀而非分隔符 —— 保证可无歧义还原
-    key.extend_from_slice(&(encoded_value.len() as u32).to_be_bytes());
+    // v0.5.1 修正:长度前缀改为**后缀**。
+    // 原因:长度放在编码值之前会破坏值序 —— B+树按字节比较时,
+    // 「编码长度 2 的 bool」会排在「编码长度 9 的 number」之前,
+    // 与 compare_values 的结论相反,区间扫描因此漏数据。
+    // 放在编码值之后,排序仍由编码值的字节决定,长度只用于定界。
     key.extend_from_slice(encoded_value);
+    key.extend_from_slice(&(encoded_value.len() as u32).to_be_bytes());
     key.extend_from_slice(doc_id.as_bytes());
     key
 }
@@ -167,19 +172,30 @@ pub fn has_duplicate(values: &[Vec<u8>]) -> bool {
 mod tests {
     use super::*;
 
-    /// 条目 key 中的编码值含 0x00 时也能无歧义解析(长度前缀的意义)。
+    /// 条目 key 中的编码值含 0x00 时也能无歧义解析(长度后缀的意义)。
     #[test]
     fn entry_key_handles_zero_bytes() {
         let key = build_entry_key("c", "f", &[0x02, 0x00, 0x01], "doc1");
         let prefix = build_entry_prefix("c", "f");
         assert!(key.starts_with(&prefix));
-        // 前缀之后是长度
+        // 编码值在前,长度**后缀**在后
         let rest = &key[prefix.len()..];
-        let len = u32::from_be_bytes(rest[0..4].try_into().unwrap()) as usize;
+        assert_eq!(&rest[0..3], &[0x02, 0x00, 0x01]);
+        let len = u32::from_be_bytes(rest[3..7].try_into().unwrap()) as usize;
         assert_eq!(len, 3);
-        assert_eq!(&rest[4..4 + len], &[0x02, 0x00, 0x01]);
-        // 之后是 doc_id
-        assert_eq!(&rest[4 + len..], b"doc1");
+        assert_eq!(&rest[7..], b"doc1");
+    }
+
+    /// 长度后缀不得影响值序:不同编码长度的值仍按编码字节排序。
+    #[test]
+    fn length_suffix_preserves_value_order() {
+        // number 编码 [0x02,...](长 9)应排在 bool [0x08,0x01](长 2)之前
+        let num_key = build_entry_key("c", "f", &[0x02, 0xc0, 0, 0, 0, 0, 0, 0, 0], "docB");
+        let bool_key = build_entry_key("c", "f", &[0x08, 0x01], "docA");
+        assert!(
+            num_key < bool_key,
+            "number 应排在 bool 前:长度后缀不能破坏值序"
+        );
     }
 
     /// 定义 JSON 往返。

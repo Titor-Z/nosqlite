@@ -415,6 +415,81 @@ impl Database {
 
     // ==================== M11 新增:主键直接寻址与批量写入 ====================
 
+    /// 带索引的查询(M24):自动选择索引扫描或全表扫描。
+    ///
+    /// `filter_json` 是**原始 filter JSON**,规划器需要它来提取范围操作符
+    /// (`$gte` 等)构造索引区间;`filter` 是解析后的版本,用于回表后的
+    /// **二次过滤** —— 索引只缩小候选集,正确性由完整 filter 保证。
+    ///
+    /// 无可用索引时退化为与 [`find_with_options`](Self::find_with_options) 等价的全表扫描。
+    pub fn find_planned(
+        &self,
+        collection: &str,
+        filter: &Filter,
+        filter_json: &Value,
+        options: &FindOptions,
+    ) -> Result<Vec<Map<String, Value>>, DatabaseError> {
+        let indexes = self.list_indexes(collection)?;
+        let plan =
+            crate::index::planner::plan_with_json(filter_json, options.sort.as_ref(), &indexes);
+
+        let mut docs: Vec<Map<String, Value>> = Vec::new();
+        match &plan {
+            crate::index::planner::Plan::CollScan => {
+                return self.find_with_options(collection, filter, options);
+            }
+            crate::index::planner::Plan::IndexScan { index, bounds, .. } => {
+                // 1. 索引区间扫描 → 候选 doc_id(按索引序)
+                let ids = self.engine.scan_index_range(
+                    collection,
+                    &index.field,
+                    bounds.lower.as_deref(),
+                    bounds.upper.as_deref(),
+                )?;
+
+                // 2. 按主键回表 + 二次过滤(安全底线)
+                for id in ids {
+                    if let Some(doc) = self.get_by_id(collection, &id)?
+                        && filter.matches(&doc)
+                    {
+                        docs.push(doc);
+                    }
+                }
+            }
+        }
+
+        // 3. 排序 / 分页 / 投影(与全表扫路径保持一致)
+        if let Some(sort) = &options.sort {
+            sort.sort(&mut docs);
+        }
+        if options.skip > 0 {
+            let skip = options.skip.min(docs.len());
+            docs.drain(0..skip);
+        }
+        if let Some(limit) = options.limit {
+            docs.truncate(limit);
+        }
+        if let Some(projection) = &options.projection {
+            docs = docs.iter().map(|doc| projection.apply(doc)).collect();
+        }
+        Ok(docs)
+    }
+
+    /// 生成查询计划描述(M24),用于观测是否命中索引。
+    ///
+    /// 返回形如 `{"stage": "IXSCAN", "indexName": "age_1", ...}` 或
+    /// `{"stage": "COLLSCAN", ...}`。
+    pub fn explain(
+        &self,
+        collection: &str,
+        filter_json: &Value,
+        sort: Option<&SortSpec>,
+    ) -> Result<Map<String, Value>, DatabaseError> {
+        let indexes = self.list_indexes(collection)?;
+        let plan = crate::index::planner::plan_with_json(filter_json, sort, &indexes);
+        Ok(crate::index::planner::explain_plan(&plan, collection))
+    }
+
     /// 创建索引(M23b)。已存在同名索引则重建(幂等)。
     ///
     /// - `field` 支持点号路径;

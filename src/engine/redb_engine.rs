@@ -299,6 +299,92 @@ impl RedbEngine {
             .map_err(|e| StorageError::Other(format!("提交索引创建失败: {}", e)))
     }
 
+    /// 按索引区间扫描,返回候选 doc_id 列表(去重,按索引序)。
+    ///
+    /// `lower`/`upper` 是**已编码**的边界;`None` 表示无界。区间语义为
+    /// `[lower, upper)`(调用方负责把 `$lte` 转成「上界 + 0xFF 前缀」)。
+    ///
+    /// 返回的 doc_id 只保证「落在索引区间内」,**不保证满足完整 filter** ——
+    /// 调用方必须再做一次 `filter.matches()` 二次过滤。这是刻意的安全设计:
+    /// 即使区间构造有偏差,也只会多读,不会返回错误结果。
+    pub fn scan_index_range(
+        &self,
+        collection: &str,
+        field: &str,
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+    ) -> Result<Vec<String>, StorageError> {
+        let prefix = crate::index::def::build_entry_prefix(collection, field);
+        let read_tx = self
+            .db
+            .begin_read()
+            .map_err(|e| StorageError::Other(format!("启动读取事务失败: {}", e)))?;
+        let table = match read_tx.open_table(INDEX_DATA_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(StorageError::Other(format!("打开索引数据表失败: {}", e))),
+        };
+
+        // 起点 = prefix + 编码值(长度后缀在编码值之后,不参与定位)
+        let build_point = |enc: Option<&[u8]>| -> Vec<u8> {
+            let mut k = prefix.clone();
+            if let Some(v) = enc {
+                k.extend_from_slice(v);
+            }
+            k
+        };
+
+        let start = build_point(lower);
+        let range = match upper {
+            Some(_) => {
+                let end = build_point(upper);
+                table
+                    .range(start.as_slice()..end.as_slice())
+                    .map_err(|e| StorageError::Other(format!("索引区间扫描失败: {}", e)))?
+            }
+            None => table
+                .range(start.as_slice()..)
+                .map_err(|e| StorageError::Other(format!("索引区间扫描失败: {}", e)))?,
+        };
+
+        let mut doc_ids: Vec<String> = Vec::new();
+        for entry in range {
+            let (k, _) =
+                entry.map_err(|e| StorageError::Other(format!("读取索引条目失败: {}", e)))?;
+            let key = k.value();
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            // 解析:prefix + 编码值(变长) + [4 字节长度后缀] + doc_id(变长)
+            //
+            // 长度后缀的作用是从右侧定界:先假设 doc_id 长度未知,但长度后缀
+            // 的数值 = 编码值长度,所以我们可以用「长度后缀的数值 + 自身 4 字节」
+            // 反推编码值起点是否正确。做法:遍历可能的切分位置校验自洽。
+            // 由于 encode_key 首字节即类型等级,且长度 <= 64,可用小范围试探。
+            let rest = &key[prefix.len()..];
+            let Some((encoded, doc_id_bytes)) = split_entry(rest) else {
+                continue;
+            };
+
+            // 精确区间判断(upper 为半开区间)
+            if let Some(lo) = lower
+                && encoded < lo
+            {
+                continue;
+            }
+            if let Some(hi) = upper
+                && encoded >= hi
+            {
+                break;
+            }
+            let doc_id = String::from_utf8_lossy(doc_id_bytes).into_owned();
+            if doc_ids.last() != Some(&doc_id) {
+                doc_ids.push(doc_id);
+            }
+        }
+        Ok(doc_ids)
+    }
+
     /// 删除索引(定义 + 全部条目)。
     pub fn drop_index(&self, collection: &str, name: &str) -> Result<bool, StorageError> {
         use crate::index::def::{IndexDef, build_meta_key};
@@ -353,6 +439,22 @@ impl RedbEngine {
     }
 }
 
+/// 从条目 key 的剩余部分切出 `(编码值, doc_id 字节)`。
+///
+/// 布局:`编码值(变长) + [4 字节长度后缀] + doc_id(变长)`。
+///
+/// 切分思路:遍历候选切分点 `i`(编码值长度),若 `rest[i..i+4]` 读出的 u32
+/// 恰好等于 `i`,则切分自洽。编码值长度很小(<= 64),遍历开销可忽略。
+fn split_entry(rest: &[u8]) -> Option<(&[u8], &[u8])> {
+    for i in 1..=rest.len().saturating_sub(5) {
+        let len = u32::from_be_bytes(rest[i..i + 4].try_into().ok()?) as usize;
+        if len == i {
+            return Some((&rest[..i], &rest[i + 4..]));
+        }
+    }
+    None
+}
+
 /// 在写事务内**删除**某条文档的全部索引条目(基于旧文档内容)。
 ///
 /// 找不到旧文档(新增场景)时无操作。
@@ -401,48 +503,49 @@ fn write_index_entries(
     for def in defs {
         for val in entry_values(def, map) {
             let key = build_entry_key(collection, &def.field, &val, doc_id);
-            // 唯一索引:同字段同值已存在其他文档 → 冲突
+            // 唯一索引:同字段同值已存在其他文档 → 冲突。
+            //
+            // 用 `prefix + enc` 作 probe 前缀扫描;若存在 doc_id 不同于自身的条目 → 冲突。
             if def.unique {
-                let prefix = crate::index::def::build_entry_prefix(collection, &def.field);
-                let _ = prefix;
-                // 精确判断:该 key 排除了自身 doc_id 后是否已存在
-                let self_key = build_entry_key(collection, &def.field, &val, doc_id);
-                if data
-                    .get(self_key.as_slice())
-                    .map_err(|e| StorageError::Other(format!("查询索引条目失败: {}", e)))?
-                    .is_none()
-                {
-                    // 检查是否有同值的其他条目(前缀匹配到该编码值)
-                    let mut probe = Vec::new();
-                    probe.extend_from_slice(collection.as_bytes());
-                    probe.push(0);
-                    probe.extend_from_slice(def.field.as_bytes());
-                    probe.push(0);
-                    probe.extend_from_slice(&(val.len() as u32).to_be_bytes());
-                    probe.extend_from_slice(&val);
-                    let range = data
-                        .range(probe.as_slice()..)
-                        .map_err(|e| StorageError::Other(format!("扫描索引条目失败: {}", e)))?;
-                    let mut conflict = false;
-                    for entry in range {
-                        let (k, _) = entry
-                            .map_err(|e| StorageError::Other(format!("读取索引条目失败: {}", e)))?;
-                        let k2 = k.value();
-                        if !k2.starts_with(&probe) {
-                            break;
-                        }
-                        // 前缀之后的是 doc_id;若是别的文档 → 冲突
-                        if &k2[probe.len()..] != doc_id.as_bytes() {
-                            conflict = true;
-                            break;
-                        }
+                let mut probe = Vec::new();
+                probe.extend_from_slice(collection.as_bytes());
+                probe.push(0);
+                probe.extend_from_slice(def.field.as_bytes());
+                probe.push(0);
+                probe.extend_from_slice(&val);
+
+                let range = data
+                    .range(probe.as_slice()..)
+                    .map_err(|e| StorageError::Other(format!("扫描索引条目失败: {}", e)))?;
+                let mut conflict = false;
+                for entry in range {
+                    let (k, _) = entry
+                        .map_err(|e| StorageError::Other(format!("读取索引条目失败: {}", e)))?;
+                    let k2 = k.value();
+                    if !k2.starts_with(&probe) {
+                        break;
                     }
-                    if conflict {
-                        return Err(StorageError::UniqueViolation {
-                            collection: collection.to_string(),
-                            index: def.name.clone(),
-                        });
+                    // probe 已含 prefix + enc,剩下的是 `[4 字节长度后缀] + doc_id`
+                    let rest = &k2[probe.len()..];
+                    if rest.len() < 4 {
+                        continue;
                     }
+                    let len = u32::from_be_bytes(rest[0..4].try_into().unwrap()) as usize;
+                    // 长度必须等于已知编码值长度,否则是「更长值以该编码为前缀」,不算同值
+                    if len != val.len() {
+                        continue;
+                    }
+                    let doc = &rest[4..];
+                    if doc != doc_id.as_bytes() {
+                        conflict = true;
+                        break;
+                    }
+                }
+                if conflict {
+                    return Err(StorageError::UniqueViolation {
+                        collection: collection.to_string(),
+                        index: def.name.clone(),
+                    });
                 }
             }
             data.insert(key.as_slice(), b"".as_slice())
@@ -511,13 +614,15 @@ impl Storage for RedbEngine {
         // 2. 构造 key = 集合名(0x00)doc_id
         let key = build_doc_key(collection, doc_id);
 
+        // 索引定义必须在开启写事务**之前**读取:
+        // redb 不允许写事务存活期间再开读事务,否则索引维护会静默失效。
+        let defs = self.list_indexes(collection)?;
+
         // 3. 写入事务:打开文档表并插入;若主键已存在则返回冲突
         let write_tx = self
             .db
             .begin_write()
             .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
-        // 索引定义(在事务外读,避免同事务内重复加锁)
-        let defs = self.list_indexes(collection)?;
         {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
@@ -639,6 +744,10 @@ impl Storage for RedbEngine {
             return Ok(());
         }
 
+        // 索引定义必须在开启写事务**之前**读取:
+        // redb 不允许在写事务存活期间再开读事务,否则会静默出错。
+        let defs = self.list_indexes(collection)?;
+
         // 3. 单写事务内写入全部文档,一次性提交
         let write_tx = self
             .db
@@ -648,7 +757,6 @@ impl Storage for RedbEngine {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
-            let defs = self.list_indexes(collection)?;
             for (doc_id, bytes) in docs {
                 let key = build_doc_key(collection, doc_id);
                 let existing = table
@@ -686,12 +794,14 @@ impl Storage for RedbEngine {
         // 2. 构造 key = 集合名(0x00)doc_id
         let key = build_doc_key(collection, doc_id);
 
+        // 索引定义必须在写事务之前读取(redb 不允许写事务期间开读事务)
+        let defs = self.list_indexes(collection)?;
+
         // 3. 写事务:覆盖写入(redb insert 同 key 即覆盖,返回旧值)
         let write_tx = self
             .db
             .begin_write()
             .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
-        let defs = self.list_indexes(collection)?;
         let updated = {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
@@ -728,12 +838,14 @@ impl Storage for RedbEngine {
         // 2. 构造 key
         let key = build_doc_key(collection, doc_id);
 
+        // 索引定义必须在写事务之前读取(redb 不允许写事务期间开读事务)
+        let defs = self.list_indexes(collection)?;
+
         // 3. 写事务:删除该 key(返回是否实际删除)
         let write_tx = self
             .db
             .begin_write()
             .map_err(|e| StorageError::Other(format!("启动写入事务失败: {}", e)))?;
-        let defs = self.list_indexes(collection)?;
         let deleted = {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
@@ -774,6 +886,9 @@ impl Storage for RedbEngine {
             return Ok(());
         }
 
+        // 索引定义必须在写事务之前读取(redb 不允许写事务期间开读事务)
+        let defs = self.list_indexes(collection)?;
+
         // 3. 单写事务内覆盖写入全部文档,一次性提交
         let write_tx = self
             .db
@@ -783,7 +898,6 @@ impl Storage for RedbEngine {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
-            let defs = self.list_indexes(collection)?;
             for (doc_id, bytes) in docs {
                 let key = build_doc_key(collection, doc_id);
                 let old_bytes = table
@@ -822,6 +936,9 @@ impl Storage for RedbEngine {
             return Ok(());
         }
 
+        // 索引定义必须在写事务之前读取(redb 不允许写事务期间开读事务)
+        let defs = self.list_indexes(collection)?;
+
         // 3. 单写事务内删除全部主键,一次性提交
         let write_tx = self
             .db
@@ -831,7 +948,6 @@ impl Storage for RedbEngine {
             let mut table = write_tx
                 .open_table(DOCS_TABLE)
                 .map_err(|e| StorageError::Other(format!("打开文档表失败: {}", e)))?;
-            let defs = self.list_indexes(collection)?;
             for doc_id in doc_ids {
                 let key = build_doc_key(collection, doc_id);
                 let old_bytes = table

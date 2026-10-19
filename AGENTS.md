@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.5.1 M24 完成 —— 查询规划器:等值/范围自动选索引、`explain` 可观测;**修掉 M23b 遗留的索引 key 长度前缀破坏值序缺陷**(导致跨类型范围查询漏数据)+ 写事务内开读事务缺陷;+12 例共 **440 例全绿**。参见 [taolun #53](#53-v051-m24-设计查询规划器让索引真正被用上) / [taolun #54](#54-v051-m24-执行查询规划器) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.5.0 M23b 完成 —— 索引框架:order-preserving 编码(复用 `rank` 单一真相源)、独立索引表、**multikey/稀疏/唯一**、写路径同事务维护;**核心验收「编码序 == 比较序」两两穷举通过**(并抓到 `$oid` 分叉);+35 例共 **427 例全绿**。参见 [taolun #51](#51-v050-m23b-设计索引框架order-preserving-编码--独立索引表) / [taolun #52](#52-v050-m23b-执行索引框架编码--独立索引表--写路径维护) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.4.1 M23a 完成 —— 类型序修正为 **MongoDB 官方 BSON 序**(MinKey<Null<Number<String<Object<Array<Binary<ObjectId<Bool<Date<Timestamp<Regex<MaxKey),补 MinKey/MaxKey/Timestamp;**破坏性变更**(跨类型比较);+10 例共 **392 例全绿**。参见 [taolun #49](#49-v041-m23a-设计类型序修正为-bson-官方序破坏性) / [taolun #50](#50-v041-m23a-执行类型序修正为-bson-官方序) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.4.0 M22 完成 —— `ScanSession` 真流式(会话自持读事务,`next_batch` 续取);`for_each` 改为其封装;+10 例共 **382 例全绿**。同时确立定位:**部署形态学 SQLite,数据模型/索引/游标语义 100% 学 MongoDB**。参见 [taolun #47](#47-v040-m22-设计scansession活游标--索引总方案) / [taolun #48](#48-v040-m22-执行scansession活游标) / [项目进度-已完成](#已完成)。
@@ -906,6 +907,47 @@
   - `src/index/def.rs` 6 例单测(0x00 编码值可无歧义解析、JSON 往返、multikey、稀疏、嵌套路径、重复检测)。
   - 合计 **427 例全绿**;Go 驱动验收仍全通过(clippy 零警告)。
 
+### 53. v0.5.1 M24 设计:查询规划器(让索引真正被用上)
+
+- 现状:M23b 已把索引建好、写路径维护好,但**查询仍走全表扫** —— 索引只对唯一约束生效。
+- 目标:filter 里的等值/范围条件能匹配到索引 → 走 `IXSCAN` → 回表;`explain` 可观测。
+- 设计:
+  - **候选索引匹配**:遍历集合的索引定义,若 filter 顶层存在「该索引字段」的单条件(等值或范围),则可用。
+    - 优先级:等值 > 范围(等值能用精确 key,范围用区间扫描)。
+    - 复合索引本期不做(单字段索引先行)。
+  - **索引扫描**:用编码后的区间在 `nosqlite_index_data` 上 `range(start..end)`,取出 doc_id 列表(去重),再按主键回表读文档。
+    - 区间构造:`$eq` → `[enc(v), enc(v)+0xFF)`;`$gt/$gte/$lt/$lte` 按编码字节上界/下界构造(编码是 order-preserving,所以字节比较即值比较)。
+  - **回表**:用含 `filter.matches()` 的二次过滤 —— 索引只负责缩小候选集,**正确性仍由完整 filter 保证**(这是关键:即使索引区间构造有偏差,也不会返回错误结果,只会多读)。
+  - **排序**:若 `sort` 只有一个字段且该字段正有可用索引,按索引顺序返回,免掉 `find_page` 的两遍法。
+  - **`explain`**:`Database::explain(collection, filter, sort)` 返回计划描述
+    `{stage: "IXSCAN"/"COLLSCAN", indexName, indexBounds, docsExaminedGuess}`;wire 层暴露 `explain` 命令供驱动调用。
+- **安全底线**:索引扫描结果必须再走一遍 `filter.matches`,不与全表扫结果产生分歧。测试用「同一 filter 两条路径结果必须相同」锁死(复用 M23b 的两两穷举思路)。
+- 不做(留 M25):复合索引、交集/并集计划、代价估算、`$or` 走索引。
+
+### 54. v0.5.1 M24 执行:查询规划器
+
+- **`src/index/planner.rs`**:`plan_with_json(filter_json, sort, indexes) -> Plan`。
+  - `Plan::CollScan` / `Plan::IndexScan { index, bounds, sorted_by_index }`;
+  - 区间构造:等值 `[enc, enc+0xFF)`、`$gte` `[enc, ∞)`、`$gt` `[enc+0x00, ∞)`、`$lte` `(-∞, enc+0xFF)`、`$lt` `(-∞, enc)`;
+  - `sort` 单字段与索引字段一致 → `sorted_by_index = true`(免掉两遍法)。
+- **`Database::find_planned(collection, filter, filter_json, options)`**:索引区间扫描 → 回表 → **完整 `filter.matches()` 二次过滤** → 排序/分页/投影。无可用索引时退化为 `find_with_options`。
+- **`Database::explain(collection, filter_json, sort)`**:返回 `{stage, indexName, field, bounds, sortedByIndex, filterApplied}`。
+- **安全底线**:索引只缩小候选集,**正确性由完整 filter 保证**;`explain` 里显式输出 `filterApplied: true` 提醒调用方。
+- **`SortSpec::single_field_path()`** 新增(规划器判断能否利用索引序)。
+
+### 三个被真实测试打出来的缺陷(都已修)
+
+1. **索引 key 的长度前缀破坏值序**(最严重,M23b 遗留):
+   - 原布局 `prefix + [len] + enc + doc`,B+树按字节比较 → 「len=2 的 bool」排在「len=9 的 number」之前,与 `compare_values` 相反;
+   - 后果:`{"n": {"$gte": 2}}` 走索引**漏掉 bool 文档**(BSON 序里 bool(8) > number(2));
+   - 修复:长度改为**后缀** `prefix + enc + [len] + doc`,排序只由 enc 决定;
+   - 解析侧新增 `split_entry`(遍历候选切分点,校验长度自洽)与唯一检查用的精确切分。
+2. **写事务内开读事务**(redb 约束):`insert/update/delete` 系列原在 `begin_write()` **之后**调 `list_indexes()`,后者内部 `begin_read()`。已全部把索引定义读取提到写事务**之前**。
+3. **唯一性检查的 key 解析未跟上新布局**:改为 `probe = prefix + enc`,再校验长度后缀等于 `enc` 长度,避免「更长值以该编码为前缀」被误判。
+
+- 测试:新增 `tests/index_planner.rs` **12 例**,核心是 **`index_results_match_collscan`**:同一批 filter 分别在「不建索引」与「建索引」两条路径跑,断言 `_id` 集合完全一致(覆盖等值/范围/跨类型/无命中/非索引字段)。另有排序分页一致性、multikey、更新/删除后索引同步、explain 标记等。
+  - 合计 **440 例全绿**;Go 驱动验收仍全通过;clippy 零警告。
+
 ## Agents
 
 ### 规范
@@ -959,7 +1001,7 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M24(下一里程碑)**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain` 显示是否命中。
+- **M25(下一里程碑)**:复合索引、`$or` 走索引、intersection 计划、wire 层 `explain` 命令、索引统计。
 - **待补**:`drop_collection` 应同时清理该集合的索引定义与条目(当前只在重建索引时对齐)。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
@@ -983,6 +1025,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M24(v0.5.1):查询规划器 —— 等值/范围走索引 + explain;440 例全绿。
 - M23b(v0.5.0):索引框架 —— 编码 + 独立索引表 + multikey/稀疏/唯一 + 写路径维护;427 例全绿。
 - M23a(v0.4.1):类型序对齐 MongoDB 官方 BSON 序 + MinKey/MaxKey/Timestamp;392 例全绿。
 - M22(v0.4.0):ScanSession 真流式(活游标,自持读事务);382 例全绿。

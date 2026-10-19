@@ -64,6 +64,15 @@ impl SortSpec {
         Ok(SortSpec { fields })
     }
 
+    /// 若排序规格恰好只有一个字段,返回该字段的路径段(供查询规划器判断能否利用索引序)。
+    pub fn single_field_path(&self) -> Option<&[String]> {
+        if self.fields.len() == 1 {
+            Some(&self.fields[0].path)
+        } else {
+            None
+        }
+    }
+
     /// 对文档列表按本规格排序(稳定排序)。
     pub fn sort(&self, docs: &mut [Map<String, Value>]) {
         docs.sort_by(|a, b| self.compare_docs(a, b));
