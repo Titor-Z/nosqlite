@@ -454,7 +454,18 @@ impl Database {
         }
 
         // 3. 排序 / 分页 / 投影(与全表扫路径保持一致)
-        if let Some(sort) = &options.sort {
+        //
+        // `sorted_by_index` 为真时,索引扫描已按排序规格产出,M27 起跳过内存排序。
+        let already_sorted = matches!(
+            &plan,
+            crate::index::planner::Plan::IndexScan {
+                sorted_by_index: true,
+                ..
+            }
+        );
+        if let Some(sort) = &options.sort
+            && !already_sorted
+        {
             sort.sort(&mut docs);
         }
         if options.skip > 0 {
@@ -499,6 +510,8 @@ impl Database {
                 index.fields.len(),
                 bounds.lower.as_deref(),
                 bounds.upper.as_deref(),
+                // 索引自身的存储方向:整体降序索引逆序产出即是降序结果
+                index.is_descending(),
             )?),
             Plan::Union { branches } => {
                 // 并集:按出现顺序收集,用 HashSet 去重
@@ -591,6 +604,31 @@ impl Database {
         }
         let def =
             crate::index::def::IndexDef::new_composite(collection, name, fields, unique, sparse);
+        self.engine.create_index(&def)?;
+        Ok(())
+    }
+
+    /// 创建**带方向**的索引(M27)。
+    ///
+    /// `directions` 与 `fields` 等长:`1` 升序、`-1` 降序。
+    /// 降序索引的条目编码与升序相同,仅扫描方向相反。
+    pub fn create_index_with_directions(
+        &self,
+        collection: &str,
+        name: &str,
+        fields: &[&str],
+        directions: &[i8],
+        unique: bool,
+        sparse: bool,
+    ) -> Result<(), DatabaseError> {
+        if fields.is_empty() {
+            return Err(DatabaseError::Storage(crate::engine::StorageError::Other(
+                "索引至少需要一个字段".to_string(),
+            )));
+        }
+        let def = crate::index::def::IndexDef::new_with_directions(
+            collection, name, fields, directions, unique, sparse,
+        );
         self.engine.create_index(&def)?;
         Ok(())
     }

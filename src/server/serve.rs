@@ -978,11 +978,15 @@ fn cmd_create_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Va
         let Some(key) = obj.get("key").and_then(|v| v.as_object()) else {
             return err_doc(2, "BadValue", "索引缺少 key");
         };
-        // 字段顺序 = key 文档的键序
+        // 字段顺序 = key 文档的键序;`1` 升序,`-1` 降序(M27)
         let fields: Vec<&str> = key.keys().map(|s| s.as_str()).collect();
         if fields.is_empty() {
             return err_doc(2, "BadValue", "索引 key 不能为空");
         }
+        let dirs: Vec<i8> = key
+            .values()
+            .map(|d| if d.as_i64().unwrap_or(1) < 0 { -1 } else { 1 })
+            .collect();
 
         // 未给 name 时按 MongoDB 惯例拼 `字段_方向`
         let name = obj
@@ -1002,7 +1006,8 @@ fn cmd_create_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Va
         let unique = obj.get("unique").and_then(|v| v.as_bool()).unwrap_or(false);
         let sparse = obj.get("sparse").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        if let Err(e) = db.create_index_composite(coll, &name, &fields, unique, sparse) {
+        if let Err(e) = db.create_index_with_directions(coll, &name, &fields, &dirs, unique, sparse)
+        {
             return err_doc(2, "BadValue", &e.to_string());
         }
     }
@@ -1036,8 +1041,9 @@ fn cmd_list_indexes(db: &Database, cmd: &Map<String, Value>) -> Map<String, Valu
 
     for def in db.list_indexes(coll).unwrap_or_default() {
         let mut key = serde_json::Map::new();
-        for f in &def.fields {
-            key.insert(f.clone(), json!(1));
+        for (i, f) in def.fields.iter().enumerate() {
+            let d = def.directions.get(i).copied().unwrap_or(1);
+            key.insert(f.clone(), json!(d));
         }
         let mut doc = serde_json::Map::new();
         doc.insert("v".into(), json!(2));

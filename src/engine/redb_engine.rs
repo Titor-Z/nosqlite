@@ -316,6 +316,7 @@ impl RedbEngine {
         segments: usize,
         lower: Option<&[u8]>,
         upper: Option<&[u8]>,
+        descending: bool,
     ) -> Result<Vec<String>, StorageError> {
         let prefix = crate::index::def::build_entry_prefix(collection, field_signature);
         let read_tx = self
@@ -383,6 +384,11 @@ impl RedbEngine {
             if doc_ids.last() != Some(&doc_id) {
                 doc_ids.push(doc_id);
             }
+        }
+        // 降序索引:条目仍按升序存储,逆序产出即得降序结果。
+        // 区间语义不变(仍是 `[lower, upper)`),只反转遍历方向。
+        if descending {
+            doc_ids.reverse();
         }
         Ok(doc_ids)
     }

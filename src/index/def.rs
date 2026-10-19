@@ -30,6 +30,11 @@ pub struct IndexDef {
     ///
     /// 复合索引遵循 **MongoDB 的前缀原则**:`{a,b}` 可服务 `{a}` 查询,反之不行。
     pub fields: Vec<String>,
+    /// 各字段的索引方向,与 `fields` 一一对应:`1` 升序、`-1` 降序。
+    ///
+    /// 降序索引的**条目编码与升序完全相同**,区别只在扫描方向 ——
+    /// 逆序遍历升序索引等价于降序索引,避免改动 key 编码带来的连锁风险。
+    pub directions: Vec<i8>,
     /// 是否唯一索引。
     pub unique: bool,
     /// 是否稀疏索引(缺失/null 不入索引)。
@@ -56,10 +61,42 @@ impl IndexDef {
             collection: collection.to_string(),
             name: name.to_string(),
             fields: fields.iter().map(|s| s.to_string()).collect(),
+            directions: vec![1; fields.len()],
             unique,
             sparse,
             encoding_version: crate::engine::redb_engine::INDEX_ENCODING_VERSION,
         }
+    }
+
+    /// 构造带方向的索引定义(M27)。
+    ///
+    /// `directions` 与 `fields` 等长,取值 `1`(升序)或 `-1`(降序)。
+    pub fn new_with_directions(
+        collection: &str,
+        name: &str,
+        fields: &[&str],
+        directions: &[i8],
+        unique: bool,
+        sparse: bool,
+    ) -> Self {
+        let mut def = Self::new_composite(collection, name, fields, unique, sparse);
+        if directions.len() == def.fields.len() {
+            def.directions = directions.to_vec();
+        }
+        def
+    }
+
+    /// 是否整体降序(全部字段都是 `-1`)。
+    ///
+    /// 混向索引(`{a:1, b:-1}`)不算整体降序:扫描方向无法同时满足两者,
+    /// 此时保守地不做方向加速,但索引仍可用于过滤。
+    pub fn is_descending(&self) -> bool {
+        !self.directions.is_empty() && self.directions.iter().all(|d| *d < 0)
+    }
+
+    /// 是否方向单一(全升序或全降序)。
+    pub fn is_uniform_direction(&self) -> bool {
+        self.directions.iter().all(|d| *d > 0) || self.is_descending()
     }
 
     /// 单字段索引的字段路径(复合索引返回第一个)。
@@ -85,6 +122,7 @@ impl IndexDef {
     pub fn to_json(&self) -> Vec<u8> {
         let v = json!({
             "fields": self.fields,
+            "directions": self.directions,
             "unique": self.unique,
             "sparse": self.sparse,
             "encoding_version": self.encoding_version,
@@ -111,6 +149,20 @@ impl IndexDef {
         Some(IndexDef {
             collection: collection.to_string(),
             name: name.to_string(),
+            directions: {
+                let n = fields.len();
+                let mut d: Vec<i8> = obj
+                    .get("directions")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .map(|x| if x.as_i64().unwrap_or(1) < 0 { -1 } else { 1 })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                d.resize(n, 1); // 旧定义无方向字段 → 全升序
+                d
+            },
             fields,
             unique: obj.get("unique").and_then(|v| v.as_bool()).unwrap_or(false),
             sparse: obj.get("sparse").and_then(|v| v.as_bool()).unwrap_or(false),

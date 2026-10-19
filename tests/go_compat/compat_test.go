@@ -624,6 +624,125 @@ func TestCompositeIndexOverWire(t *testing.T) {
 	}
 }
 
+// 降序索引:经 wire 层创建后,降序查询应命中且顺序正确(M27)。
+func TestDescendingIndexOverWire(t *testing.T) {
+	client, ctx, cancel := connect(t)
+	defer cancel()
+	defer client.Disconnect(ctx)
+
+	coll := client.Database("gocompat").Collection("descidx")
+	_ = coll.Drop(ctx)
+	t.Cleanup(func() { _ = coll.Drop(context.Background()) })
+
+	docs := make([]interface{}, 0, 20)
+	for i := 0; i < 20; i++ {
+		docs = append(docs, bson.M{"n": i})
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("InsertMany 失败: %v", err)
+	}
+
+	// 建 {n: -1} 索引
+	name, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{bson.E{Key: "n", Value: -1}},
+	})
+	if err != nil {
+		t.Fatalf("创建降序索引失败: %v", err)
+	}
+	t.Logf("降序索引: %s", name)
+
+	// listIndexes 应报告方向 -1
+	cur, err := coll.Indexes().List(ctx)
+	if err != nil {
+		t.Fatalf("listIndexes 失败: %v", err)
+	}
+	var specs []bson.M
+	if err := cur.All(ctx, &specs); err != nil {
+		t.Fatalf("读取索引清单失败: %v", err)
+	}
+	var found bool
+	for _, sp := range specs {
+		if sp["name"] != name {
+			continue
+		}
+		found = true
+		if d := keyDirection(sp, "n"); d != -1 {
+			t.Fatalf("索引方向应为 -1,实际 %v", d)
+		}
+	}
+	if !found {
+		t.Fatalf("listIndexes 未返回 %s", name)
+	}
+
+	// 降序查询:顺序必须正确
+	opts := options.Find().SetSort(bson.D{bson.E{Key: "n", Value: -1}}).SetLimit(3)
+	fcursor, err := coll.Find(ctx, bson.M{"n": bson.M{"$gte": 0}}, opts)
+	if err != nil {
+		t.Fatalf("find 失败: %v", err)
+	}
+	var results []bson.M
+	if err := fcursor.All(ctx, &results); err != nil {
+		t.Fatalf("读取结果失败: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("应有 3 条,实际 %d", len(results))
+	}
+	for i, want := range []int32{19, 18, 17} {
+		got, _ := results[i]["n"].(int32)
+		if got != want {
+			t.Fatalf("第 %d 条应为 %d,实际 %d", i, want, got)
+		}
+	}
+}
+
+// keyDirection 从索引规格文档里取某字段的索引方向(兼容 bson.M / bson.D)。
+func keyDirection(v interface{}, field string) int64 {
+	switch doc := v.(type) {
+	case bson.M:
+		for k, child := range doc {
+			if k == "key" {
+				return keyDirection(child, field)
+			}
+		}
+		if child, ok := doc[field]; ok {
+			return toInt64(child)
+		}
+		for _, child := range doc {
+			if d := keyDirection(child, field); d != 0 {
+				return d
+			}
+		}
+	case bson.D:
+		for _, e := range doc {
+			if e.Key == "key" {
+				return keyDirection(e.Value, field)
+			}
+			if e.Key == field {
+				return toInt64(e.Value)
+			}
+		}
+		for _, e := range doc {
+			if d := keyDirection(e.Value, field); d != 0 {
+				return d
+			}
+		}
+	}
+	return 0
+}
+
+// toInt64 把 x 转成 int64。
+func toInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case int32:
+		return int64(n)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	}
+	return 0
+}
+
 // findStage 在任意嵌套结构中查找 `stage` 字段。
 func findStage(v interface{}) string {
 	switch doc := v.(type) {

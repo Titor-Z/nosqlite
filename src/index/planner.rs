@@ -238,9 +238,7 @@ fn plan_conjunction_inner(
                 upper,
                 description: format!("{} ({})", def.field_signature(), desc),
             },
-            sorted_by_index: sort
-                .map(|s| sort_matches_prefix(s, &def.fields))
-                .unwrap_or(true),
+            sorted_by_index: sort.map(|s| sort_matches_prefix(s, def)).unwrap_or(true),
         };
 
         let score = (segs.len(), usize::from(all_equality));
@@ -359,14 +357,34 @@ fn hi_is_set(ops: &Map<String, Value>) -> bool {
     ops.contains_key("$lte") || ops.contains_key("$lt")
 }
 
-/// 排序字段序列是否匹配索引前缀(顺序相同、方向一致)。
+/// 排序规格能否直接由索引顺序满足(M27 起**必须比对方向**)。
 ///
-/// 复合索引 `{a,b}` 可满足 `sort {a:1,b:1}` 或 `sort {a:1}`。
-fn sort_matches_prefix(sort: &SortSpec, fields: &[String]) -> bool {
-    sort.field_paths()
+/// 条件:
+/// 1. 排序字段是索引字段的**前缀**(顺序相同);
+/// 2. 索引方向必须单一(全 `1` 或全 `-1`)—— 混向索引无法用一个扫描方向
+///    同时满足,保守返回 `false`(照常做内存排序,结果依然正确);
+/// 3. 索引是升序时排序须全升序;索引是降序时排序须全降序。
+///
+/// 判定错误会直接导致**返回顺序错**,所以这里宁可保守。
+fn sort_matches_prefix(sort: &SortSpec, index: &IndexDef) -> bool {
+    if !index.is_uniform_direction() {
+        return false;
+    }
+    let sort_paths = sort.field_paths();
+    if sort_paths.len() > index.fields.len() {
+        return false;
+    }
+    // ① 字段路径逐级匹配
+    let fields_ok = sort_paths
         .iter()
-        .zip(fields.iter())
-        .all(|(s, f)| s == &f.split('.').map(|x| x.to_string()).collect::<Vec<_>>())
+        .zip(index.fields.iter())
+        .all(|(s, f)| *s == f.split('.').collect::<Vec<&str>>().as_slice());
+    if !fields_ok {
+        return false;
+    }
+    // ② 方向必须与索引整体方向一致
+    let idx_dir: i8 = if index.is_descending() { -1 } else { 1 };
+    sort.direction_signs().iter().all(|d| *d == idx_dir)
 }
 
 /// 供 `explain` 使用的计划描述。

@@ -64,6 +64,17 @@ impl SortSpec {
         Ok(SortSpec { fields })
     }
 
+    /// 排序方向序列(`1` 升序 / `-1` 降序),供规划器与索引方向比对(M27)。
+    pub fn direction_signs(&self) -> Vec<i8> {
+        self.fields
+            .iter()
+            .map(|f| match f.direction {
+                Direction::Asc => 1,
+                Direction::Desc => -1,
+            })
+            .collect()
+    }
+
     /// 全部排序字段的路径段列表(供查询规划器判断能否利用索引序)。
     pub fn field_paths(&self) -> Vec<&[String]> {
         self.fields.iter().map(|f| f.path.as_slice()).collect()
