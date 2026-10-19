@@ -272,6 +272,21 @@ nosqlite> .import users backup.jsonl
 | `find_page` 排序+分页(内存增量) | 12 MiB @100k | ≈ 0 MiB @100k |
 | `update` 批量 1000 条(单事务) | ~25 ms | — |
 
+### 索引效果(10 万文档,macOS,3 轮取中位数)
+
+| 查询场景 | 全表扫 | 走索引 | 加速比 |
+|---|---|---|---|
+| 唯一字段等值(命中 1 条) | ~510 ms | ~1 ms | **300–4000x** |
+| 范围查询(命中 1%,1000 条) | ~425 ms | ~8 ms | **~55x** |
+| 复合索引(前缀等值 + 后缀范围,命中千分之一) | ~410 ms | ~22 ms | **~19x** |
+| 低选择率等值(命中 10%,10 000 条) | ~430 ms | ~76 ms | ~5.7x |
+
+- **建索引回填**:10 万条约 1.2–2.5 s(单写事务,失败整体回滚)。
+- **写入开销**:每多一个索引约 +80% 写入成本(3 个索引 ≈ 2.4x),因为索引在**同一写事务**内维护。
+- **选型提示**:索引对**高选择率**查询是数量级收益;**低选择率(命中 >10%)**时收益有限,因为回表成本占主导。这正是规划器下一步要做区分度估算的原因(当前是纯规则匹配)。
+
+基准命令:`cargo run --release --example bench_index -- 100000`。
+
 差异根源:Rust std 在 macOS 把 `sync_data/sync_all` 映射到 `F_FULLFSYNC`(强制磁盘写缓存落盘),实测比 POSIX `fsync` 慢 **66 倍**;Linux 上映射到 `fdatasync`,无放大。逐条写入的耗时 ≈ 一次提交的落盘成本 —— 要吞吐就用 `insert_many` 批量(见「持久化语义」)。
 
 ## 内存与持久化语义
@@ -286,7 +301,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 525 例测试
+cargo test --all-targets     # 526 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```

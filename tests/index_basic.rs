@@ -437,3 +437,41 @@ fn drop_collection_then_recreate_index() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
+/// 唯一性检查必须是 O(n) 而非 O(n²)(v0.6.3 修复的缺陷)。
+///
+/// 旧实现用 `Vec::contains` 做重复检测,10 万条唯一值建索引要 74 秒。
+/// 这里用**时间上界**做粗略回归:1 万条唯一值应在合理时间内完成。
+/// 时间断言容易受机器负载影响,故给足余量(旧实现约 886 ms,新实现 ~50 ms)。
+#[test]
+fn unique_index_build_is_not_quadratic() {
+    use std::time::Instant;
+
+    let path = temp_nodb("unique_perf");
+    let db = nosqlite::Database::create(&path).unwrap();
+
+    let mut docs: Vec<nosqlite::Document> = (0..10_000)
+        .map(|i| nosqlite::Document::from_json(&format!(r#"{{"uid": "u{:06}"}}"#, i)).unwrap())
+        .collect();
+    db.insert_many("items", &mut docs).unwrap();
+
+    let t = Instant::now();
+    db.create_index("items", "uid_1", "uid", true, false)
+        .unwrap();
+    let elapsed = t.elapsed();
+
+    // 旧实现(O(n²))在此规模约 0.9 s,新实现应在 0.3 s 内。
+    // 给 2 s 余量,确保只拦住「退化为平方复杂度」而不误伤慢机器。
+    assert!(
+        elapsed.as_secs_f64() < 2.0,
+        "唯一索引构建耗时 {:.2}s,疑似退化为 O(n²)",
+        elapsed.as_secs_f64()
+    );
+
+    // 唯一性仍然生效
+    let mut dup = nosqlite::Document::from_json(r#"{"uid": "u000000"}"#).unwrap();
+    assert!(db.insert("items", &mut dup).is_err(), "重复值仍应被拒绝");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}

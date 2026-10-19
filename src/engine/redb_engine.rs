@@ -285,17 +285,20 @@ impl RedbEngine {
         }
 
         // 2. 唯一索引前置检查:重复值直接拒绝(不写任何东西)
+        //
+        // 用 HashSet 而不是 Vec::contains —— 后者是 O(n²),10 万条唯一值要跑
+        // 74 秒(实测),换成哈希后是 O(n)。
         if def.unique {
-            let mut seen: Vec<Vec<Vec<u8>>> = Vec::new();
+            let mut seen: std::collections::HashSet<Vec<Vec<u8>>> =
+                std::collections::HashSet::new();
             for (_, doc) in &parsed {
                 for combo in entry_values(def, doc) {
-                    if seen.contains(&combo) {
+                    if !seen.insert(combo) {
                         return Err(StorageError::UniqueViolation {
                             collection: def.collection.clone(),
                             index: def.name.clone(),
                         });
                     }
-                    seen.push(combo);
                 }
             }
         }
