@@ -1,5 +1,10 @@
 # 更新
 
+!!! info "执行顺序固定"
+    为避免歧义,同一更新文档里的操作按固定顺序执行:
+
+    `$rename` → `$inc` → `$mul` → `$min` → `$max` → `$set` → `$unset` → `$push` → `$addToSet` → `$pull` → `$pop` → `$currentDate`
+
 ## 基本形式
 
 ```rust
@@ -43,7 +48,7 @@ let modified = db.update("users", &filter, &upd)?;
 }
 ```
 
-### `$pull` 的三种形态
+### `$pull` 的三种形态 {#pull-forms}
 
 ```json
 // 1. 标量等值

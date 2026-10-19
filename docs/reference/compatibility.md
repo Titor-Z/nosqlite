@@ -1,14 +1,15 @@
 # 与 MongoDB 的差异
 
-> 迁移前请先扫一眼这页。我们**尽力对齐 MongoDB 语义**,但有几处是刻意不同,也有几项确实还没做。
+!!! warning "迁移前请读完这页"
+    我们**尽力对齐 MongoDB 语义**,但有几处是刻意不同,也有几项确实还没做。
 
-## 一句话结论
-
-**查询、更新、投影的语义按 MongoDB 实现并逐条测过;差异集中在「值类型系统」「事务」「聚合管道」三块。**
+!!! abstract "一句话结论"
+    **查询、更新、投影的语义按 MongoDB 实现并逐条测过**;差异集中在
+    **值类型系统**、**事务**、**聚合管道** 三块。
 
 ---
 
-## 语义对齐的部分
+## :material-check-circle: 已对齐的部分
 
 这些曾经踩过坑,现已与 MongoDB 一致,并有测试锁死:
 
@@ -29,9 +30,9 @@
 
 ---
 
-## 刻意的不同
+## :material-swap-horizontal: 刻意的不同
 
-### 1. 富类型用 Extended JSON 表示,存储是普通 JSON
+### 1. 富类型用 Extended JSON 表示,存储是普通 JSON {#extended-json}
 
 nodblite 的文档值就是 JSON,富类型借 MongoDB Extended JSON 表达:
 
@@ -42,15 +43,22 @@ nodblite 的文档值就是 JSON,富类型借 MongoDB Extended JSON 表达:
 | `{"$numberLong": "123"}` | ≡ 整数 |
 | `{"$numberDouble": "1.5"}` | ≡ 浮点数 |
 
-**影响**:写入什么就存什么,不做 BSON 二进制转换。好处是文件可读、可用任何 JSON 工具处理;代价是**没有** `Binary` / `Decimal128` 等剩余 BSON 类型。
+!!! info "为什么这么做"
+    **写入什么就存什么,不做 BSON 二进制转换。**
 
-### 2. `$oid` 被当作字符串
+    :material-check: 好处:文件可读,可用任何 JSON 工具处理(`jq`、编辑器、备份脚本)
+    :material-close: 代价:**没有** `Binary` / `Decimal128` 等剩余 BSON 类型
+
+### 2. `$oid` 被当作字符串 {#oid-as-string}
 
 MongoDB 里 ObjectId 有独立类型序位。nodblite 中 `{"$oid": ...}` **等价于等长的 hex 字符串**,按字符串排序。
 
-**影响**:若你有依赖 ObjectId 类型排序的查询,结果顺序会不同。
+!!! danger "可能影响你的排序结果"
+    MongoDB 里 ObjectId 有独立的类型序位。nodblite 中 `{"$oid": ...}` **等价于等长的 hex 字符串**,按字符串排序。
 
-### 3. 事务
+    若你有依赖 ObjectId 类型排序的查询,结果顺序会与 MongoDB 不同。
+
+### 3. 事务 {#transactions}
 
 | | MongoDB | nodblite |
 |---|---|---|
@@ -59,9 +67,10 @@ MongoDB 里 ObjectId 有独立类型序位。nodblite 中 `{"$oid": ...}` **等�
 | `insert_many` | — | **原子**(单事务) |
 | 跨集合显式事务会话 | `startTransaction()` | **不支持** |
 
-**影响**:多语句的跨集合一致性需要你在应用层处理。
+!!! warning "跨集合一致性要自己做"
+    多语句的跨集合一致性需要在应用层处理(如补偿逻辑或幂等重试)。
 
-### 4. 并发模型
+### 4. 并发模型 {#concurrency}
 
 单文件由**进程独占**(SQLite 同款约束)。
 
@@ -71,7 +80,7 @@ MongoDB 里 ObjectId 有独立类型序位。nodblite 中 `{"$oid": ...}` **等�
 
 ---
 
-## 尚未支持
+## :material-close-circle: 尚未支持
 
 ### 更新操作符
 - 数组过滤器 `$[]` / `$[identifier]`

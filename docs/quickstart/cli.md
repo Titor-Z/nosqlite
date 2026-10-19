@@ -36,7 +36,7 @@ delete <集合> <filter>
 drop <集合>
 ```
 
-## 完整会话示例
+## 完整会话示例 {#session}
 
 ```text
 $ nodblite app.nodb

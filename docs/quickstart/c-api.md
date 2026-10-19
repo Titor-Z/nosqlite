@@ -75,7 +75,7 @@ cc demo.c -Iinclude -Ltarget/release -lnodblite -o demo
 ./demo
 ```
 
-## 三条设计原则
+## 三条设计原则 {#design}
 
 这套 ABI 骨架照搬 SQLite(不透明句柄 + 错误码 + 游标),但修掉它因 2004 年 ABI 冻结而做不到的三件事:
 

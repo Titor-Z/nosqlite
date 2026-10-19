@@ -10,99 +10,50 @@ cargo add nodblite
 
 ## 它是什么
 
-nodblite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可直接拷贝的单文件里:
+nodblite 把 MongoDB「顺手」的文档语义装进一个像 SQLite 一样可直接拷贝的单文件里。
 
-- **单文件存储**:整个数据库就是 一个 `.nodb` 文件,复制即迁移、备份即拷贝;
-- **文档模型**:JSON 文档 + 自动主键 `_id`,集合隔离,无需建表;
-- **MongoDB 风格查询**:`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch/$exists/$type/$all/$size` + 字段级/顶层 `$not`,顶层 `$and/$or/$nor`;数组包含与点号路径穿透数组(语义见下方「与 MongoDB 的差异」);
-- **更新操作符**:`$set`/`$unset`/`$inc`/`$mul`/`$min`/`$max`/`$rename`/`$push`/`$addToSet`/`$currentDate`(`$push`/`$addToSet` 支持 `$each`,另有 `$position`/`$slice`/`$sort`);
-- **upsert**:`update_or_insert` —— 命中则更新,未命中按 filter 等值字段新建;
-- **二级索引**:`create_index(collection, name, field, unique, sparse)` —— 唯一/稀疏/multikey/嵌套路径,写入同事务维护;索引键用 **order-preserving 编码**,字节序即 BSON 值序;
-- **内存友好**:流式扫描与过滤,内存 O(命中数) 而非 O(集合大小);排序分页走两遍法(仅底层 `scan` 会全量物化,文档已警示仅限小集合)。
-- **主键直查**:按 `_id` 的读/改/删走 B+树直达,不经全表扫描;
-- **批量写入**:`insert_many` 单事务批量,一次提交摊薄落盘成本;
-- **Date 类型**:`{"$date": "2026-09-16T10:00:00Z"}`,按时间戳比较排序,时区偏移自动归一;
-- **批量更新/删除**:`update`/`delete` 匹配多条时**合并为一次提交**,且整体原子(不会留下改了一半的状态);
-- **列表页一次扫描**:`find_page_total` 同时返回「匹配总数 + 当页文档」,省掉一次全表 `count`;
-- **字段投影**:`Projection` / CLI `--fields`,列表页只取需要的字段;
-- **复合值可比较**:数组/对象按 BSON 风格递归比较,可排序,`$eq`/`$in` 为精确深度匹配;
-- **附带 CLI**:`nodblite <file.nodb>` 进入 sqlite3 风格 REPL(点命令管理 + 无点 CRUD);
-- **导入导出与统计**:`.export`(JSON Lines)/`.import`(JSONL 或 JSON 数组,单事务)/`.stats`。
+**部署形态学 SQLite** —— 单文件、进程内、零配置、无后台服务。
+**数据模型学 MongoDB** —— BSON 类型序、文档查询、更新操作符、二级索引、游标协议。
 
-底层是 [redb](https://crates.io/crates/redb)(纯 Rust 单文件 B+树 KV 存储),之上提供文档语义层。`.nodb` 格式版本 v1。
+### 能力一览
 
-## 路线:双形态
+| 能力 | 说明 |
+|---|---|
+| **存储** | 单文件 `.nodb`(redb B+树),格式版本 v1,复制即迁移 |
+| **文档模型** | JSON 文档 + 自动 `_id`,集合隔离,无需建表 |
+| **查询** | `$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex/$elemMatch/$exists/$type/$all/$size` + `$and/$or/$nor/$not` |
+| **更新** | `$set/$unset/$inc/$mul/$min/$max/$rename/$push/$addToSet/$currentDate/$pull/$pop` + upsert |
+| **投影** | 字段取舍 + `$slice` / `$elemMatch` / 位置运算符 `{"arr.$": 1}` |
+| **索引** | 单字段 / 复合 / 降序 / 唯一 / 稀疏 / multikey,查询自动选索引 + `explain` |
+| **聚合** | `$match/$sort/$skip/$limit/$project/$group/$addFields` |
+| **类型** | BSON 官方类型序;Date 用 `{"$date": ...}`,按时间戳比较排序 |
+| **协议** | MongoDB wire 协议,Go 18 项 + Node 12 项官方驱动验收 |
+| **CLI** | sqlite3 风格 REPL + `.export`/`.import`/`.stats` |
 
-nodblite 有两个形态,共用同一套查询语义:
+### 两个形态
 
-| 形态 | 形态说明 | 状态 |
+| 形态 | 说明 | 状态 |
 |---|---|---|
-| **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程;适合本地 GUI/App、CLI、桌面软件 | ✅ **已实现**(`include/nodblite.h`) |
-| **服务端(wire 协议)** | `nodblite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连,可替换 mongodb-server | ✅ **已实现**(Go + Node 官方驱动验收通过) |
+| **嵌入式(C ABI)** | 像 SQLite 一样被任何语言**进程内**调用,无需额外服务进程 | ✅ `include/nodblite.h` |
+| **服务端(wire 协议)** | `nodblite-server` 监听 `mongodb://`,第三方 MongoDB driver 直连 | ✅ Go + Node 驱动验收通过 |
 
-当前已完成端侧全部能力(Rust 内嵌 API + CLI)。
+两者共用同一套查询语义。底层是 [redb](https://crates.io/crates/redb)(纯 Rust 单文件 B+树 KV 存储),之上提供文档语义层。
 
-## 何时**不要**用
+## 何时该用 / 不该用
 
-诚实地说,nodblite 不适合以下场景:
+**适合**:桌面 / 单机应用、嵌入式后端、原型与工具链、需要单文件迁移的场景。
 
-- **需要跨进程/跨机器并发写**:单写事务模型,写入被串行化(多线程写无加速比);
-- **需要聚合管道、事务(跨文档)、索引下推**:未实现;大数据量排序分页是全量抽排序键的两遍法;
-- **需要 MongoDB 兼容协议 / 副本集 / 分片**:不支持;
-- **超大数据量**(单集合 亿 级):未验证;
-- **需要丰富的类型系统**:文档值即 JSON 值(比较遵循 BSON 风格类型序)。
+**不适合**:
 
-适合的:小工具、CLI、原型、桌面应用、单机 CMS/后台 —— 一个文件解决存储,不想要数据库服务器。
-
-## 与 MongoDB 的差异
-
-查询语义与更新操作符**以 MongoDB 为准**。v0.1.2 修正了 6 处曾经的语义偏差;仍存在下列差异,迁移前请扫一眼:
-
-### 已与 MongoDB 对齐(v0.1.2)
-
-| 语义 | 说明 |
+| 场景 | 原因 |
 |---|---|
-| 同层条件 AND | `{"status":"ok","$or":[...]}` 中字段条件与 `$or` 是 **AND**(旧版误为 OR) |
-| 数组包含 | `{"tags":"rust"}` 可命中 `{"tags":["rust","db"]}` |
-| `$in` 展开 | `{"tags":{"$in":["rust"]}}` 命中任何含 `rust` 的数组字段 |
-| 点号穿透数组 | `{"items.name":"x"}` 会遍历 `items` 数组元素的 `name` |
-| 缺失 = null | `{"deleted_at":null}` 匹配**字段缺失**的文档;`{"$ne":null}` 不匹配 |
-| 字段级 `$not` | `{"age":{"$not":{"$gt":18}}}` |
-| Date 按时间比较 | `{"$date":"2026-09-16T10:00:00Z"}`,时区偏移归一(v0.1.3) |
-| 类型序 | 完整对齐 MongoDB 官方 BSON 序 `MinKey < Null < Number < String < Object < Array < Binary < ObjectId < Bool < Date < Timestamp < Regex < MaxKey`(v0.4.1) |
+| 多进程并发写同一个库 | 单文件由进程独占(SQLite 同款约束);需要多服务共享请走 `nodblite-server` |
+| TB 级数据 / 集群 | 定位是嵌入式单机库,不是分布式系统 |
+| 需要副本集、分片、认证、change stream | wire 协议已实现,但这些能力不在范围内 |
+| 重度依赖聚合管道 | 仅支持 7 个 stage |
+| 跨集合显式事务 | 单语句原子 + 单事务批量,无事务会话 |
 
-> ⚠️ **升级提示**:前四条是破坏性变更 —— v0.1.1 及更早版本上,`$or` 与字段条件为 OR 关系、数组字段的标量等值不命中、点号路径不穿透数组。若你在旧版上依赖这些行为,升级后查询结果会变化。
-
-### 仍未支持
-
-- **更新操作符**:无数组过滤器 `$[]`/`$[id]`
-- **投影**:`$slice`/`$elemMatch`/位置运算符 `{"arr.$": 1}` 均已支持
-- **upsert 的初始值**:仅能由 filter 的**顶层等值字段**反推;filter 含 `$gt` 等操作符时报错(不猜)
-- **聚合管道**:仅 `$match`/`$sort`/`$limit`/`$skip`/`$project`/`$group`/`$addFields`;无 `$unwind`/`$lookup`/`$facet`
-- **索引**:无 TTL 索引;规划器是纯规则的,无区分度估算
-- **事务**:仅单集合内的写事务;无跨集合/跨文档显式事务会话
-- **类型系统**:文档值即 JSON,**富类型用 MongoDB Extended JSON 表示** —— `{"$date": ...}`(按时间戳比较排序)、`{"$oid": ...}` ≡ 24 位 hex 字符串、`{"$numberLong": ...}`/`{"$numberDouble": ...}` ≡ 数字;存储仍是普通 JSON。无 `Binary`/`Decimal128`/`Timestamp`/`MinKey` 等剩余 BSON 类型
-- **Server / 协议**:无 MongoDB wire 协议,官方 driver 与 `mongosh` 无法直连
-- **其他**:`distinct`、`explain`、change stream、schema validation、`$regex` 的 `$options`
-
-### 跨语言契约
-
-为 C ABI(`nodblite-ffi`)与 MongoDB wire 协议共用,以下三项已冻结:
-
-| 契约 | 说明 |
-|---|---|
-| **错误码** | `nodblite::ErrorCode`,`as_str()` 如 `DUPLICATE_KEY`/`INVALID_FILTER`,`as_i32()` 供 C 侧返回(0 保留给成功) |
-| **字段序** | 文档字段顺序**保持写入顺序**(已开启 `serde_json/preserve_order`),投影后 `_id` 恒在最前 |
-| **Extended JSON** | `$date`/`$oid`/`$numberLong`/`$numberDouble` 在比较与匹配时按真实类型归一,存储层不改写 |
-
-> 错误的中文文案(`Display`)仅供 CLI 展示;**程序化判断请一律用 `code()`**。
-
-### 数据导入导出
-
-- 格式是 **JSON Lines**(一行一条文档),便于 `wc -l`、`head`、增量追加与流式处理;
-- `.import` 同时兼容「整个文件是一个 JSON 数组」;
-- 导入**先全量校验再用单事务写入** —— 任一条格式错误或主键冲突,整批不写;
-- `.export` 默认覆盖,`--append` 追加;省略文件名则输出到 stdout(可管道)。
+细节见 [完整文档](https://titor-z.github.io/nosqlite/)。
 
 ## 嵌入到任意语言(C ABI)
 
@@ -262,34 +213,35 @@ nodblite> .import users backup.jsonl
 
 ## 性能参考
 
-> ⚠️ **写入数字强依赖平台的落盘(fsync)语义**,引用时必须标注平台。
-> 数据为 10k 文档、3 轮取中位数;Linux 数据来自 GitHub Actions 共享 runner,为指示性参考。
+> ⚠️ 写入数字**强依赖平台的落盘(fsync)语义**,引用时必须标注平台。
 
-| 场景(10k 文档) | macOS(Apple Silicon) | Linux(CI runner) |
+| 场景 | macOS (Apple Silicon) | Linux (CI runner) |
 |---|---|---|
-| 逐条插入(每条一个事务) | ~185 条/秒 | ~1,400 条/秒 |
+| 逐条插入 | ~185 条/秒 | ~1,400 条/秒 |
 | `insert_many` 批量 | ~44,000 条/秒 | ~300,000 条/秒 |
-| 按 `_id` 读 | 亚毫秒 | 亚毫秒 |
 | `find` 全量扫描 | ~8 µs/条 | ~1.2 µs/条 |
-| `find_page` 排序+分页(内存增量) | 12 MiB @100k | ≈ 0 MiB @100k |
-| `update` 批量 1000 条(单事务) | ~25 ms | — |
+| 唯一字段等值查询走索引 | **~510 ms → ~1 ms(500x)** | — |
+| 范围查询走索引(命中 1%) | **~425 ms → ~8 ms(55x)** | — |
+| 索引对写入的影响 | 每多一个索引 **+80%** | — |
 
-### 索引效果(10 万文档,macOS,3 轮取中位数)
+差异根源:macOS 的 `sync_all` 映射到 `F_FULLFSYNC`,比 POSIX `fsync` 慢 **66 倍**;Linux 无此放大。**要吞吐就用 `insert_many`**。
 
-| 查询场景 | 全表扫 | 走索引 | 加速比 |
-|---|---|---|---|
-| 唯一字段等值(命中 1 条) | ~510 ms | ~1 ms | **300–4000x** |
-| 范围查询(命中 1%,1000 条) | ~425 ms | ~8 ms | **~55x** |
-| 复合索引(前缀等值 + 后缀范围,命中千分之一) | ~410 ms | ~22 ms | **~19x** |
-| 低选择率等值(命中 10%,10 000 条) | ~430 ms | ~76 ms | ~5.7x |
+完整基准数据、测试方法与归因分析见 **[性能文档](https://titor-z.github.io/nosqlite/reference/performance/)**。
 
-- **建索引回填**:10 万条约 1.2–2.5 s(单写事务,失败整体回滚)。
-- **写入开销**:每多一个索引约 +80% 写入成本(3 个索引 ≈ 2.4x),因为索引在**同一写事务**内维护。
-- **选型提示**:索引对**高选择率**查询是数量级收益;**低选择率(命中 >10%)**时收益有限,因为回表成本占主导。这正是规划器下一步要做区分度估算的原因(当前是纯规则匹配)。
+## 与 MongoDB 的差异
 
-基准命令:`cargo run --release --example bench_index -- 100000`。
+查询、更新、投影的语义按 MongoDB 实现并逐条测过。差异集中在三块:
 
-差异根源:Rust std 在 macOS 把 `sync_data/sync_all` 映射到 `F_FULLFSYNC`(强制磁盘写缓存落盘),实测比 POSIX `fsync` 慢 **66 倍**;Linux 上映射到 `fdatasync`,无放大。逐条写入的耗时 ≈ 一次提交的落盘成本 —— 要吞吐就用 `insert_many` 批量(见「持久化语义」)。
+| 方面 | 差异 |
+|---|---|
+| **类型系统** | 文档值即 JSON,富类型用 Extended JSON(`{"$date":...}` / `{"$oid":...}`);`$oid` **按字符串处理**,不占独立类型序位;无 `Binary`/`Decimal128` |
+| **事务** | 单语句原子;`insert_many` / 多命中 `update`/`delete` 也是单事务原子;**无跨集合显式事务会话** |
+| **聚合** | 仅 7 个 stage,无 `$unwind`/`$lookup`/`$facet` |
+| **并发** | 单文件由进程独占;**多线程并发写无加速比**(单写者模型) |
+
+已对齐的部分(这些曾是偏差,现已修正并测过):同层条件 AND、数组包含、`$in` 展开数组、点号穿透数组、缺失 ≡ null、`$exists` 与 `$eq: null` 的区别、BSON 官方类型序。
+
+**完整清单 → [与 MongoDB 的差异](https://titor-z.github.io/nosqlite/reference/compatibility/)**
 
 ## 内存与持久化语义
 

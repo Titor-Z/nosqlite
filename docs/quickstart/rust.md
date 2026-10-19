@@ -65,7 +65,7 @@ let one = db.get_by_id("users", &id)?;
 db.delete("users", &filter)?;
 ```
 
-## 关键差异:何时用哪个 API
+## 关键差异:何时用哪个 API {#which-api}
 
 | 需求 | 用这个 | 说明 |
 |---|---|---|
