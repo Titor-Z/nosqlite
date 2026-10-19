@@ -92,11 +92,21 @@ fn nested_composites() {
 /// 类型序不变:array < object。
 #[test]
 fn type_order_still_holds() {
-    assert_eq!(cmp(json!([1]), json!({"a": 1})), std::cmp::Ordering::Less);
+    // v0.4.1 起类型序对齐 MongoDB 官方 BSON 序:string < object < array < bool
+    assert_eq!(
+        cmp(json!({"a": 1}), json!([1])),
+        std::cmp::Ordering::Less,
+        "object < array"
+    );
     assert_eq!(
         cmp(json!("z"), json!([1])),
         std::cmp::Ordering::Less,
         "string < array"
+    );
+    assert_eq!(
+        cmp(json!([1]), json!(true)),
+        std::cmp::Ordering::Less,
+        "array < bool"
     );
 }
 

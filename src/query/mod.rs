@@ -8,13 +8,14 @@
 //! - [`FindOptions`](options::FindOptions):查询选项(排序、跳过、限制)。
 //! - [`Update`]:更新操作(`$set` 字段点号路径赋值,嵌套自动创建/覆盖;路径段可为数组下标)。
 
-mod compare;
+pub mod compare;
 mod filter;
 mod options;
 mod update;
 
 pub use compare::{
-    as_date, as_number_double, as_number_long, as_oid, compare_values, parse_iso8601,
+    as_date, as_number_double, as_number_long, as_oid, as_timestamp, compare_values, parse_iso8601,
+    type_rank,
 };
 pub use filter::{Filter, FilterError};
 pub use options::{FindOptions, Projection, ProjectionError, SortError, SortSpec};

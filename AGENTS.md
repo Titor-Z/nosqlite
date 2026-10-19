@@ -8,6 +8,7 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.09.16: v0.4.1 M23a 完成 —— 类型序修正为 **MongoDB 官方 BSON 序**(MinKey<Null<Number<String<Object<Array<Binary<ObjectId<Bool<Date<Timestamp<Regex<MaxKey),补 MinKey/MaxKey/Timestamp;**破坏性变更**(跨类型比较);+10 例共 **392 例全绿**。参见 [taolun #49](#49-v041-m23a-设计类型序修正为-bson-官方序破坏性) / [taolun #50](#50-v041-m23a-执行类型序修正为-bson-官方序) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.4.0 M22 完成 —— `ScanSession` 真流式(会话自持读事务,`next_batch` 续取);`for_each` 改为其封装;+10 例共 **382 例全绿**。同时确立定位:**部署形态学 SQLite,数据模型/索引/游标语义 100% 学 MongoDB**。参见 [taolun #47](#47-v040-m22-设计scansession活游标--索引总方案) / [taolun #48](#48-v040-m22-执行scansession活游标) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.3.1 M21 完成 —— 真实游标:`getMore`/`killCursors` 落地,`batchSize` 分批生效,`limit` 语义修正(只约束总结果数);`aggregate` 同步接入游标;Go 驱动 13 项全通过,总 **372 例全绿**。参见 [taolun #45](#45-v031-m21-设计真实游标getmore--killcursors) / [taolun #46](#46-v031-m21-执行真实游标getmore--killcursors) / [项目进度-已完成](#已完成)。
 - 2026.09.16: v0.3.0 M20 完成(阶段 2) —— **nosqlite-server 落地**:MongoDB wire 协议(OP_MSG + BSON 编解码 + 命令分发),**Go 官方驱动 9 项验收全通过**;367 例全绿。踩坑三条(section 1 / cursor.id 必须 int64 / OP_REPLY 长度)已写入认知修正。参见 [taolun #43](#43-v030-m20-设计阶段-2--nosqlite-servermongodb-wire-协议) / [taolun #44](#44-v030-m20-执行阶段-2--nosqlite-servermongodb-wire-协议) / [项目进度-已完成](#已完成)。
@@ -799,6 +800,55 @@
 - `RedbScanSession` 为 `empty()` 场景(表不存在)保留读事务,行为一致。
 - 测试:新增 `tests/scan_session.rs` **10 例** —— 分批恰好覆盖全量无重复遗漏、`next_docs` 与 `find` 结果一致、耗尽幂等、空集合、`max=0` 不推进、集合隔离、**会话快照隔离(MVCC:会话中途插入不影响已开会话,新会话能看到)**、500 条小批次、主键有序、大文档不截断。合计 **382 例全绿**,clippy 零警告。
 
+### 49. v0.4.1 M23a 设计:类型序修正为 BSON 官方序(破坏性)
+
+- **背景**:M23 准备做索引时核对发现,我们的 `type_rank` 与 MongoDB 的 BSON 比较序**不一致**。
+  这不是「索引怎么做」的问题,而是**查询语义本身有偏差**;索引只是把它放大:
+  若按错误的序建索引,跨类型范围查询会返回错误结果。
+- **MongoDB 官方 BSON 比较序**(`bson-type-order`):
+  `MinKey < Null < Number < Symbol/String < Object < Array < BinData < ObjectId < Boolean < Date < Timestamp < Regex < MaxKey`
+- **现状对照**:
+
+  | 类型 | MongoDB | 现状(v0.4.0) |
+  |---|---|---|
+  | null | 1 | 1 ✅ |
+  | number | 2 | 3 ❌ |
+  | string | 3 | 5 ❌ |
+  | object | 4 | 7 ❌ |
+  | array | 5 | 6 ❌ |
+  | bool | 8 | 2 ❌ |
+  | date | 9 | 4 ❌ |
+
+  除 null 外**全部错位**。
+- **决策**(用户确认):
+  1. 修正为 BSON 官方序(**破坏性变更**,排序与跨类型比较结果会变);
+  2. 一并补上 `MinKey`/`MaxKey`/`Timestamp` 类型位置(driver 会发 `{$gt: MinKey}` 这类查询)。
+- **实现要点**:
+  - 内部等级号直接对齐 BSON 序,便于将来写索引用同一套常量;
+  - `Timestamp` 比较:`(t, i)` 元组比较,与 BSON 语义一致;
+  - `BinData`/`ObjectId`/`Regex`/`Decimal128`:目前以 Extended JSON 表示,按其 BSON 等级排位;
+  - **同一真相源**:索引编码(下一步)必须复用这套等级定义,并用测试锁死「`compare_values` 结果 == 编码字节比较结果」。
+- **影响面**:同类型内部比较(数字/字符串/布尔)不变,仅**跨类型**排序与比较改变,实际风险小于听起来。
+- **待定(下一步 M23b)**:索引编码采用 order-preserving(类型前缀 + 大端/IEEE 翻转),因为它能直接支撑 range 扫描;
+  不复用 BSON 字节直接做 key —— BSON 的 int32 小端序会使字节序 ≠ 值序。
+
+### 50. v0.4.1 M23a 执行:类型序修正为 BSON 官方序
+
+- `query/compare.rs` 的 `type_rank` 重写,等级直接对齐 MongoDB 官方序,并抽成**公开的 `rank` 模块**作为单一真相源:
+  `MIN_KEY(0) < NULL(1) < NUMBER(2) < STRING(3) < OBJECT(4) < ARRAY(5) < BINARY(6) < OBJECT_ID(7) < BOOL(8) < DATE(9) < TIMESTAMP(10) < REGEX(11) < MAX_KEY(12)`。
+- 新增类型支持:
+  - `MinKey`/`MaxKey`(`{"$minKey":1}`/`{"$maxKey":1}`)—— 恒为端点,支撑 `{$gt: MinKey}` 全量查询;
+  - `Timestamp`(`{"$timestamp":{"t":..,"i":..}}`)—— 按 `(t, i)` 元组比较;
+  - `Regex`/`Binary` —— 按 BSON 等级排位(原先会被误判为 OBJECT)。
+- **缺失字段改为按 `null` 等级**(与 MongoDB 一致;旧实现把缺失当成"最小值",排在 null 之前)。
+- `compare_values` 重写:先比等级,同等级再按类型分发,特殊字面量优先于 `normalize` 判定。
+- 导出 `query::{type_rank, as_timestamp}` 与 `query::compare::rank` 常量。
+- **破坏性变更**(已确认):跨类型排序与比较结果改变。同类型内部比较**完全不变**(数字/字符串/布尔/日期)。
+- 测试:
+  - 新增 `tests/bson_type_order.rs` **10 例** —— 12 种类型相邻两两双向校验、缺失≡null、同类型比较不变、Timestamp 元组序、MinKey/MaxKey 端点、跨类型范围查询、混合类型排序完整序列、等级常量锁定、`$oid`/`$numberLong` 归一后的等级。
+  - 修正 3 处固化了旧序的既有用例:`query::compare::tests::type_order`、`tests/compare_composite.rs::type_order_still_holds`、`tests/date.rs::date_type_rank`。
+  - 合计 **392 例全绿**;Go 驱动验收(M22 后)仍全通过,**wire 层未受影响**。
+
 ## Agents
 
 ### 规范
@@ -852,7 +902,7 @@
 #### 计划中
 - **阶段 1.5 已完成**(v0.2.2)。尚未做(等有真实下游再投入):macOS 签名/notarization、npm & go module 分发元数据、Windows MSVC 运行时说明。
 - **阶段 2 已完成**(v0.3.0),真实游标已完成(v0.3.1)。后续按需:认证、完整 `$group` 累加器、Node 驱动验证、`mongosh` 兼容、游标随连接断开自动清理。
-- **M23(下一里程碑)**:索引框架 —— 类型序编码 + 独立索引表 + 写路径维护(含 multikey 模型)+ 编码版本化。
+- **M23b(下一里程碑)**:索引框架 —— order-preserving 编码(复用 `query::compare::rank` 作为单一真相源)+ 独立索引表 + 写路径维护(含 multikey 模型)+ 编码版本化。
 - **M24**:查询规划器 —— 等值/范围/排序/复合前缀走索引 + `explain`。
 - **M25**:唯一/稀疏/TTL 索引、`listIndexes`/`dropIndexes`、游标超时清理。
 - **阶段 3**:语义向 MongoDB 完整靠拢(见「双形态路线 → 查询语义总目标」)。
@@ -875,6 +925,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- M23a(v0.4.1):类型序对齐 MongoDB 官方 BSON 序 + MinKey/MaxKey/Timestamp;392 例全绿。
 - M22(v0.4.0):ScanSession 真流式(活游标,自持读事务);382 例全绿。
 - M21(v0.3.1):真实游标 —— `getMore`/`killCursors`/`batchSize`,`limit` 语义修正;372 例全绿。
 - M20(v0.3.0,阶段 2):nosqlite-server(MongoDB wire 协议),Go 官方驱动验收通过;367 例全绿。

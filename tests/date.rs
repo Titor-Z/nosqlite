@@ -195,17 +195,20 @@ fn date_string_equals_millis() {
 #[test]
 fn date_type_rank() {
     use std::cmp::Ordering::*;
+    // v0.4.1 起对齐 MongoDB 官方 BSON 序:
+    // number(2) < string(3) < object(4) < array(5) < bool(8) < date(9)
     assert_eq!(
         cmp(json!(999999), json!({"$date": 0})),
         Less,
         "number < date"
     );
     assert_eq!(
-        cmp(json!({"$date": 0}), json!("1970")),
+        cmp(json!("1970"), json!({"$date": 0})),
         Less,
-        "date < string"
+        "string < date"
     );
-    assert_eq!(cmp(json!({"$date": 0}), json!([1])), Less, "date < array");
+    assert_eq!(cmp(json!([1]), json!({"$date": 0})), Less, "array < date");
+    assert_eq!(cmp(json!(true), json!({"$date": 0})), Less, "bool < date");
 }
 
 /// 无法解析的 `$date` 对象降级为普通对象,不 panic。

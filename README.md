@@ -66,6 +66,7 @@ nosqlite 有两个形态,共用同一套查询语义:
 | 缺失 = null | `{"deleted_at":null}` 匹配**字段缺失**的文档;`{"$ne":null}` 不匹配 |
 | 字段级 `$not` | `{"age":{"$not":{"$gt":18}}}` |
 | Date 按时间比较 | `{"$date":"2026-09-16T10:00:00Z"}`,时区偏移归一(v0.1.3) |
+| 类型序 | 完整对齐 MongoDB 官方 BSON 序 `MinKey < Null < Number < String < Object < Array < Binary < ObjectId < Bool < Date < Timestamp < Regex < MaxKey`(v0.4.1) |
 
 > ⚠️ **升级提示**:前四条是破坏性变更 —— v0.1.1 及更早版本上,`$or` 与字段条件为 OR 关系、数组字段的标量等值不命中、点号路径不穿透数组。若你在旧版上依赖这些行为,升级后查询结果会变化。
 
@@ -271,7 +272,7 @@ nosqlite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 382 例测试
+cargo test --all-targets     # 392 例测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```
