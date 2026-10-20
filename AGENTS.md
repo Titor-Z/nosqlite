@@ -8,6 +8,12 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.10.21: v0.6.7 发布准备 —— 版本号对齐(`Cargo.toml` 0.6.5→0.6.7、`npm/package.json` 0.1.0→0.6.7);CHANGELOG 补齐 0.6.4/0.6.5/0.6.6/0.6.7 四条(v0.6.4 起就没再更新过);新增 `.github/workflows/npm.yml`(三平台建库 → 汇总 → 测试 → `npm publish`,凭证走 `npm` 环境的 `NPM_TOKEN`);`ci.yml` 与 `release.yml` 的 wasm job 均加入 `web/smoke.mjs` 冒烟验证(15 项,覆盖 CRUD/索引/错误消息可读性/持久化);`npm/package-lock.json` 解除忽略(可复现安装 + `npm ci` 需要)。
+
+- 2026.10.21: v0.6.6(未发布)WASM 写入性能实测与优化 —— 建 WASI 计量(`web/wasiMetrics` + `web/bench-write.mjs`),实测证明**页写不是瓶颈**(2241 次 `fd_pwrite` 仅 20 ms / 1.9%),`fd_sync` 独占 60–90%;`fsync` 自身方差达 **54x**(21→1140 ms),故改用 min/p10 判据,wasm/native = **1.30x**(非早前误判的 3.6x);`Document::from_value` 消掉双重序列化(66.9 → 29.1 ms,2.3x);新增流式批量会话 `nodblite_bulk_begin/add/commit/abort`(JS 堆增量 10.6 → **2.6 MB**,4x);**页写合并(Step 3)与 durability 折中(Step 5)经数据否决,不做**。526 例全绿。
+
+- 2026.10.20: v0.6.6(未发布)WASM 支持 —— 同一份源码编译到 `wasm32-wasip1`,产物单文件 `.wasm`(~2.5 MB,gzip 后 ~790 KB)覆盖所有平台所有语言;新增 `nodblite_malloc/nodblite_free` 导出与 `web/nodblite.js` 宿主封装(JS/Node 零依赖);修掉 ObjectId 在 WASI 下 `std::process::id()` panic 的缺陷;`release.yml` 增 wasm job。参见 [taolun #70](#70-20261020-wasm-支持单文件跨平台)。
+
 - 2026.09.16: v0.6.5 M31 完成 —— 文档站(GitHub Pages + MkDocs Material,14 页),含「与 MongoDB 的差异」「FAQ」等高价值页面;`--strict` 构建零警告。参见 [taolun #69](#69-v065-m31-文档站github-pages--mkdocs-material)。
 - 2026.09.16: v0.6.4 完成 —— **改名 nosqlite → nodblite**(crates.io 同名已被占用且定位重合);只改对外标识,存储格式与 `.nodb` 后缀不动,并用 worktree 跨版本验证旧库可读;**526 例全绿**。参见 [taolun #68](#68-v064-改名nosqlite--nodblite)。
 - 2026.09.16: v0.6.3 完成 —— 新增索引性能基准,实测发现并修掉**唯一索引建索引 O(n²)** 缺陷(10 万条 74 s → 2.4 s,31 倍);固化索引性能数据与选型提示;**526 例全绿**。参见 [taolun #67](#67-v063-执行性能实测--修掉唯一索引-on²-缺陷)。
@@ -47,6 +53,65 @@
 ## taolun
 
 > 对话记录,按时间正序(最早在上)。每次对话先追加到这里,再动手改代码。
+
+### 71. 2026.10.21 WASM 写入性能:实测归因与优化
+
+- 背景:上一轮测出 wasm 写 20000 条 2.158s vs 原生 0.601s(3.6x),但该结论**是单次测量**。本轮先建计量再归因。
+- **Step 1 计量**(`web/wasiMetrics()` 包装 WASI import + `web/bench-write.mjs`),20000 条 / 4.72 MB 载荷:
+
+  | WASI 调用 | 次数 | 耗时 |
+  |---|---|---|
+  | `fd_pwrite` | 2241 | **20 ms(1.9%)** |
+  | `fd_sync` | 8 | **1057 ms(60–90%)** |
+  | 其余(含 20001 次 `clock_time_get`) | — | 6 ms |
+  | wasm 内 CPU(总−WASI) | — | ~200 ms |
+
+  → **页写合并(Step 3)无意义**:上限只有 1.9%。
+
+- **关键测量方法修正**:`fsync` 自身方差极大(同文件同脏页 30 次:**min 21 ms / max 1140 ms,54x**)。中位数与单次测量都被污染,必须用 **min/p10** 作判据。
+  - 修正后 wasm/native = **1.30x**(min 213 ms vs 277 ms),而非早前的 3.6x / 2.28x。
+  - 同进程 `WASI fd_sync` vs `fs.sync()` 的「31x」也是脏页差异造成的假象,不是 WASI 开销。
+
+- **fsync 成本的真实来源**:不是脏页数,而是**文件增长**。
+  - 边写边增长 16 MB:`write 65 ms + fsync 930 ms`
+  - 预分配 16 MB 后写:`write 30 ms + fsync 26 ms`
+  - 原生同样存在(9 MB 增长式 fsync = 720 ms)。**这是文件系统语义,不是 nodblite 缺陷。**
+  - 预分配实测对插入有收益(wasm 中位 1460 → 536 ms),但**仅对首批有效**:连写 6 批 5000 条时预分配反而不占优(696 vs 741 ms),因为预分配的空间很快用尽。**结论:不引入预分配策略**(会改变文件语义、稀疏文件打包后体积不可控)。
+
+- **Step 2 消掉双重序列化**(零风险,已做):
+  - 新增 `Document::from_value(Value)`;`from_json`/`from_bytes` 委托它;`to_bytes` 改 `serde_json::to_vec(&self.inner)`(去掉 `Value::Object(clone)` + `String` 中转)。
+  - 4 处 `Document::from_json(&serde_json::to_string(&v))` 全改直调(`cli.rs` ×2、`ffi.rs` ×2)。
+  - 实测(20000 条同进程对照):**66.9 ms → 29.1 ms,2.3x**。
+
+- **Step 3 页写合并:不做**(数据否决,上限 1.9%)。
+- **Step 5 durability 折中:不做**。`fd_sync` 是主因,但用 `Durability::None` 绕过它违反 AGENTS.md 既定纪律(误设会静默丢写入);且瓶颈本质是文件增长,不是 fsync 调用次数。
+
+- **Step 4 流式批量会话**(已做):新增 C ABI
+  `nodblite_bulk_begin/add/commit/abort` —— 宿主按条推进,不必先把整个数组序列化成一个大字符串;全部文档仍在**单事务**内提交,语义与 `insert_many` 一致(任一主键冲突整批回滚)。
+  - JS 侧 `NodbliteDb.bulkInsert(collection, docs)`。
+  - 实测 **JS 堆增量:insertMany 10.6 MB → bulkInsert 2.6 MB(4x)**;写入耗时持平(min 比值 1.01)。
+  - C 冒烟测试补充:commit 写入 2 条、非法文档报错但会话可用、abort 不写入。
+
+- **踩坑**:`web/nodblite.js` 的 `lastError()` 沿用了 64 位的字段偏移(`code_str@8/message@16/op@24`),wasm32 应为 `@4/@12/@20` —— 导致错误消息读出乱码。这是**第二次**栽在「wasm32 repr(C) 布局与 64 位不同」上(第一次是 `NodbliteResult`)。
+
+- 测试:526 例全绿,C 冒烟 3 例全绿,`clippy --all-targets -D warnings` 零警告。
+
+### 70. 2026.10.20 WASM 支持:单文件跨平台
+
+- 背景:嵌入式单应用模式下,用户须按平台挑选/安装 3 个 C 动态库(合计解压 ~89 MB),不像 SQLite 那样"用户无感"。讨论确定:保持三平台 C 库照常发布,另加 wasm32-wasip1 产物作为第四形态。
+- 可行性实测(本机,非推演):
+  - `cargo build --target wasm32-wasip1 --lib` 零改动成功(redb 3.1.3 已内置 WASI 后端);
+  - 产物 `nodblite.wasm` 2.53 MB,gzip 后 ~790 KB;导出全部 25 个 `nodblite_*` C ABI,仅导入 19 个 `wasi_snapshot_preview1`;
+  - CLI 源码自动编成 `_start`,Node WASI 下 REPL/import/count 全通过;
+  - **`.nodb` 跨平台互读**:wasm 写 5000 条 → 原生读 100%,原生写 → wasm 读 100%;
+  - 读性能:原生 0.940s vs WASI 0.949s(**≈1.01x**);写性能(20000 条 insert_many):原生 0.601s vs WASI 2.158s(**3.6x 慢**)。
+- 修掉一个真 bug:`ObjectId::generate` 调 `std::process::id()`,WASI 下 panic("no pids on this platform");改为 `cfg(not(target_family="wasm"))` 取 PID、wasm 退化为 0。
+- 落地:
+  - `src/ffi.rs` 新增 `nodblite_malloc(len)/nodblite_free(ptr,len)`,供 wasm 宿主在线性内存传字符串(宿主拿不到 Rust 分配器);`include/nodblite.h` 同步声明;
+  - 新增 `web/nodblite.js`:JS/Node 零依赖宿主封装(WASI preopen + 线性内存字符串 + `NodbliteResult` wasm32 布局解码),导出 `loadWasm/allocString/openDb/NodbliteDb`;
+  - `release.yml` 增 `wasm` job:构建 `--lib --target wasm32-wasip1`,打包 `nodblite-wasm.tar.gz`(wasm + 头文件 + nodblite.js + SHA256)。
+- **关键坑(记入认知修正)**:`NodbliteResult` 在 wasm32 上的 repr(C) 布局与 64 位不同 —— `code(i32)` 后补 4 字节对齐,`count/affected` 各 8 字节,`docs` 指针 4 字节,`value.ptr@28 / value.len@32`(而非 64 位的 @32/@40)。封装里读错偏移会拿到 `0xFFFFFFFF` 长度导致越界。
+- 认知修正(写入下节):wasm 写慢 3.6x 的归因 —— 批量 insert_many 单事务只 fsync 一次,慢在 JSON 解析 + redb 页面写入的 WASI 系统调用边界,不是 fsync。
 
 ### 1. 2026.08.12 需求讨论与总体方案
 
@@ -1333,6 +1398,8 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- v0.6.7:WASM 形态(单文件跨平台)+ 写入路径实测优化(双重序列化 2.3x、流式批量会话 4x 内存);526 例全绿。
+- v0.6.6:JavaScript 生态接入 —— npm 包(koffi 直连 C ABI)+ C ABI 扩展(索引/explain/find_page/get/upsert)。
 - v0.6.5:文档站(GitHub Pages + MkDocs Material,14 页)。
 - v0.6.4:改名 nodblite(crates.io 原名称已占用);526 例全绿。
 - v0.6.3:索引性能基准 + 修掉唯一索引 O(n²)(31 倍);526 例全绿。
@@ -1377,6 +1444,12 @@
 ## 认知修正
 
 > AI 开发过程中的踩坑记录、用户纠正与明确结论,避免重复死循环。
+
+- **wasm32 repr(C) 结构体布局与 64 位不同**:wasm32 上指针 4 字节。`NodbliteResult`:`code@0`、`count@8`、`affected@16`、`docs@24`、`value.ptr@28`、`value.len@32`(64 位是 @0/@8/@16/@24/@32/@40);`NodbliteError`:`code@0`、`code_str@4`、`message@12`、`op@20`(64 位是 @0/@8/@16/@24)。读错偏移的两种表现:长度读到 `0xFFFFFFFF` → `RangeError: Invalid typed array length`;错误消息读到乱码。**这个坑已经踩了两次(先是 NodbliteResult,后是 NodbliteError),任何跨 wasm/原生共享的 FFI 结构体,两端布局常量必须分别写并各自验证。**
+- **fsync 的单次测量完全不可用**:同一文件、同样脏页,连续 30 次 `fsync` 的耗时是 min 21 ms / 中位 24 ms / max 1140 ms(**54x 方差**)。任何写基准都必须用 **min 或 p10** 作判据,中位数与单次值都会被系统负载污染。早前「wasm 写慢 3.6x」「WASI fd_sync 比 fs.sync 慢 31x」两个结论都是这样得来的假象,修正后真实值是 **1.30x**。
+- **fsync 成本来自「文件增长」而非「脏页数量」**:边写边增长的 16 MB 文件 fsync 要 930 ms,预分配 16 MB 后再写只要 26 ms(**36x**);原生同样如此(9 MB 增长式 720 ms)。根因是文件系统要为新增块分配并落元数据。**优化写入前先问「文件是不是在增长」,而不是「写了几页」。**
+- **wasm 的页写开销可以忽略**:20000 条 / 9 MB 数据量下 `fd_pwrite` 2241 次合计仅 20 ms(1.9%),`fd_sync` 占 60–90%。**在 wasm 上做「页写合并」是错的方向** —— 先计量再优化。
+- **wasm 读几乎无损**:20000 条读路径原生 0.940s vs WASI 0.949s(1.01x);写入的真实差距修正后是 **1.30x**(min 判据),不是 3.6x。瓶颈在 `fd_sync`(文件增长导致),不在 WASI 往返次数 —— 详见上两条。
 
 - **写入基准必须标注平台(macOS `F_FULLFSYNC` 放大)**:Rust std 在 macOS/iOS 把 `sync_all()`/`sync_data()` 映射到 `F_FULLFSYNC`(强制磁盘写缓存落物理介质),代价是普通 `fsync` 的 **66 倍**(实测 D 组 4.80 ms vs G 组 POSIX `fsync` 0.072 ms);Linux 上映射到 `fdatasync`,无放大(D/G = 1.0x)。因此逐条写入 185 条/秒是 macOS 最坏值,Linux 实测 1,382 条/秒。**引用任何写入数字必须标注平台**;「fsync 是下界」的表述只在 macOS 成立。
 - **归因必须在同进程内做对照组**:曾用不同进程/不同时间的运行结果对比,得出「`insert_many` 差 3x、序列化占主导」的错误结论;同进程同批次对照(bench_write F vs B)后证明两者持平(macOS 1.02x,Linux 达理论上限 95%)。机器噪声远大于微秒级差异,跨运行数字不可用于归因。

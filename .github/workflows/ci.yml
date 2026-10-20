@@ -40,3 +40,34 @@ jobs:
       # 显式验证 release 构建（基准与发布都用 release）
       - name: cargo build --release
         run: cargo build --release --all-targets
+
+  # WASM 构建防回归:wasm32-wasip1 是独立产物形态,与主机架构无关,
+  # 单平台构建即可覆盖。打包后的产物必须能被 Node 真实加载并读写数据库,
+  # 否则发布出去的 .wasm 是坏的(仅「能编译」不足以证明可用)。
+  wasm:
+    name: WASM 构建与冒烟验证
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: 缓存构建产物
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建 wasm
+        run: cargo build --release --target wasm32-wasip1 --lib
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 用 web/nodblite.js 真实加载 wasm,跑一轮 insert/find/update/delete。
+      # 这一步会验证 NodbliteResult / NodbliteError 的 wasm32 布局常量没写错 ——
+      # 布局写错的表现是静默乱码或越界,只有真跑才暴露。
+      - name: WASM 冒烟验证
+        run: node web/smoke.mjs --wasm target/wasm32-wasip1/release/nodblite.wasm

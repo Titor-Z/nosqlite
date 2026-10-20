@@ -1,0 +1,121 @@
+name: npm
+
+# 发布 npm 包 `nodblite`。
+#
+# 触发方式:推送 v* tag,或手动触发(workflow_dispatch)。
+# 每个平台各自构建动态库,再汇总成一个包发布 —— 与 C ABI 的发布产物同源。
+#
+# 需要的仓库配置:
+#   - Environment: `npm`(npm 的 Granular Access Token 存在该环境的 secret 里)
+#   - Secret 名: `NPM_TOKEN`
+#
+# 注意:带 provenance 发布需要 `id-token: write` 与公开仓库。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 每个平台各建一次动态库,产物按 <platform>-<arch>/ 目录命名,
+  # 与 npm/src/bindings.js 的查找顺序一致。
+  build:
+    name: 构建库(${{ matrix.platform }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            lib: libnodblite.so
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+            lib: libnodblite.dylib
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            lib: nodblite.dll
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存构建产物
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建动态库
+        run: cargo build --release --lib
+
+      - name: 暂存产物
+        shell: bash
+        run: |
+          mkdir -p stage/prebuilds/${{ matrix.platform }}-${{ matrix.arch }}
+          cp target/release/${{ matrix.lib }} \
+             stage/prebuilds/${{ matrix.platform }}-${{ matrix.arch }}/
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.platform }}-${{ matrix.arch }}
+          path: stage/prebuilds
+          if-no-files-found: error
+
+  publish:
+    name: 发布到 npm
+    needs: build
+    runs-on: ubuntu-latest
+    # npm 的 token 存在仓库的 `npm` 环境里(见文件头注释)
+    environment: npm
+    permissions:
+      contents: read
+      # npm provenance(可选):需要 id-token 写权限
+      id-token: write
+    defaults:
+      run:
+        working-directory: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: 汇总各平台动态库
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prebuild-*
+          path: npm/prebuilds
+          merge-multiple: true
+
+      - name: 确认产物齐全
+        shell: bash
+        run: |
+          set -e
+          for d in darwin-arm64 linux-x64 win32-x64; do
+            test -d "prebuilds/$d" || { echo "缺少 prebuilds/$d"; exit 1; }
+            ls -l "prebuilds/$d"
+          done
+
+      - name: 安装依赖
+        run: npm ci --ignore-scripts || npm install --ignore-scripts
+
+      - name: 编译 TypeScript
+        run: npm run build
+
+      # 发布前用本平台的库跑一遍行为测试(ubuntu runner 用 linux-x64 的库)
+      - name: 行为测试
+        run: npm test
+
+      - name: 发布
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

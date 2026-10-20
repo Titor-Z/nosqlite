@@ -110,3 +110,52 @@ jobs:
             ${{ matrix.archive }}.sha256
             ${{ matrix.lib_archive }}
             ${{ matrix.lib_archive }}.sha256
+
+  # wasm32-wasip1:一个 .wasm 覆盖所有平台所有语言(JS/Python/Go/...)。
+  # 与上面的多平台二进制不同,它只需构建一次,产物 ~2.5 MB(gzip 后 ~790 KB)。
+  wasm:
+    name: 构建(wasm32-wasip1)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: 缓存构建产物
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建(release)
+        run: cargo build --release --target wasm32-wasip1 --lib
+
+      # 发布前必须真跑一遍:布局常量写错只会表现为静默乱码/越界,
+      # 「能编译」不代表产物可用。
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 冒烟验证
+        run: node web/smoke.mjs --wasm target/wasm32-wasip1/release/nodblite.wasm
+
+      - name: 打包
+        run: |
+          mkdir -p stage
+          cp target/wasm32-wasip1/release/nodblite.wasm stage/
+          cp include/nodblite.h stage/
+          cp web/nodblite.js stage/
+          cp web/smoke.mjs stage/
+          tar czf nodblite-wasm.tar.gz -C stage \
+            nodblite.wasm nodblite.h nodblite.js smoke.mjs
+          shasum -a 256 nodblite-wasm.tar.gz > nodblite-wasm.tar.gz.sha256
+
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            nodblite-wasm.tar.gz
+            nodblite-wasm.tar.gz.sha256

@@ -497,7 +497,7 @@ fn exec_insert(db: &Database, collection: &str, json: &str) -> ExitCode {
     if let Value::Array(items) = value {
         let docs = items
             .into_iter()
-            .map(|v| Document::from_json(&serde_json::to_string(&v).unwrap_or_default()))
+            .map(Document::from_value)
             .collect::<Result<Vec<_>, _>>();
         let docs = match docs {
             Ok(d) => d,
@@ -529,7 +529,7 @@ fn exec_insert(db: &Database, collection: &str, json: &str) -> ExitCode {
     }
 
     // 对象 → 单条插入
-    let doc = match Document::from_json(&serde_json::to_string(&value).unwrap_or_default()) {
+    let doc = match Document::from_value(value) {
         Ok(doc) => doc,
         Err(e) => {
             eprintln!("文档格式错误: {}", e);

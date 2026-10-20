@@ -120,6 +120,18 @@ pub struct NodbliteCursor {
     arena: Vec<CString>,
 }
 
+/// 不透明批量写入会话句柄。
+///
+/// 用途:宿主(尤其是 wasm)可以按小批调用 [`nodblite_bulk_add`],
+/// 不必先把整个数组序列化成一个大字符串,内存峰值只与单条文档有关。
+/// 全部文档在 [`nodblite_bulk_commit`] 时**同一个写事务**写入。
+pub struct NodbliteBulk {
+    /// 目标集合名。
+    collection: String,
+    /// 已累积的文档(提交前只在内存中)。
+    docs: Vec<Document>,
+}
+
 // ==================== 内部工具 ====================
 
 thread_local! {
@@ -424,6 +436,9 @@ pub unsafe extern "C" fn nodblite_insert(
 
 /// 批量插入(JSON 数组字符串),`value` 为主键数组。
 ///
+/// 需要流式/超大批量时改用 [`nodblite_bulk_add`] 系列 —— 那里宿主可以按小批推进,
+/// 不必先把整个数组序列化成一个大字符串。
+///
 /// # Safety
 ///
 /// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
@@ -459,7 +474,7 @@ pub unsafe extern "C" fn nodblite_insert_many(
     };
     let mut docs = Vec::with_capacity(items.len());
     for (i, item) in items.into_iter().enumerate() {
-        match Document::from_json(&item.to_string()) {
+        match Document::from_value(item) {
             Ok(d) => docs.push(d),
             Err(e) => {
                 return err_result(set_error_msg(
@@ -477,6 +492,112 @@ pub unsafe extern "C" fn nodblite_insert_many(
         }
         Err(e) => err_result(set_error("insert_many", &e)),
     }
+}
+
+// ==================== 批量写入会话 ====================
+
+/// 开启一个批量写入会话,返回会话句柄(失败返回空指针)。
+///
+/// 会话内用 [`nodblite_bulk_add`] 逐条(或小批)推入文档,
+/// 最后 [`nodblite_bulk_commit`] 在**单个写事务**内一次写入。
+///
+/// 会话不持有数据库句柄的所有权,但 commit 时需传入同一个 `db`。
+/// 会话用完后**必须**用 [`nodblite_bulk_abort`] 或 [`nodblite_bulk_commit`] 释放。
+///
+/// # Safety
+///
+/// `collection` 必须是合法 NUL 结尾的 UTF-8 字符串。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_bulk_begin(collection: *const c_char) -> *mut NodbliteBulk {
+    let Some(coll) = (unsafe { read_str(collection, "bulk_begin", "collection") }) else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(NodbliteBulk {
+        collection: coll,
+        docs: Vec::new(),
+    }))
+}
+
+/// 向会话追加一条文档(`doc_json` 为单个 JSON 对象)。
+///
+/// 返回 0 成功、非 0 失败(失败后会话仍可继续或 abort)。
+///
+/// # Safety
+///
+/// `bulk` 必须来自 [`nodblite_bulk_begin`] 且未被释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_bulk_add(
+    bulk: *mut NodbliteBulk,
+    doc_json: *const c_char,
+) -> i32 {
+    let Some(bulk) = (unsafe { bulk.as_mut() }) else {
+        return set_error_msg("bulk_add", ErrorCode::Internal, "批量会话句柄为空");
+    };
+    let Some(text) = (unsafe { read_str(doc_json, "bulk_add", "doc_json") }) else {
+        return LAST_CODE.with(|c| c.get().as_i32());
+    };
+    match Document::from_json(&text) {
+        Ok(doc) => {
+            bulk.docs.push(doc);
+            NODBLITE_OK
+        }
+        Err(e) => set_error_msg("bulk_add", ErrorCode::InvalidDocument, &e.to_string()),
+    }
+}
+
+/// 提交会话:把全部累积文档在**单个写事务**内写入。
+///
+/// 成功后会话被释放,`value` 为主键 JSON 数组;失败时同样释放会话
+/// (已累积数据丢弃,库不受影响)。
+///
+/// # Safety
+///
+/// `bulk` 必须来自 [`nodblite_bulk_begin`] 且未被释放;
+/// `db` 必须与创建会话时是同一个数据库。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_bulk_commit(
+    db: *mut NodbliteDb,
+    bulk: *mut NodbliteBulk,
+) -> *mut NodbliteResult {
+    if bulk.is_null() {
+        return err_result(set_error_msg(
+            "bulk_commit",
+            ErrorCode::Internal,
+            "批量会话句柄为空",
+        ));
+    }
+    // 无论成功失败,会话都由此处消费掉
+    let session = unsafe { Box::from_raw(bulk) };
+
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "bulk_commit",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+
+    let mut docs = session.docs;
+    match db.inner.insert_many(&session.collection, &mut docs) {
+        Ok(ids) => {
+            let text = serde_json::to_string(&ids).unwrap_or_default();
+            ok_value(&text)
+        }
+        Err(e) => err_result(set_error("bulk_commit", &e)),
+    }
+}
+
+/// 放弃会话并释放(已累积文档不会写入)。
+///
+/// # Safety
+///
+/// `bulk` 必须来自 [`nodblite_bulk_begin`] 且未被释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_bulk_abort(bulk: *mut NodbliteBulk) {
+    if bulk.is_null() {
+        return;
+    }
+    drop(unsafe { Box::from_raw(bulk) });
 }
 
 /// 按主键读取单条文档,`value` 为文档 JSON(不存在则为空)。
@@ -1397,7 +1518,7 @@ pub unsafe extern "C" fn nodblite_exec(
             };
             let mut docs = Vec::with_capacity(items.len());
             for (i, item) in items.into_iter().enumerate() {
-                match Document::from_json(&item.to_string()) {
+                match Document::from_value(item) {
                     Ok(d) => docs.push(d),
                     Err(e) => {
                         return err_result(set_error_msg(
@@ -1564,6 +1685,38 @@ pub unsafe extern "C" fn nodblite_exec(
             &format!("未知命令: {}", other),
         )),
     }
+}
+
+// ==================== 内存分配(wasm 等宿主必需) ====================
+
+/// 分配 `len` 字节的缓冲区,返回指针(失败返回空指针)。
+///
+/// 用途:wasm 宿主(JS/Python/Go)无法直接取用 Rust 的分配器,
+/// 必须借本函数在 wasm 线性内存里开缓冲区,把字符串写进去再传给 C ABI。
+/// 释放必须调用 [`nodblite_free`],且 `len` 必须与分配时相同。
+#[unsafe(no_mangle)]
+pub extern "C" fn nodblite_malloc(len: usize) -> *mut u8 {
+    if len == 0 {
+        return std::ptr::null_mut();
+    }
+    let mut buf: Vec<u8> = Vec::with_capacity(len);
+    let ptr = buf.as_mut_ptr();
+    std::mem::forget(buf);
+    ptr
+}
+
+/// 释放 [`nodblite_malloc`] 分配的缓冲区。
+///
+/// # Safety
+///
+/// `ptr`/`len` 必须与 [`nodblite_malloc`] 的调用严格配对,且不得重复释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_free(ptr: *mut u8, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    // 与 nodblite_malloc 的 with_capacity 完全对应(capacity == len)
+    drop(unsafe { Vec::from_raw_parts(ptr, 0, len) });
 }
 
 // ==================== 错误与释放 ====================

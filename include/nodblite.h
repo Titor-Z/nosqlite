@@ -153,6 +153,23 @@ NodbliteResult *nodblite_insert(NodbliteDb *db, const char *collection, const ch
 /* 批量插入(JSON 数组字符串)。value = _id 数组的 JSON。 */
 NodbliteResult *nodblite_insert_many(NodbliteDb *db, const char *collection, const char *docs_json);
 
+/*
+ * 批量写入会话(流式,供 wasm 等宿主避免一次性大字符串 marshalling)
+ *
+ *   NodbliteBulk *b = nodblite_bulk_begin("users");
+ *   for (每批文档) { for (每条) nodblite_bulk_add(b, json); }
+ *   NodbliteResult *r = nodblite_bulk_commit(db, b);   // b 由此被释放
+ *   // 或放弃:nodblite_bulk_abort(b);
+ *
+ * 全部文档在 commit 时**同一个写事务**写入(与 insert_many 语义一致:
+ * 任一主键冲突则整批回滚)。会话本身不持有数据库所有权。
+ */
+typedef struct NodbliteBulk NodbliteBulk;
+NodbliteBulk *nodblite_bulk_begin(const char *collection);
+int32_t nodblite_bulk_add(NodbliteBulk *bulk, const char *doc_json);
+NodbliteResult *nodblite_bulk_commit(NodbliteDb *db, NodbliteBulk *bulk);
+void nodblite_bulk_abort(NodbliteBulk *bulk);
+
 /* 按 _id 读单条。value = 文档 JSON;不存在则 value.len == 0。 */
 NodbliteResult *nodblite_get(NodbliteDb *db, const char *collection, const char *id);
 
@@ -218,6 +235,18 @@ NodbliteResult *nodblite_list_collections(NodbliteDb *db);
 NodbliteResult *nodblite_exec(NodbliteDb *db, const char *command_json);
 
 /* ---------- 错误与释放 ---------- */
+
+/*
+ * 内存分配(wasm 宿主必需)
+ *
+ * 宿主(JS/Python/Go)拿到的是 wasm 线性内存,不能直接调用 Rust 分配器。
+ * 流程:len = 字节数 → p = nodblite_malloc(len) → 把字符串写进 p(含结尾 NUL)
+ *      → 传给 C ABI 函数 → 用完 nodblite_free(p, len)。
+ *
+ * 本机原生链接时这两个函数同样可用,行为等价于 malloc/free 的定长版。
+ */
+uint8_t *nodblite_malloc(size_t len);
+void nodblite_free(uint8_t *ptr, size_t len);
 
 /* 本条线程最近一次错误的错误码(0 = 无错误)。 */
 int32_t nodblite_last_error_code(void);

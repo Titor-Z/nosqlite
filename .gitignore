@@ -10,4 +10,5 @@ examples/javascript/package*.json
 npm/node_modules/
 npm/.npm-cache/
 npm/prebuilds/
-npm/package-lock.json
+npm/dist/
+npm/*.tgz

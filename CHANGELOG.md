@@ -2,6 +2,49 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
+## [0.6.7] - 2026-10-21
+
+WASM 形态落地 + 写入路径实测优化。
+
+### 新增
+- **WASM 产物(`wasm32-wasip1`)**:同一份源码编译出单个 `.wasm`(2.5 MB,gzip 后 790 KB),覆盖所有平台所有语言,不再需要为每个语言/平台各分发一份 C 动态库。`.nodb` 文件与原生完全互通(双向读写验证)。
+- **`web/nodblite.js`**:零依赖 JS/Node 宿主封装(WASI preopen + 线性内存字符串 + `NodbliteResult`/`NodbliteError` wasm32 布局解码)。
+- **`nodblite_malloc` / `nodblite_free`**:供 wasm 宿主在线性内存里传字符串(宿主拿不到 Rust 分配器)。
+- **流式批量写入会话 `nodblite_bulk_begin/add/commit/abort`**:宿主可按条推进,不必先把整个数组序列化成一个大字符串;全部文档仍在单个写事务内提交,语义与 `insert_many` 一致(任一主键冲突整批回滚)。JS 侧对应 `Database#bulkInsert()`。
+  - 实测 JS 堆增量:10.6 MB → **2.6 MB**(4x 降低)。
+- **`Document::from_value(Value)`**:消掉 4 处「JSON → Value → String → 再解析」的往返(实测 66.9 ms → 29.1 ms,2.3x)。
+- **`web/bench-write.mjs` + `web/wasiMetrics()`**:WASI 调用计量(次数/字节/耗时),用于写路径归因。
+- **`examples/bench_wasm_compare.rs`**:原生侧 `insert_many` 对照基准。
+- `release.yml` 新增 `wasm` job;`ci.yml` 新增 wasm 构建与冒烟验证。
+
+### 修复
+- **`ObjectId::generate` 在 WASI 下 panic**:`std::process::id()` 在 wasm 上不可用(`no pids on this platform`),导致插入直接崩溃。改为非 wasm 才取 PID。
+
+### 实测结论(详见 AGENTS.md 认知修正)
+- **wasm 的 `fd_sync` 与原生 `sync_all` 等价**(22.5 ms vs 21.9 ms,1.03x)—— 早前「wasm 写慢 3.6x / WASI 慢 26x」的结论是 fsync 方差污染造成的假象。
+- **`fd_pwrite` 不是瓶颈**:20000 条 / 9 MB 下 2241 次页写合计仅 20 ms(1.9%),`fd_sync` 占 60–90%。
+- **fsync 的单次测量不可用**:同文件同脏页连续 30 次 fsync,min 21 ms / max 1140 ms(**54x 方差**),写基准必须用 min/p10 判据。
+- **页写合并与 `Durability::None` 折中经数据否决**,不做。
+
+## [0.6.6] - 2026-10-19
+
+JavaScript 生态接入。
+
+### 新增
+- **npm 包 `nodblite`**:TypeScript 类型定义 + 通过 [koffi](https://www.npmjs.com/package/koffi) 直连 C ABI,同步风格 API(手感对齐 better-sqlite3),无需 node-gyp / Python / C++ 编译器。
+- **C ABI 扩展**:索引相关(`create_index` / `create_index_composite` / `list_indexes` / `drop_index`)、`explain`、`find_page`、`get`、`upsert`。
+- 文档站新增 JavaScript 使用指南;`examples/javascript/js_ffi.mjs` 可运行示例。
+
+## [0.6.5] - 2026-10-19
+
+### 新增
+- **文档站**(GitHub Pages + MkDocs Material,14 页):快速上手(Rust / C ABI / CLI / wire 驱动四条入口)、查询/更新/投影/索引/聚合指南、**与 MongoDB 的差异**、性能、FAQ。`--strict` 构建零警告。
+
+## [0.6.4] - 2026-10-19
+
+### 变更(破坏性)
+- **改名 `nosqlite` → `nodblite`**:crates.io 的 `nosqlite` 已被同名同定位的项目占用。只改对外标识(crate/二进制/C ABI 函数/头文件/wire 命名空间/文档),**存储格式与 `.nodb` 后缀不变**;用 git worktree 跨版本验证旧库可读。
+
 ## [0.6.3] - 2026-09-16
 
 性能实测与一处真实缺陷修复。

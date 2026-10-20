@@ -20,6 +20,21 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// 进程内伪随机数种子(占 5 字节,见 [`ObjectId::generate`])。
 static RANDOM: AtomicU64 = AtomicU64::new(0);
 
+/// 进程标识:取 PID 参与随机种子,避免不同进程生成相同 ObjectId。
+///
+/// wasm 等无进程概念的目标(std::process::id 会 panic)退化为 0 ——
+/// 此时由纳秒时间戳 + 进程内计数器保证唯一。
+fn process_id() -> u64 {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        std::process::id() as u64
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        0
+    }
+}
+
 /// ObjectId 生成器。
 pub struct ObjectId;
 
@@ -43,7 +58,7 @@ impl ObjectId {
                 .duration_since(UNIX_EPOCH)
                 .expect("系统时间应晚于 Unix 纪元")
                 .as_nanos() as u64;
-            seed = now ^ (std::process::id() as u64);
+            seed = now ^ process_id();
             RANDOM.store(seed, Ordering::Relaxed);
         }
         // 线性同余更新,取中间 5 字节

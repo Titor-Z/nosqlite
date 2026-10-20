@@ -188,6 +188,35 @@ int main(int argc, char **argv) {
         remove(ex_path);
     }
 
+    /* ---------- 批量写入会话(流式) ---------- */
+    {
+        NodbliteBulk *b = nodblite_bulk_begin("bulk_users");
+        CHECK(b != NULL, "bulk_begin 应成功");
+
+        CHECK(nodblite_bulk_add(b, "{\"n\":1}") == 0, "bulk_add 第 1 条应成功");
+        CHECK(nodblite_bulk_add(b, "{\"n\":2}") == 0, "bulk_add 第 2 条应成功");
+
+        /* 非对象文档 → 报错,但会话仍可用 */
+        CHECK(nodblite_bulk_add(b, "[1,2,3]") != 0, "bulk_add 非对象应失败");
+
+        r = nodblite_bulk_commit(db, b);
+        CHECK(r->code == NODBLITE_OK, "bulk_commit 应成功");
+        nodblite_result_free(r);
+
+        r = nodblite_count(db, "bulk_users", NULL);
+        CHECK(r->code == NODBLITE_OK && r->affected == 2, "bulk 应写入 2 条");
+        nodblite_result_free(r);
+
+        /* abort 不写入 */
+        NodbliteBulk *b2 = nodblite_bulk_begin("bulk_users");
+        CHECK(nodblite_bulk_add(b2, "{\"n\":3}") == 0, "bulk_add 应成功");
+        nodblite_bulk_abort(b2);
+
+        r = nodblite_count(db, "bulk_users", NULL);
+        CHECK(r->affected == 2, "abort 后不应新增文档");
+        nodblite_result_free(r);
+    }
+
     /* ---------- 关闭 ---------- */
     nodblite_close(db);
     free(id);

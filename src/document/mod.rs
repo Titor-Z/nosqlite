@@ -35,6 +35,13 @@ impl Document {
     /// 要求顶层必须是 JSON 对象,否则返回 [`DocumentError::NotAnObject`]。
     pub fn from_json(json: &str) -> Result<Self, DocumentError> {
         let value: Value = serde_json::from_str(json).map_err(DocumentError::Json)?;
+        Self::from_value(value)
+    }
+
+    /// 从已解析的 JSON 值创建文档(避免「先序列化再解析」的往返)。
+    ///
+    /// 要求顶层必须是 JSON 对象,否则返回 [`DocumentError::NotAnObject`]。
+    pub fn from_value(value: Value) -> Result<Self, DocumentError> {
         match value {
             Value::Object(map) => Ok(Document { inner: map }),
             _ => Err(DocumentError::NotAnObject),
@@ -44,15 +51,12 @@ impl Document {
     /// 从字节反序列化文档(与 [`Document::to_bytes`] 互逆)。
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DocumentError> {
         let value: Value = serde_json::from_slice(bytes).map_err(DocumentError::Json)?;
-        match value {
-            Value::Object(map) => Ok(Document { inner: map }),
-            _ => Err(DocumentError::NotAnObject),
-        }
+        Self::from_value(value)
     }
 
     /// 序列化为 JSON 字节(用作存储引擎的 value)。
     pub fn to_bytes(&self) -> Result<Vec<u8>, DocumentError> {
-        serde_json::to_vec(&Value::Object(self.inner.clone())).map_err(DocumentError::Json)
+        serde_json::to_vec(&self.inner).map_err(DocumentError::Json)
     }
 
     /// 获取字段值。
