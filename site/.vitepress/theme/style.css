@@ -1,0 +1,463 @@
+/*
+ * nodblite 站点主题 —— 自定义配色,覆盖 VitePress 默认变量。
+ *
+ * 设计依据见仓库根目录的 DESIGN.md:
+ *   - 深色优先,荧光绿(#C6F24E)是唯一强调色
+ *   - 强调色只出现在「可点击」与「数据在动」两处
+ *   - 层级靠边框而非阴影(深色背景上阴影几乎不可见)
+ */
+
+/* ==================== 字体 ==================== */
+
+/* Space Grotesk / Inter / JetBrains Mono 走 Google Fonts。
+   用 preconnect 减少握手;display=swap 保证首屏文字不被字体阻塞。 */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap');
+
+/* ==================== 设计令牌 ==================== */
+
+:root {
+  /* 字体 */
+  --vp-font-family-base: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --nb-font-display: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+
+  /* 圆角:工具感,偏小 */
+  --nb-radius-sm: 4px;
+  --nb-radius-md: 8px;
+  --nb-radius-lg: 12px;
+
+  /* 动效曲线(与 animate skill 的推荐值一致) */
+  --nb-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --nb-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
+  /* VitePress 品牌色映射到荧光绿 */
+  --vp-c-brand-1: var(--nb-accent);
+  --vp-c-brand-2: var(--nb-accent-hover);
+  --vp-c-brand-3: var(--nb-accent);
+  --vp-c-brand-soft: var(--nb-accent-glow);
+}
+
+/* ==================== 深色(默认) ==================== */
+
+.dark {
+  --nb-bg: #08090a;
+  --nb-bg-elevated: #0e1012;
+  --nb-surface: #131619;
+  --nb-surface-hover: #191d21;
+  --nb-border: #23282d;
+  --nb-border-strong: #333a41;
+  --nb-text: #e8eaed;
+  --nb-text-muted: #9aa0a6;
+  --nb-text-faint: #6b7178;
+
+  --nb-accent: #c6f24e;
+  --nb-accent-hover: #d4ff66;
+  --nb-accent-dim: #8fae38;
+  --nb-accent-glow: rgba(198, 242, 78, 0.16);
+
+  --nb-success: #7bd88f;
+  --nb-warning: #e8b84b;
+  --nb-danger: #f2777a;
+  --nb-info: #7aa2f7;
+
+  /* VitePress 变量 */
+  --vp-c-bg: var(--nb-bg);
+  --vp-c-bg-alt: var(--nb-bg-elevated);
+  --vp-c-bg-elv: var(--nb-surface);
+  --vp-c-bg-soft: var(--nb-surface);
+  --vp-c-border: var(--nb-border);
+  --vp-c-divider: var(--nb-border);
+  --vp-c-gutter: var(--nb-border);
+
+  --vp-c-text-1: var(--nb-text);
+  --vp-c-text-2: var(--nb-text-muted);
+  --vp-c-text-3: var(--nb-text-faint);
+
+  /* 按钮:主按钮实心荧光绿 + 深色文字 */
+  --vp-button-brand-bg: var(--nb-accent);
+  --vp-button-brand-text: var(--nb-bg);
+  --vp-button-brand-hover-bg: var(--nb-accent-hover);
+  --vp-button-brand-hover-text: var(--nb-bg);
+  --vp-button-brand-active-bg: var(--nb-accent-dim);
+  --vp-button-brand-active-text: var(--nb-bg);
+  --vp-button-brand-border: transparent;
+
+  --vp-button-alt-bg: transparent;
+  --vp-button-alt-text: var(--nb-text);
+  --vp-button-alt-border: var(--nb-border-strong);
+  --vp-button-alt-hover-bg: var(--nb-surface-hover);
+  --vp-button-alt-hover-text: var(--nb-text);
+  --vp-button-alt-hover-border: var(--nb-accent-dim);
+
+  /* 代码块 */
+  --vp-code-block-bg: var(--nb-bg-elevated);
+  --vp-code-line-highlight-color: rgba(198, 242, 78, 0.08);
+  --vp-code-copy-code-bg: var(--nb-surface);
+  --vp-code-copy-code-hover-bg: var(--nb-surface-hover);
+  --vp-code-copy-code-active-text: var(--nb-accent);
+
+  /* 行内代码:用 dim 绿,保证在正文里跳出来但不抢戏 */
+  --vp-code-color: var(--nb-accent-dim);
+  --vp-code-bg: rgba(198, 242, 78, 0.08);
+
+  /* 自定义容器 */
+  --vp-custom-block-tip-border: var(--nb-accent-dim);
+  --vp-custom-block-tip-bg: rgba(198, 242, 78, 0.06);
+  --vp-custom-block-tip-text: var(--nb-text);
+
+  --vp-custom-block-info-border: var(--nb-info);
+  --vp-custom-block-info-bg: rgba(122, 162, 247, 0.06);
+
+  --vp-custom-block-warning-border: var(--nb-warning);
+  --vp-custom-block-warning-bg: rgba(232, 184, 75, 0.06);
+
+  --vp-custom-block-danger-border: var(--nb-danger);
+  --vp-custom-block-danger-bg: rgba(242, 119, 122, 0.06);
+
+  --vp-custom-block-details-border: var(--nb-border-strong);
+  --vp-custom-block-details-bg: var(--nb-surface);
+
+  /* 导航与侧栏 */
+  --vp-nav-bg-color: var(--nb-bg);
+  --vp-sidebar-bg-color: var(--nb-bg);
+  --vp-local-nav-bg-color: var(--nb-bg);
+}
+
+/* ==================== 浅色 ==================== */
+
+:root:not(.dark) {
+  --nb-bg: #fafaf8;
+  --nb-bg-elevated: #f2f2ef;
+  --nb-surface: #ffffff;
+  --nb-surface-hover: #f4f4f1;
+  --nb-border: #e2e4e0;
+  --nb-border-strong: #c8ccc4;
+  --nb-text: #12141a;
+  --nb-text-muted: #5a6270;
+  --nb-text-faint: #8b929c;
+
+  /* 荧光绿在白底不可读,换成深橄榄绿 */
+  --nb-accent: #3d5a00;
+  --nb-accent-hover: #4a6b00;
+  --nb-accent-dim: #3d5a00;
+  --nb-accent-glow: rgba(61, 90, 0, 0.1);
+
+  --nb-success: #1f7a3d;
+  --nb-warning: #8a6100;
+  --nb-danger: #b3262b;
+  --nb-info: #2f5bb7;
+
+  --vp-c-bg: var(--nb-bg);
+  --vp-c-bg-alt: var(--nb-bg-elevated);
+  --vp-c-bg-elv: var(--nb-surface);
+  --vp-c-bg-soft: var(--nb-surface);
+  --vp-c-border: var(--nb-border);
+  --vp-c-divider: var(--nb-border);
+  --vp-c-gutter: var(--nb-border);
+
+  --vp-c-text-1: var(--nb-text);
+  --vp-c-text-2: var(--nb-text-muted);
+  --vp-c-text-3: var(--nb-text-faint);
+
+  --vp-button-brand-bg: var(--nb-accent);
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-hover-bg: var(--nb-accent-hover);
+  --vp-button-brand-hover-text: #ffffff;
+  --vp-button-brand-active-bg: #2f4600;
+  --vp-button-brand-active-text: #ffffff;
+  --vp-button-brand-border: transparent;
+
+  --vp-button-alt-bg: transparent;
+  --vp-button-alt-text: var(--nb-text);
+  --vp-button-alt-border: var(--nb-border-strong);
+  --vp-button-alt-hover-bg: var(--nb-surface-hover);
+  --vp-button-alt-hover-border: var(--nb-accent);
+
+  --vp-code-block-bg: var(--nb-bg-elevated);
+  --vp-code-line-highlight-color: rgba(61, 90, 0, 0.07);
+  --vp-code-color: var(--nb-accent);
+  --vp-code-bg: rgba(61, 90, 0, 0.07);
+
+  --vp-custom-block-tip-border: var(--nb-accent);
+  --vp-custom-block-tip-bg: rgba(61, 90, 0, 0.05);
+  --vp-custom-block-info-border: var(--nb-info);
+  --vp-custom-block-info-bg: rgba(47, 91, 183, 0.05);
+  --vp-custom-block-warning-border: var(--nb-warning);
+  --vp-custom-block-warning-bg: rgba(138, 97, 0, 0.05);
+  --vp-custom-block-danger-border: var(--nb-danger);
+  --vp-custom-block-danger-bg: rgba(179, 38, 43, 0.05);
+  --vp-custom-block-details-border: var(--nb-border-strong);
+  --vp-custom-block-details-bg: var(--nb-surface);
+
+  --vp-nav-bg-color: var(--nb-bg);
+  --vp-sidebar-bg-color: var(--nb-bg);
+  --vp-local-nav-bg-color: var(--nb-bg);
+}
+
+/* ==================== 排版 ==================== */
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3,
+.vp-doc h4,
+.VPHero .name,
+.VPHero .text {
+  font-family: var(--nb-font-display);
+  letter-spacing: -0.02em;
+}
+
+.vp-doc h1 {
+  font-size: 2.25rem;
+  letter-spacing: -0.025em;
+}
+
+.vp-doc h2 {
+  border-top: 1px solid var(--nb-border);
+  padding-top: 1.5rem;
+  margin-top: 3rem;
+}
+
+.vp-doc h3 {
+  letter-spacing: -0.01em;
+}
+
+/* 正文段落限制宽度,提升可读性 */
+.vp-doc p,
+.vp-doc li {
+  line-height: 1.75;
+}
+
+/* ==================== 表格 ==================== */
+
+/* 性能报告的核心载体:数字右对齐 + 等宽数字 */
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.vp-doc th {
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--nb-text-muted);
+  text-transform: none;
+  border-bottom: 1px solid var(--nb-border-strong);
+}
+
+.vp-doc td,
+.vp-doc th {
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--nb-border);
+}
+
+.vp-doc tr:last-child td {
+  border-bottom: none;
+}
+
+/* 数值列:等宽 + 右对齐。用 nth-child 无法可靠判断,
+   所以在 Markdown 里用 <span class="num"> 包裹关键数字。 */
+.vp-doc .num {
+  font-family: var(--vp-font-family-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ==================== 自定义容器 ==================== */
+
+/* 左侧 2px 色条 + 轻微背景,不做整块填充 —— 连续三个提示框才不会吵 */
+.vp-doc .custom-block {
+  border: none;
+  border-left: 2px solid var(--nb-border-strong);
+  border-radius: 0 var(--nb-radius-md) var(--nb-radius-md) 0;
+  padding: 0.9rem 1.1rem;
+  font-size: 0.94rem;
+}
+
+.vp-doc .custom-block .custom-block-title {
+  font-weight: 600;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.45rem;
+}
+
+.vp-doc .custom-block.tip {
+  border-left-color: var(--vp-custom-block-tip-border);
+  background: var(--vp-custom-block-tip-bg);
+}
+.vp-doc .custom-block.info {
+  border-left-color: var(--vp-custom-block-info-border);
+  background: var(--vp-custom-block-info-bg);
+}
+.vp-doc .custom-block.warning {
+  border-left-color: var(--vp-custom-block-warning-border);
+  background: var(--vp-custom-block-warning-bg);
+}
+.vp-doc .custom-block.danger {
+  border-left-color: var(--vp-custom-block-danger-border);
+  background: var(--vp-custom-block-danger-bg);
+}
+.vp-doc .custom-block.details {
+  border-left-color: var(--vp-custom-block-details-border);
+  background: var(--vp-custom-block-details-bg);
+}
+
+/* 容器内的表格不要额外加边 */
+.vp-doc .custom-block table {
+  margin: 0.6rem 0 0;
+}
+
+/* ==================== 代码块 ==================== */
+
+.vp-doc div[class*='language-'] {
+  border: 1px solid var(--nb-border);
+  border-radius: var(--nb-radius-md);
+  background: var(--vp-code-block-bg);
+}
+
+.vp-doc div[class*='language-'] code {
+  font-size: 0.84rem;
+  line-height: 1.7;
+}
+
+.vp-doc :not(pre) > code {
+  font-size: 0.86em;
+  padding: 0.15em 0.4em;
+  border-radius: var(--nb-radius-sm);
+  border: none;
+}
+
+/* ==================== 导航 ==================== */
+
+.VPNav {
+  border-bottom: 1px solid var(--nb-border);
+}
+
+/* 导航下划线:强调色只在活跃项出现 */
+.VPNavBarMenuLink.active,
+.VPNavBarMenuLink:hover {
+  color: var(--nb-accent);
+}
+
+.VPNavBarMenuLink {
+  transition: color 140ms ease;
+}
+
+/* 侧栏活跃项:左侧细条标记 */
+.VPSidebarItem.is-active > .item > .link > .text,
+.VPSidebarItem.is-active > .item .link .text {
+  color: var(--nb-accent);
+  font-weight: 500;
+}
+
+/* ==================== 首页 hero ==================== */
+
+.VPHero {
+  position: relative;
+}
+
+.VPHero .name {
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--nb-text);
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  letter-spacing: -0.035em;
+}
+
+.VPHero .text {
+  color: var(--nb-text-muted);
+  font-size: clamp(1.1rem, 2.2vw, 1.5rem);
+  font-weight: 400;
+  max-width: 30ch;
+}
+
+/* 强调色只给 tagline 里的关键词 */
+.VPHero .tagline .nb-accent {
+  color: var(--nb-accent);
+}
+
+/* ==================== 首页特性卡片 ==================== */
+
+.VPFeature {
+  border: 1px solid var(--nb-border);
+  border-radius: var(--nb-radius-lg);
+  background: var(--nb-surface);
+  transition:
+    border-color 160ms var(--nb-ease-out),
+    transform 160ms var(--nb-ease-out);
+}
+
+/* hover 只在精确指针设备上生效 —— 触摸屏 tap 会误触发 */
+@media (hover: hover) and (pointer: fine) {
+  .VPFeature:hover {
+    border-color: var(--nb-border-strong);
+    transform: translateY(-2px);
+  }
+}
+
+.VPFeature .title {
+  font-family: var(--nb-font-display);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.VPFeature .details {
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: var(--nb-text-muted);
+}
+
+/* ==================== 首页数据条 ==================== */
+
+.nb-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  margin: 3rem 0;
+  background: var(--nb-border);
+  border: 1px solid var(--nb-border);
+  border-radius: var(--nb-radius-lg);
+  overflow: hidden;
+}
+
+.nb-stat {
+  background: var(--nb-bg);
+  padding: 1.4rem 1.2rem;
+}
+
+.nb-stat .value {
+  font-family: var(--nb-font-display);
+  font-size: 1.9rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--nb-text);
+}
+
+.nb-stat .value .unit {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--nb-text-muted);
+  margin-left: 0.2rem;
+}
+
+.nb-stat .label {
+  margin-top: 0.5rem;
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+  color: var(--nb-text-faint);
+}
+
+/* ==================== 减少动效 ==================== */
+
+/* 保留颜色/透明度过渡(有助于理解状态),去掉位移与缩放 */
+@media (prefers-reduced-motion: reduce) {
+  .VPFeature {
+    transition: border-color 160ms ease;
+  }
+  .VPFeature:hover {
+    transform: none;
+  }
+}

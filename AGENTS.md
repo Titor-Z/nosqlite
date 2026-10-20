@@ -8,6 +8,8 @@
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
+- 2026.10.21: 文档站重写(MkDocs Material → VitePress)—— 自建设计系统(`DESIGN.md`:深色优先、荧光绿强调、Space Grotesk/Inter/JetBrains Mono 三字体);首页用 Matter.js 做「文档粒子落进 .nodb 容器」物理动效(仅 hero,UI 交互一律 CSS;尊重 prefers-reduced-motion、页面不可见暂停、不阻塞 LCP);新增 `site/reference/performance.md` 完整性能报告(含 WASM 实测与复现命令,`PerfTable` 组件统一等宽数字右对齐);`docs.yml` 改为 npm 工具链构建并加产物冒烟校验。
+
 - 2026.10.21: v0.6.7 发布准备 —— 版本号对齐(`Cargo.toml` 0.6.5→0.6.7、`npm/package.json` 0.1.0→0.6.7);CHANGELOG 补齐 0.6.4/0.6.5/0.6.6/0.6.7 四条(v0.6.4 起就没再更新过);新增 `.github/workflows/npm.yml`(三平台建库 → 汇总 → 测试 → `npm publish`,凭证走 `npm` 环境的 `NPM_TOKEN`);`ci.yml` 与 `release.yml` 的 wasm job 均加入 `web/smoke.mjs` 冒烟验证(15 项,覆盖 CRUD/索引/错误消息可读性/持久化);`npm/package-lock.json` 解除忽略(可复现安装 + `npm ci` 需要)。
 
 - 2026.10.21: v0.6.6(未发布)WASM 写入性能实测与优化 —— 建 WASI 计量(`web/wasiMetrics` + `web/bench-write.mjs`),实测证明**页写不是瓶颈**(2241 次 `fd_pwrite` 仅 20 ms / 1.9%),`fd_sync` 独占 60–90%;`fsync` 自身方差达 **54x**(21→1140 ms),故改用 min/p10 判据,wasm/native = **1.30x**(非早前误判的 3.6x);`Document::from_value` 消掉双重序列化(66.9 → 29.1 ms,2.3x);新增流式批量会话 `nodblite_bulk_begin/add/commit/abort`(JS 堆增量 10.6 → **2.6 MB**,4x);**页写合并(Step 3)与 durability 折中(Step 5)经数据否决,不做**。526 例全绿。
@@ -1445,6 +1447,8 @@
 
 > AI 开发过程中的踩坑记录、用户纠正与明确结论,避免重复死循环。
 
+- **VitePress 首页把自定义组件挂到 hero 的唯一可靠方式是 JS 搬运 DOM**:layout:home 的 markdown 内容渲染在 `.vp-doc container` 内,中间有主题自带的 `position:relative` 包装 div,CSS 的 absolute 锚会被它截断(试过负 margin、锚定 VPHome/VPContent 全部失败 —— VPContent 还有 padding-top: var(--vp-nav-height) 的偏移)。在组件 onMounted 里 `hero.appendChild(el)` 直接把宿主 DOM 搬进 .VPHero 才可靠。
+- **Matter.js 粒子穿墙的三个原因**:墙体太薄(10px)、落差太高(落地速度超求解器单步位移)、重力太强。修法:墙 60px 厚并向外侧偏移、出生点限制在盒口上方 260px 内、重力降到 0.55。**先降参数,再怀疑引擎。**
 - **wasm32 repr(C) 结构体布局与 64 位不同**:wasm32 上指针 4 字节。`NodbliteResult`:`code@0`、`count@8`、`affected@16`、`docs@24`、`value.ptr@28`、`value.len@32`(64 位是 @0/@8/@16/@24/@32/@40);`NodbliteError`:`code@0`、`code_str@4`、`message@12`、`op@20`(64 位是 @0/@8/@16/@24)。读错偏移的两种表现:长度读到 `0xFFFFFFFF` → `RangeError: Invalid typed array length`;错误消息读到乱码。**这个坑已经踩了两次(先是 NodbliteResult,后是 NodbliteError),任何跨 wasm/原生共享的 FFI 结构体,两端布局常量必须分别写并各自验证。**
 - **fsync 的单次测量完全不可用**:同一文件、同样脏页,连续 30 次 `fsync` 的耗时是 min 21 ms / 中位 24 ms / max 1140 ms(**54x 方差**)。任何写基准都必须用 **min 或 p10** 作判据,中位数与单次值都会被系统负载污染。早前「wasm 写慢 3.6x」「WASI fd_sync 比 fs.sync 慢 31x」两个结论都是这样得来的假象,修正后真实值是 **1.30x**。
 - **fsync 成本来自「文件增长」而非「脏页数量」**:边写边增长的 16 MB 文件 fsync 要 930 ms,预分配 16 MB 后再写只要 26 ms(**36x**);原生同样如此(9 MB 增长式 720 ms)。根因是文件系统要为新增块分配并落元数据。**优化写入前先问「文件是不是在增长」,而不是「写了几页」。**

@@ -1,5 +1,6 @@
 /target
-/site
+site/.vitepress/dist/
+site/.vitepress/cache/
 **/node_modules/
 **/.npm-cache/
 Cargo.lock.bak

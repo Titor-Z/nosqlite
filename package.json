@@ -1,0 +1,16 @@
+{
+  "name": "nodblite-site",
+  "private": true,
+  "type": "module",
+  "description": "nodblite 文档站(VitePress)",
+  "scripts": {
+    "docs:dev": "vitepress dev site",
+    "docs:build": "vitepress build site",
+    "docs:preview": "vitepress preview site"
+  },
+  "devDependencies": {
+    "matter-js": "^0.20.0",
+    "playwright": "^1.64.1",
+    "vitepress": "^1.6.4"
+  }
+}
