@@ -1,6 +1,6 @@
 {
   "name": "nodblite",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "description": "单文件 NoSQL 文档数据库 —— MongoDB 风格查询,零配置,无需服务进程",
   "keywords": [
     "database",

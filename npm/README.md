@@ -41,9 +41,11 @@ npm install nodblite
 
 需要 Node.js 18+。底层通过 [koffi](https://www.npmjs.com/package/koffi) 调用预编译动态库,**不需要 node-gyp、不需要 Python、不需要 C++ 编译器**。
 
-支持平台:macOS(arm64)、Linux(x64)、Windows(x64)。
+支持平台:macOS(arm64 / x64)、Linux(x64)、Windows(x64)。
 
-> 本包是 **纯 ESM**(`"type": "module"`),请用 `import` 引入。CommonJS 项目可改用动态 `import()`:
+> 本包是 **纯 ESM**(`"type": "module"`),请用 `import` 引入。
+> CommonJS 项目能否直接 `require('nodblite')` 取决于 Node 版本(需要 Node 支持 `require()` 加载 ESM);
+> 若报 `ERR_REQUIRE_ESM`,改用动态 `import()`:
 > ```js
 > const { Database } = await import('nodblite');
 > ```

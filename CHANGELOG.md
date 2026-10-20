@@ -2,6 +2,14 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
+## [0.6.10] - 2026-10-21
+
+文档更正。
+
+### 文档
+- npm README 的支持平台补上 macOS x64(此前只写 arm64,与实际预编译产物不符)。
+- npm README 的 CommonJS 说明改为按实际行为表述:纯 ESM 包能否直接 `require()` 取决于 Node 版本,遇到 `ERR_REQUIRE_ESM` 时改用动态 `import()`。
+
 ## [0.6.9] - 2026-10-21
 
 补 macOS x64 预编译库。
