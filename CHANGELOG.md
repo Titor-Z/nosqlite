@@ -2,6 +2,13 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
+## [0.6.9] - 2026-10-21
+
+补 macOS x64 预编译库。
+
+### 修复
+- **npm 包缺 macOS x64 库**:`macos-latest` runner 只产出 arm64,Intel Mac / Rosetta 用户找不到 `darwin-x64`。npm 工作流补 `x86_64-apple-darwin` 交叉构建,预编译目录从 3 个增至 4 个。
+
 ## [0.6.8] - 2026-10-21
 
 修掉 npm 包的加载入口。
