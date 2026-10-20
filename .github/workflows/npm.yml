@@ -6,8 +6,8 @@ name: npm
 # 每个平台各自构建动态库,再汇总成一个包发布 —— 与 C ABI 的发布产物同源。
 #
 # 需要的仓库配置:
-#   - Environment: `npm`(npm 的 Granular Access Token 存在该环境的 secret 里)
-#   - Secret 名: `NPM_TOKEN`
+#   - Environment: `npm`
+#   - 该环境下的 secret:`TOKEN`(npm Granular Access Token)
 #
 # 注意:带 provenance 发布需要 `id-token: write` 与公开仓库。
 
@@ -118,4 +118,4 @@ jobs:
       - name: 发布
         run: npm publish --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.TOKEN }}
