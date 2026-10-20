@@ -2,6 +2,15 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
+## [0.6.8] - 2026-10-21
+
+修掉 npm 包的加载入口。
+
+### 修复
+- **npm 包 `require('nodblite')` 失败**:`package.json` 的 `main` / `exports.require` 指向 `dist/index.cjs`,但 `tsc` 只产出 `dist/index.js`,导致 `Cannot find module .../dist/index.cjs`。已改为纯 ESM(`"type": "module"` 本就如此),CJS 项目改用动态 `import()`。
+  - 曾尝试用第二份 tsconfig 产出 CJS,失败:`bindings.js` 使用 `import.meta.url`,转 CJS 后与 Node 注入的 `require` 冲突(`SyntaxError: Identifier 'require' has already been declared`)。
+- `repository.url` 改写为 npm 规范化后的 `git+https://` 形式,消掉发布警告。
+
 ## [0.6.7] - 2026-10-21
 
 WASM 形态落地 + 写入路径实测优化。
