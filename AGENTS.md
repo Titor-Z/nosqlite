@@ -6,6 +6,8 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.11.15: v0.6.11 —— **nodblite-studio 单二进制 Web 管理台**(构成主义 UI,Svelte 5 + Tailwind 4 + Vite 8,bun 构建):浏览器内运行 WASM 引擎,导入/拖入/导出 `.nodb`;对标 MongoDB Compass Data Explorer 重构为「左树 + 单集合工作区 + Documents/Indexes/Explain/Schema/Aggregation 五标签」,含查询栏(Filter/Project/Sort + Find,Reset/Options/Explain/History 收进 ⋮ 菜单)、Table⇄JSON 双视图、Insert Document(s)/Duplicate/行内操作、JSONL/JSON/CSV 集合级导入导出、索引表格 + builder、Explain 计划链 + CLIENT MEASURED 指标、Schema 采样、Aggregation stage 编辑器;**视觉改为构成主义**(纸/墨/朱红,粗线直角斜切块,去扫描线与发光),新增暗色模式、⋮ 查询菜单、视窗高度表格、类型化字段编辑器与 JSON 语法高亮;select 经 `appearance: base-select` + `::picker(select)/::picker-icon` 与 input/button 同族对齐;Rust 侧提取共享聚合执行器 `src/aggregate.rs` 并新增 C ABI `nodblite_aggregate`/`nodblite_drop_collection`;531 例 Rust 测试 + 28 项真实 Chrome e2e 全绿。参见 [taolun #73](#73-20261115-nodblite-studio-对标-compass-data-explorer-改造)、[#74](#74-20261115-studio-视觉改造复古未来主义--构成主义)、[#75](#75-20261115-studio-交互与编辑器增强暗色--⋮-菜单--视窗表格--类型化编辑) / [项目进度-已完成](#已完成)。
+
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
 
 - 2026.10.21: 文档站重写(MkDocs Material → VitePress)—— 自建设计系统(`DESIGN.md`:深色优先、荧光绿强调、Space Grotesk/Inter/JetBrains Mono 三字体);首页用 Matter.js 做「文档粒子落进 .nodb 容器」物理动效(仅 hero,UI 交互一律 CSS;尊重 prefers-reduced-motion、页面不可见暂停、不阻塞 LCP);新增 `site/reference/performance.md` 完整性能报告(含 WASM 实测与复现命令,`PerfTable` 组件统一等宽数字右对齐);`docs.yml` 改为 npm 工具链构建并加产物冒烟校验。
@@ -1322,6 +1324,100 @@
 - **部署**:`.github/workflows/docs.yml`,仅当 `docs/**` 或 `mkdocs.yml` 变更时触发,避免代码改动引起无谓重建;`site/` 与 `.npm-cache` 加入 `.gitignore`。
 - **待办(用户侧)**:仓库 Settings → Pages → Source 选 **GitHub Actions**,否则工作流推送后站点不会上线。
 
+### 72. 2026.11.15 nodblite-studio:单二进制 Web 管理台(WASM 内嵌)
+
+- 需求:一个复古未来主义风格的 Web 管理工具,导入/拖入 `.nodb` 后在浏览器内管理全部资源(集合/文档/查询/索引/统计);底层数据库操作用 WASM;整个应用编译为**单个二进制**。
+- 架构决策:
+  - **浏览器内 WASM**:复用既有 `wasm32-wasip1` 产物(导出全部 `nodblite_*` C ABI),宿主侧只写一个**最小 WASI shim**。
+  - **不引第三方 WASI 实现**:实测 wasm 只导入 19 个 `wasi_snapshot_preview1` 函数(含 `fd_pwrite/fd_pread/fd_sync/path_open`),足以自写内存文件系统(~300 行),避免 npm 打包链与单二进制分发负担。
+  - **数据始终是单文件**:导入 = 把字节写进内存 FS 的 `/data/db.nodb`;导出 = 把该 fd 的字节下载。数据库引擎无任何改动,`.nodb` 格式仍 v1。
+  - **单二进制**:`src/bin/nodblite-studio.rs` 内嵌 HTML/CSS/JS/WASM(`include_bytes!`),用纯 std 起一个静态 HTTP 服务,无前端构建步骤、无运行时依赖。
+  - **`studio` feature 隔离**:Cargo 默认不编译该 bin(需要先产出 wasm),普通 `cargo test` 不受影响;构建脚本 `scripts/build-studio.sh` 负责「先 wasm 后 bin」的顺序。
+- **前端技术栈(用户指定)**:Svelte 5 + Tailwind CSS 4 + Vite 8,依赖安装/构建一律用 **bun**(不用 npm)。前端源码在 `studio-ui/`,构建产物在 `studio-ui/dist/`(gitignore),WASM 由构建脚本先放到 `studio-ui/public/`。
+- **前端文件职责**:`src/lib/wasi.js`(最小 WASI 内存 FS)、`src/lib/nodblite.js`(C ABI 解码 + DB 封装)、`src/lib/db.js`(WASM 实例 + 文件会话)、`src/lib/store.svelte.js`(全局状态与动作)、`src/components/*.svelte`(界面)。
+- **构建顺序**(`scripts/build-studio.sh`):wasm32-wasip1 → 复制 wasm 到 `studio-ui/public/` → `bun install --frozen-lockfile && bun run build` → `cargo build --features studio --bin nodblite-studio`。
+- **固定产物名**:Vite 的 `entryFileNames`/`assetFileNames` 固定为 `assets/app.js`、`assets/index.css`,避免 hash 变化要求同步改 Rust 的 `include_bytes!` 路径。
+- 验收:HTTP 冒烟(内嵌资源可访问)+ 真实 Chrome(Playwright `channel: 'chrome'`,macOS 12 装不了新版 chromium)跑「新建 → 插入 → 编辑 → 建索引 → 查询 → 导出 → 重新导入 → 删除」全链路。
+
+### 73. 2026.11.15 nodblite-studio:对标 Compass Data Explorer 改造
+
+- 背景:首版 studio 只有「卡片式文档列表 + 简单查询 tab」,与 MongoDB 官方 Data Explorer 的编辑器形态差距大。用户要求「尽可能对标官方做法」。
+- **范围冻结**:按 17 步计划执行(信息架构 → Documents → Indexes → Explain → Schema → Aggregation → e2e),视觉保留自己的复古未来设计系统,只对齐 IA 与交互。
+- **明确做不到、显式标注的项**(不静默假装支持):
+  - 查询栏 `Collation` / `Max Time` 控件保留但标注 `NOT SUPPORTED`;
+  - 索引 `Size` / `Usage` 列显示 `—`(引擎无统计);
+  - 索引 builder 不提供 `hidden / partial / TTL`;
+  - Explain 的 `docsExamined / keysExamined` 不伪造 —— 返回条数与耗时由前端实测,标注 `CLIENT MEASURED`;
+  - Aggregation 仅 `$match/$sort/$skip/$limit/$group/$project/$addFields/$set`,`$group` 累加器仅 `$sum/$count`,其余 stage 报 `40324`。
+- **前端**(studio-ui/,Svelte 5 + Tailwind 4 + Vite 8,bun):
+  - `App.svelte`:左树(`Databases`,集合 + 文档数)+ 单集合工作区,breadcrumb `nodblite / <coll>`,二级标签 `Documents / Indexes / Explain / Schema / Aggregation`;
+  - `QueryBar.svelte`:Filter/Project/Sort 主行 + Options(Skip/Limit + 两个禁用项)+ Find/Reset/Explain + History(20 条);
+  - `ResultsToolbar.svelte`:Table⇄JSON 分段、Add Data(Insert Document / Insert Documents / Import File)、Export(JSON/JSONL/CSV)、Refresh、`Documents X–Y of N` + ‹› 游标式翻页;
+  - `TableView.svelte`:`_id` 固定首列 + 当前页字段并集;类型着色;`{n}`/`[n]` 行内展开;行 hover 出编辑/复制/删除;列头点击切排序;
+  - `JsonView.svelte`:每文档可折叠块 + 展开/折叠全部;
+  - `DocumentEditor.svelte`:实时校验(错误定位到行列)、格式化、⌘/Ctrl+Enter 保存;
+  - `IndexPane.svelte` 表格化(Name/Fields↑↓/Type/Size=—/Drop)+ `IndexBuilder.svelte`(动态字段-方向行);
+  - `ExplainPane.svelte`:阶段链(COLLSCAN/IXSCAN→FETCH)+ 指标区 + Raw JSON;
+  - `SchemaPane.svelte`:样本量 100/200/500/1000 + 字段出现率/类型分布条形图;
+  - `AggregationPane.svelte`:stage 卡片(增删/上下移)、前缀管道逐 stage 预览、结果复用 Table/JSON 视图;
+  - 集合级 IO:导入 JSONL/JSON 数组(先全量校验再 `insert_many` 单事务);导出 JSON/JSONL/CSV(分批 `find_page`,不整集合入内存;CSV 嵌套字段序列化为 JSON 字符串)。
+- **Rust**:
+  - `src/aggregate.rs`:把 serve.rs 的聚合逻辑提取为 `aggregate::run(db, coll, pipeline)`,wire 与 C ABI 共用;
+  - 新增 C ABI `nodblite_aggregate`(头文件/web/nodblite.js/studio 封装同步)与 `nodblite_drop_collection`;
+  - `src/studio/serve.rs` 的 `serve` 拆出 `serve_listener`(测试可用端口 0)。
+- **踩坑**:
+  - Svelte 5 里本地变量 `state` 与全局 store(原名 state)冲突会触发 `$state` 歧义报错,统一改名 `app`;
+  - `<details>` 菜单在点击菜单项后不会自动关闭,改用显式 `menu` 状态控制;
+  - `{@const}` 只能放在 `{#if}` 等块的最外层子节点,放在 `<div>` 内会编译报错;
+  - 占位符属性里写 `{}` 会被 Svelte 当表达式,用变量传入;
+  - 表头 `<th>` 里放 `<button>` 而不是给 th 绑 onclick,避免嵌套交互语义问题。
+- **验证**:`tests/studio_http.rs` 5 例;`cargo test --features studio` 531 例全绿(默认 526);`clippy --all-targets --features studio -D warnings` 零警告;`studio-ui/e2e/smoke.mjs` 20 项真实 Chrome 全过(批量插入、Table 列展开、列头排序、范围分页、复制文档、索引 builder、Explain IXSCAN、Schema 采样、Aggregation $group、Export/Import JSONL、删除确认)。
+
+### 74. 2026.11.15 studio 视觉改造:复古未来主义 → 构成主义
+
+- 动机:第一版是「CRT 复古未来」(深空底 + 荧光青 + 扫描线 + 光晕),装饰是氛围性的;构成主义的线、块、对齐本身就是层级,更贴合一个数据工具的信息结构。
+- **决策:全量纸感(方案 A)** —— 浅米纸底 + 墨黑 + 朱红,不做深色变体。
+- 令牌映射(`@theme`,保留原变量名,组件零改动):
+  - `void/panel/panel-2` → 纸 `#f2ede3` / `#fbf7ee` / `#ece4d5`;
+  - `text/line-bright/ink` → 墨 `#12100e`;`line` → `#cfc4b1`;`dim` → `#6b6357`;
+  - `cyan` → **朱红 `#d6281e`**(原主强调位,组件大量引用,换值即换主色);
+  - `mint/amber/magenta/danger` 降饱和度保留语义(类型着色、成功/危险)。
+- 视觉规则:
+  - **删掉**扫描线、径向光晕、渐变、圆角、切角 clip-path、点阵纸纹(点阵会形成摩尔纹脏感);
+  - 线:面板 1.5px、控件 2px、表格 1px;浮层用硬阴影 `6/10px 0 墨` 代替发光;
+  - 标题 800 字重 + 紧字距;标签全大写 + `.18em` 字距;
+  - 按钮:纸底墨框 → hover 墨底纸字;主操作朱红底纸字;危险操作红框红字 → hover 实心红;
+  - 标签激活态:朱红斜切块(`clip-path` 切右下角 8px)—— 全站唯一斜切处;
+  - 表头:墨底纸字;行分隔 1px 线;hover 米黄;
+  - 字体:正文改 `--font-sans`(Helvetica/PingFang 系),数据区 `.field/.json-block/.data-grid` 保留等宽。
+- 覆盖率:所有视觉改动落在 `app.css` + 4 处内联发光样式(编辑器弹窗/拖拽遮罩/Landing 主面板/Toast 硬编码深底),组件结构与逻辑零改动,e2e 选择器不受影响。
+- 验证:`cargo test --features studio` 531 例、clippy 零警告、e2e 20 项全过;截图核对 Landing / Documents(Table+JSON)/ Indexes / Explain / Schema / Aggregation 六页。
+
+### 75. 2026.11.15 studio 交互与编辑器增强(暗色 / ⋮ 菜单 / 视窗表格 / 类型化编辑)
+
+- 四项需求:暗色模式、查询栏次要动作收进 ⋮、表格视窗高度 + 固定表头、JSON 高亮 + 按类型编辑字段。
+- **暗色模式**
+  - 令牌用 `:root[data-theme='dark']` 覆盖,组件零改动;三态 `system / light / dark`,localStorage 键 `nodblite.theme`(与首屏内联脚本共用)。
+  - `index.html` 在加载前读偏好并设置 `data-theme`,避免首屏闪白;`color-scheme: light dark`。
+  - 暗色下 `ink` 变成纸白,导致「墨底 + panel 文字」的组件(表头、按钮 hover)出现浅底浅字 —— 新增四个语义令牌解决:
+    `--color-on-accent`(红底上的字,两模式都用纸色)、`--color-shadow`(硬阴影,暗色用纯黑)、`--color-th-bg / --color-th-fg`(表头专用,暗色用深灰底 + 浅字,不做整块反白)。
+  - 主题按钮三态循环,`matchMedia('(prefers-color-scheme: dark)')` 变化时若为 system 立即重应用。
+- **⋮ 菜单**:Reset / Explain / Options(Skip、Limit + 两个 NOT SUPPORTED)/ History 全部收进一个内联 SVG 按钮的二级菜单,Find 保留为主按钮。Options 与 History 是菜单内二级页,避免嵌套弹层。
+- **表格视窗高度**
+  - `App.svelte` 内容区由 `overflow-auto` 改 `overflow-hidden`;DocumentsPane 改 `flex h-full min-h-0 flex-col`,结果区 `min-h-0 flex-1`,TableView/JsonView 根节点 `h-full overflow-auto`。
+  - 效果:表格高度 = 视窗剩余高度,横向滚动条常驻在容器底部(不用滚到最后一行)。
+  - `border-collapse: collapse` 下 sticky 表头会丢边框,改用 `box-shadow: inset 0 -1px 0 ink` 补。
+- **编辑器**
+  - 新增 `JsonEditor.svelte`:透明 textarea 叠在高亮 `<pre>` 上,滚动同步;零依赖,手写词法着色(key/string/number/boolean/null/punct 五类),转义后再着色防注入。
+  - 新增 `Fields` 视图:每行「字段名 + 类型下拉 + 值」,类型含 `string/number/boolean/null/date/array/object`;`date` 写 `{"$date": ...}`;`array/object` 用 JSON 文本并校验容器类型;`_id` 锁定不可改名/删除;实时把行合成回 `app.editor.text`,保存时统一走原有校验。
+  - **踩坑**:字段行只在「编辑器实例变化」的 `$effect` 里解析 text(用 `untrack` 避免依赖 text),所以从 JSON 视图切到 Fields 时必须在 `switchView` 里重新解析 —— 否则 fields 为空,切回 JSON 会把 text 覆盖成 `{}`,插入空文档且不报错。
+- **select 样式化**(`appearance: base-select` + `::picker(select)`):Chrome 135+ 起原生下拉终于可样式化。`select.field` 设 `appearance: base-select`;`@supports selector(::picker(select))` 内给弹出列表上墨框、纸底、硬阴影,`option:checked` 朱红底 + `on-accent` 字、`option:hover` 米黄。不支持的浏览器整段规则不生效,自动退回原生外观(渐进增强,零风险)。
+- **select 与 .field/.btn 同族对齐**:上一轮只给了 `appearance: base-select`,箭头/内边距/高度还是 UA 的,和 input/button 不像一套。补齐:
+  - `select.field` 预留箭头位 `padding-right: 1.7rem`(文本不压箭头)、`cursor: pointer`;
+  - `::picker-icon` 本浏览器已支持(`CSS.supports('selector(::picker-icon)')` 为 true),箭头着色 `var(--color-ink)`,暗色自动变纸白;
+  - SchemaPane 的样本量下拉删掉 `py-1` 覆盖,高度与旁边 `ANALYZE` 按钮对齐(32.8 vs 33.9,差的是 border 1.5 vs 2,符合设计)。
+- 验证:`cargo test --features studio` 531 例、clippy 零警告;e2e 扩到 **28 项**(新增 `CSS.supports('selector(::picker(select))')` 与 `appearance === 'base-select'` 两项)全过。
+
 ## Agents
 
 ### 规范
@@ -1400,6 +1496,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- v0.6.11:nodblite-studio 对标 Compass Data Explorer 改造(构成主义视觉:纸/墨/朱红、粗线直角斜切块;暗色三态主题;⋮ 查询菜单;视窗高度 + sticky 表头;JSON 语法高亮与类型化 Fields 编辑器;select 与 input/button 同族对齐;左树+单集合工作区、Documents/Indexes/Explain/Schema/Aggregation 五标签、Table⇄JSON、Insert/Duplicate、集合级 JSONL/CSV 导入导出、索引 builder、Explain 计划链、Schema 采样、Aggregation stage 编辑器);Rust 提取共享聚合执行器 `src/aggregate.rs` + C ABI `nodblite_aggregate`;531 例 Rust 测试 + 28 项真实 Chrome e2e 全绿。
 - v0.6.7:WASM 形态(单文件跨平台)+ 写入路径实测优化(双重序列化 2.3x、流式批量会话 4x 内存);526 例全绿。
 - v0.6.6:JavaScript 生态接入 —— npm 包(koffi 直连 C ABI)+ C ABI 扩展(索引/explain/find_page/get/upsert)。
 - v0.6.5:文档站(GitHub Pages + MkDocs Material,14 页)。

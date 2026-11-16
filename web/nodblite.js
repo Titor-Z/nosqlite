@@ -401,10 +401,10 @@ export class NodbliteDb {
     );
   }
 
-  /** 列出集合的索引定义(JSON 数组字符串)。 */
+  /** 列出集合的索引定义。C ABI 把 JSON 数组放在 `value` 里。 */
   listIndexes(collection) {
     const r = this.#call(this.exports.nodblite_list_indexes, collection);
-    return r.docs.map((d) => JSON.parse(d));
+    return r.value ? JSON.parse(r.value) : [];
   }
 
   /** 删除索引。 */

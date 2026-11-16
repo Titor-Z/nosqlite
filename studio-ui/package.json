@@ -1,0 +1,17 @@
+{
+  "name": "nodblite-studio-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test:e2e": "node e2e/smoke.mjs"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "svelte": "^5.57.3",
+    "tailwindcss": "^4.3.5",
+    "vite": "^8.3.8"
+  }
+}

@@ -1016,6 +1016,83 @@ pub unsafe extern "C" fn nodblite_list_collections(db: *mut NodbliteDb) -> *mut 
     }
 }
 
+/// 删除整个集合(含其文档与索引)。`affected` = 删除的文档条数。
+///
+/// # Safety
+///
+/// 返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_drop_collection(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "drop_collection",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let Some(collection) = (unsafe { read_str(collection, "drop_collection", "collection") })
+    else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+    match db.inner.drop_collection(&collection) {
+        Ok(n) => {
+            let r = unsafe { &mut *ok_empty() };
+            r.affected = n as u64;
+            r as *mut NodbliteResult
+        }
+        Err(e) => err_result(set_error("drop_collection", &e)),
+    }
+}
+
+/// 执行聚合管道(`pipeline_json` 必须是 JSON 数组)。
+///
+/// `docs` 为输出文档;支持的阶段与 wire 层一致。
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_aggregate(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+    pipeline_json: *const c_char,
+) -> *mut NodbliteResult {
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(
+            "aggregate",
+            ErrorCode::Internal,
+            "数据库句柄为空",
+        ));
+    };
+    let (Some(collection), Some(pipeline_text)) = (
+        unsafe { read_str(collection, "aggregate", "collection") },
+        unsafe { read_str(pipeline_json, "aggregate", "pipeline_json") },
+    ) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+    let pipeline: Value = match serde_json::from_str(&pipeline_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return err_result(set_error_msg(
+                "aggregate",
+                ErrorCode::InvalidFilter,
+                &format!("pipeline JSON 解析失败: {}", e),
+            ));
+        }
+    };
+    match crate::aggregate::run(&db.inner, &collection, &pipeline) {
+        Ok(docs) => ok_docs(&docs, 0),
+        Err(e) => err_result(set_error_msg(
+            "aggregate",
+            ErrorCode::InvalidFilter,
+            &e.message,
+        )),
+    }
+}
+
 /// 创建索引。
 ///
 /// `field` 支持点号路径;`unique`/`sparse` 非 0 即为真。

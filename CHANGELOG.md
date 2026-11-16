@@ -2,6 +2,38 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
+## [0.6.11] - 2026-11-15
+
+nodblite-studio:对标 MongoDB Compass Data Explorer 的单二进制 Web 管理台。
+
+### 变更
+- **暗色模式**:三态(跟随系统 / 亮 / 暗),`data-theme` 令牌覆盖,首屏脚本避免闪烁;新增 `on-accent / shadow / th-bg / th-fg` 语义令牌处理暗色反色。
+- **查询栏精简**:Reset / Explain / Options / History 收进 `⋮` 二级菜单,Find 保留主按钮。
+- **表格视窗高度**:结果区高度 = 视窗剩余高度,表头 sticky 固定,横向滚动条常驻可见。
+- **编辑器**:JSON 语法高亮(零依赖);`Fields` 视图按类型(含 date/array/object)编辑字段并校验,避免写错值类型。
+- **select 样式化**:`appearance: base-select` + `::picker(select)`(Chrome 135+),弹出列表跟主题走;不支持的浏览器自动退回原生外观。
+- **视觉系统改为构成主义**:纸底 `#f2ede3` + 墨黑 `#12100e` + 朱红 `#d6281e`;粗墨线、直角、斜切标签块、墨底表头、硬阴影浮层。移除扫描线、光晕、渐变、圆角与切角。正文改无衬线,数据区保留等宽。
+
+### 新增
+- **`nodblite-studio`(重构)**:信息架构对齐官方 Data Explorer —— 左侧 Databases 树(集合+文档数)、单集合工作区、二级标签 `Documents / Indexes / Explain / Schema / Aggregation`。
+- **Documents**:查询栏(Filter/Project/Sort/Options/Find/Reset/Explain/History)、Table⇄JSON 双视图(字段并集列、行内嵌套展开、列头排序)、`Documents X–Y of N` 翻页、Insert Document / Insert Documents / 复制文档 / 行内编辑删除。
+- **集合级 IO**:Import File(JSONL/JSON 数组,先校验后单事务写入)、Export(JSON/JSONL/CSV,分批不整集合入内存)。
+- **Indexes**:官方表格(Name/Fields/Type/Size)+ IndexBuilder(动态字段-方向行、unique/sparse)。
+- **Explain**:计划阶段链 + Raw JSON;指标区诚实标注 `CLIENT MEASURED`(引擎不提供扫描计数)。
+- **Schema**:样本量 100/200/500/1000 采样,字段出现率与类型分布。
+- **Aggregation**:stage 卡片编辑器(增删/上下移)、前缀管道逐 stage 预览、结果复用 Table/JSON 视图。
+- **Rust**:`src/aggregate.rs` 提取共享聚合执行器(wire 与 C ABI 共用);C ABI 新增 `nodblite_aggregate`、`nodblite_drop_collection`;`serve` 拆出 `serve_listener` 便于测试。
+- **降级标注**:Collation/Max Time/索引 Size·Usage/hidden·partial·TTL 引擎不支持,UI 显式标注 `—` 或 `NOT SUPPORTED`,不静默假装。
+
+### 构建
+- `studio-ui/`:Svelte 5 + Tailwind CSS 4 + Vite 8(bun 安装/构建)。
+- `scripts/build-studio.sh`:wasm → 前端 → 单二进制的固定顺序构建。
+- 普通 `cargo build/test` 不受影响(`studio` feature + `required-features` 隔离)。
+
+### 测试
+- `tests/studio_http.rs` 5 例;`cargo test --features studio` 531 例全绿(默认 526)。
+- `studio-ui/e2e/smoke.mjs`:真实 Chrome 28 项全过(对标 Data Explorer 的完整工作流)。
+
 ## [0.6.10] - 2026-10-21
 
 文档更正。

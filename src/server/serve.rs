@@ -1114,108 +1114,14 @@ fn cmd_drop_database(db: &Database) -> Map<String, Value> {
     ok_doc([("dropped", json!("nodblite"))])
 }
 
-/// `aggregate`:先支持 `$match/$sort/$limit/$skip` 组成的简单管道。
+/// `aggregate`:委托给共享的聚合执行器,结果走游标。
 fn cmd_aggregate(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
-    let coll = match cmd.get("aggregate").and_then(|v| v.as_str()) {
-        Some(c) => c,
-        None => return err_doc(2, "BadValue", "aggregate 需要集合名"),
+    let Some(coll) = cmd.get("aggregate").and_then(|v| v.as_str()) else {
+        return err_doc(2, "BadValue", "aggregate 需要集合名");
     };
-    let pipeline = cmd
-        .get("pipeline")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut filter = Filter::match_all();
-    let mut sort: Option<SortSpec> = None;
-    let mut skip = 0usize;
-    let mut limit: Option<usize> = None;
-    let mut group_stage: Option<Value> = None;
-    let mut project_stage: Option<Value> = None;
-
-    for stage in &pipeline {
-        let Some(obj) = stage.as_object() else {
-            continue;
-        };
-        let Some((name, arg)) = obj.iter().next() else {
-            continue;
-        };
-        match name.as_str() {
-            "$match" => match Filter::from_value(arg) {
-                Ok(f) => filter = f,
-                Err(e) => return err_doc(2, "BadValue", &e.to_string()),
-            },
-            "$sort" => match SortSpec::from_value(arg) {
-                Ok(s) => sort = Some(s),
-                Err(e) => return err_doc(2, "BadValue", &e.to_string()),
-            },
-            "$skip" => skip = arg.as_u64().unwrap_or(0) as usize,
-            "$limit" => limit = arg.as_u64().map(|n| n as usize),
-            // `countDocuments` 底层是 `{$group: {_id: null, n: {$sum: 1}}}`,必须支持
-            "$group" => {
-                group_stage = Some(arg.clone());
-            }
-            "$project" | "$addFields" | "$set" => {
-                project_stage = Some(arg.clone());
-            }
-            other => {
-                return err_doc(
-                    40324,
-                    "Location40324",
-                    &format!("aggregate 阶段尚未实现: {}", other),
-                );
-            }
-        }
-    }
-
-    // `$group: {_id: null, n: {$sum: 1}}`(countDocuments 的底层形态)
-    if let Some(group) = &group_stage {
-        return aggregate_group(db, coll, &filter, group);
-    }
-
-    let result = if sort.is_some() {
-        db.find_page_total(coll, &filter, sort.as_ref(), skip, limit, None)
-            .map(|(_, docs)| docs)
-    } else {
-        db.find_with_options(
-            coll,
-            &filter,
-            &FindOptions {
-                sort: None,
-                projection: None,
-                skip,
-                limit,
-            },
-        )
-        .map(|docs| docs.to_vec())
-    };
-
-    match result {
+    let pipeline = cmd.get("pipeline").cloned().unwrap_or_else(|| json!([]));
+    match crate::aggregate::run(db, coll, &pipeline) {
         Ok(docs) => {
-            // 简单的 $project / $addFields:按字段包含裁剪(仅供驱动内部探测)
-            let projected: Vec<Map<String, Value>> = match &project_stage {
-                Some(proj) => docs
-                    .into_iter()
-                    .map(|d| {
-                        let mut map = Map::new();
-                        if let Some(obj) = proj.as_object() {
-                            for key in obj.keys() {
-                                if key == "_id" {
-                                    continue;
-                                }
-                                if let Some(v) = d.get(key) {
-                                    map.insert(key.clone(), v.clone());
-                                }
-                            }
-                        }
-                        if let Some(id) = d.get("_id") {
-                            map.insert("_id".to_string(), id.clone());
-                        }
-                        map
-                    })
-                    .collect(),
-                None => docs,
-            };
             // 聚合结果同样走游标:大管道不再一次性全部返回
             let batch_size = cmd
                 .get("cursor")
@@ -1225,9 +1131,9 @@ fn cmd_aggregate(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> 
                 .filter(|n| *n > 0)
                 .map(|n| n as usize)
                 .unwrap_or(101);
-            build_cursor_response(coll, projected, batch_size, "firstBatch")
+            build_cursor_response(coll, docs, batch_size, "firstBatch")
         }
-        Err(e) => err_doc(2, "BadValue", &e.to_string()),
+        Err(e) => err_doc(e.code, "BadValue", &e.message),
     }
 }
 
@@ -1258,131 +1164,6 @@ fn cmd_explain(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
             }),
         )]),
         Err(e) => err_doc(2, "BadValue", &e.to_string()),
-    }
-}
-
-/// 处理 `$group`(v0.6.2 起支持真正的分组聚合)。
-///
-/// 支持形态:
-/// - `{_id: null, n: {$sum: 1}}` —— `countDocuments` 的底层形态;
-/// - `{_id: "$field", total: {$sum: "$v"}}` —— 按字段分组并求和;
-/// - `_id` 可以是常量(分组键全相同)或 `"$路径"`(按该字段分组)。
-///
-/// 累加器:`$sum`(常量或字段路径)、`$count`。其余累加器报错,不做静默降级。
-fn aggregate_group(
-    db: &Database,
-    coll: &str,
-    filter: &Filter,
-    group: &Value,
-) -> Map<String, Value> {
-    let Some(obj) = group.as_object() else {
-        return err_doc(40324, "Location40324", "$group 必须是对象");
-    };
-    let Some(group_id) = obj.get("_id") else {
-        return err_doc(40324, "Location40324", "$group 缺少 _id");
-    };
-
-    // 收集累加器:输出字段名 → (累加器类型, 参数)
-    let mut accumulators: Vec<(String, String, Value)> = Vec::new();
-    for (key, val) in obj {
-        if key == "_id" {
-            continue;
-        }
-        let Some(spec) = val.as_object() else {
-            return err_doc(40324, "Location40324", "不支持的 $group 累加器");
-        };
-        let Some((acc, arg)) = spec.iter().next() else {
-            return err_doc(40324, "Location40324", "空的 $group 累加器");
-        };
-        match acc.as_str() {
-            "$sum" | "$count" => accumulators.push((key.clone(), acc.clone(), arg.clone())),
-            other => {
-                return err_doc(
-                    40324,
-                    "Location40324",
-                    &format!("$group 累加器尚未实现: {}", other),
-                );
-            }
-        }
-    }
-    if accumulators.is_empty() {
-        // 无累加器时退化为「按 _id 去重计数」
-        accumulators.push(("n".to_string(), "$sum".to_string(), json!(1)));
-    }
-
-    // 取全部匹配文档(聚合需要完整数据,不走分页)
-    let docs = match db.find_with_options(coll, filter, &FindOptions::default()) {
-        Ok(d) => d,
-        Err(e) => return err_doc(2, "BadValue", &e.to_string()),
-    };
-
-    // 分组:键用 JSON 字符串表示(保留 BSON 类型差异,如 1 与 "1")
-    let mut order: Vec<String> = Vec::new();
-    // 每组:分组键值 + 各累加器的数值
-    let mut groups: std::collections::HashMap<String, (Value, Vec<f64>)> =
-        std::collections::HashMap::new();
-
-    for doc in &docs {
-        let key_value = eval_group_id(group_id, doc);
-        let key_repr = serde_json::to_string(&key_value).unwrap_or_default();
-        let entry = groups.entry(key_repr.clone()).or_insert_with(|| {
-            order.push(key_repr.clone());
-            (key_value.clone(), vec![0.0; accumulators.len()])
-        });
-        for (i, (_, acc, arg)) in accumulators.iter().enumerate() {
-            let add = match acc.as_str() {
-                "$count" => 1.0,
-                "$sum" => match arg {
-                    // 常量:每次加该常量
-                    Value::Number(_) | Value::Bool(_) | Value::Null => arg.as_f64().unwrap_or(0.0),
-                    Value::String(path) if path.starts_with('$') => {
-                        let p = &path[1..];
-                        doc.get(p).and_then(|v| v.as_f64()).unwrap_or(0.0)
-                    }
-                    _ => 0.0,
-                },
-                _ => 0.0,
-            };
-            entry.1[i] += add;
-        }
-    }
-
-    // 组装结果(按首次出现顺序,稳定可预期)
-    let mut batch: Vec<Value> = Vec::new();
-    for repr in &order {
-        let (key_value, sums) = &groups[repr];
-        let mut out = Map::new();
-        out.insert("_id".to_string(), key_value.clone());
-        for (i, (name, _, _)) in accumulators.iter().enumerate() {
-            // 整数结果输出为整数,避免驱动侧看到 3.0 与 3 的差异
-            let v = sums[i];
-            let num = if v.fract() == 0.0 && v.abs() < i64::MAX as f64 {
-                json!(v as i64)
-            } else {
-                json!(v)
-            };
-            out.insert(name.clone(), num);
-        }
-        batch.push(Value::Object(out));
-    }
-
-    ok_doc([(
-        "cursor",
-        json!({
-            "id": json!({"$numberLong": "0"}),
-            "ns": format!("nodblite.{}.$cmd.aggregate", coll),
-            "firstBatch": batch,
-        }),
-    )])
-}
-
-/// 求 `$group._id` 的值:常量原样返回,`"$path"` 取字段值。
-fn eval_group_id(group_id: &Value, doc: &Map<String, Value>) -> Value {
-    match group_id {
-        Value::String(path) if path.starts_with('$') => {
-            doc.get(&path[1..]).cloned().unwrap_or(Value::Null)
-        }
-        other => other.clone(),
     }
 }
 

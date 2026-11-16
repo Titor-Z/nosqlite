@@ -1,0 +1,585 @@
+@import 'tailwindcss';
+
+/* ------------------------------------------------------------------
+   NODBLITE // STUDIO —— 构成主义设计系统
+   纸、墨、朱红;粗线、直角、斜切块;无渐变、无发光、无圆角。
+   仅使用系统字体,保证单二进制离线可用。
+   ------------------------------------------------------------------ */
+
+@theme {
+  /* 纸面与墨 */
+  --color-void: #f2ede3;
+  --color-panel: #fbf7ee;
+  --color-panel-2: #ece4d5;
+  --color-line: #cfc4b1;
+  --color-line-bright: #12100e;
+  --color-ink: #12100e;
+
+  /* 信号色:朱红为主,其余为数据语义保留 */
+  --color-cyan: #d6281e;
+  --color-mint: #2f5d50;
+  --color-amber: #a4641b;
+  --color-magenta: #7a1f5c;
+  --color-text: #12100e;
+  --color-dim: #6b6357;
+  --color-danger: #a32017;
+
+  /* 强调色上的文字与硬阴影颜色(暗色模式需分别覆盖) */
+  --color-on-accent: #fbf7ee;
+  --color-shadow: #12100e;
+  /* 表头反色(暗色下不做整块反白,避免夜间刺眼) */
+  --color-th-bg: #12100e;
+  --color-th-fg: #fbf7ee;
+
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Menlo, Consolas, 'PingFang SC',
+    'Noto Sans SC', monospace;
+  --font-sans: 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Noto Sans SC', system-ui,
+    sans-serif;
+}
+
+/* 暗色模式:墨底 + 纸字 + 提亮的朱红;只覆盖令牌,组件自动跟随 */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-void: #14120f;
+  --color-panel: #1b1815;
+  --color-panel-2: #262119;
+  --color-line: #3d372e;
+  --color-line-bright: #ece5d8;
+  --color-ink: #ece5d8;
+  --color-cyan: #e04236;
+  --color-mint: #6fae98;
+  --color-amber: #d89a4a;
+  --color-magenta: #c06aa0;
+  --color-text: #ece5d8;
+  --color-dim: #a29788;
+  --color-danger: #e05a4e;
+  --color-on-accent: #fbf7ee;
+  --color-shadow: #000000;
+  --color-th-bg: #262119;
+  --color-th-fg: #ece5d8;
+}
+
+:root {
+  color-scheme: light;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-void);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--color-ink);
+    color: var(--color-panel);
+  }
+
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-panel-2);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-ink);
+    border: 3px solid var(--color-panel-2);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-cyan);
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer components {
+  /* 面板:墨线直角,不用切角、不用阴影(阴影只给浮层) */
+  .panel {
+    background: var(--color-panel);
+    border: 1.5px solid var(--color-ink);
+  }
+
+  .panel-flat {
+    background: var(--color-panel);
+    border: 1px solid var(--color-ink);
+  }
+
+  .hairline {
+    border-bottom: 1.5px solid var(--color-ink);
+  }
+
+  .label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+  }
+
+  /* 构成主义不用光晕;此类保留为「红色标语」样式 */
+  .glow {
+    color: var(--color-cyan);
+    font-weight: 800;
+    text-shadow: none;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    padding: 0.42rem 0.8rem;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-ink);
+    background: var(--color-panel);
+    border: 2px solid var(--color-ink);
+    border-radius: 0;
+    transition:
+      background 100ms ease,
+      color 100ms ease,
+      transform 60ms ease;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .btn:hover:not(:disabled) {
+    background: var(--color-ink);
+    color: var(--color-void);
+  }
+
+  .btn:active:not(:disabled) {
+    transform: translate(1px, 1px);
+  }
+
+  .btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    color: var(--color-on-accent);
+    background: var(--color-cyan);
+    border-color: var(--color-ink);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--color-ink);
+    color: var(--color-void);
+  }
+
+  .btn-danger {
+    color: var(--color-danger);
+    background: transparent;
+    border-color: var(--color-danger);
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    background: var(--color-danger);
+    color: var(--color-on-accent);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    border-color: var(--color-line);
+    color: var(--color-dim);
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--color-ink);
+    border-color: var(--color-ink);
+    color: var(--color-void);
+  }
+
+  .field {
+    width: 100%;
+    background: var(--color-panel);
+    border: 1.5px solid var(--color-ink);
+    border-radius: 0;
+    padding: 0.4rem 0.55rem;
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .field:focus {
+    outline: 2px solid var(--color-cyan);
+    outline-offset: -2px;
+  }
+
+  .field::placeholder {
+    color: var(--color-dim);
+    opacity: 0.7;
+  }
+
+  textarea.field {
+    resize: vertical;
+    line-height: 1.6;
+  }
+
+  .tab {
+    position: relative;
+    padding: 0.5rem 0.95rem;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .tab:hover {
+    color: var(--color-ink);
+  }
+
+  /* 激活态:朱红斜切块,构成主义的核心手势 */
+  .tab.active {
+    color: var(--color-on-accent);
+    background: var(--color-cyan);
+    clip-path: polygon(
+      0 0,
+      100% 0,
+      100% calc(100% - 8px),
+      calc(100% - 8px) 100%,
+      0 100%
+    );
+  }
+
+  .tab.active::before {
+    display: none;
+  }
+
+  .coll-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.42rem 0.7rem 0.42rem 0.75rem;
+    text-align: left;
+    color: var(--color-text);
+    border: 0;
+    border-left: 3px solid transparent;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .coll-item::before {
+    display: none;
+  }
+
+  .coll-item:hover {
+    background: var(--color-panel-2);
+  }
+
+  .coll-item.active {
+    background: var(--color-panel-2);
+    border-left-color: var(--color-cyan);
+    font-weight: 700;
+  }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.02rem 0.35rem;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    border: 1px solid var(--color-ink);
+    color: var(--color-ink);
+    text-transform: uppercase;
+  }
+
+  .tag-amber {
+    color: var(--color-on-accent);
+    background: var(--color-amber);
+    border-color: var(--color-amber);
+  }
+
+  .tag-cyan {
+    color: var(--color-on-accent);
+    background: var(--color-cyan);
+    border-color: var(--color-cyan);
+  }
+
+  .tag-magenta {
+    color: var(--color-on-accent);
+    background: var(--color-magenta);
+    border-color: var(--color-magenta);
+  }
+
+  .json-block {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    tab-size: 2;
+  }
+
+  /* JSON 编辑器:高亮层 + 透明输入层,两层排版必须完全一致 */
+  .json-editor {
+    position: relative;
+    overflow: hidden;
+    border: 1.5px solid var(--color-ink);
+    background: var(--color-panel);
+  }
+
+  .json-editor:focus-within {
+    outline: 2px solid var(--color-cyan);
+    outline-offset: -2px;
+  }
+
+  .json-editor-pre,
+  .json-editor-input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 0.6rem 0.7rem;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: auto;
+    tab-size: 2;
+  }
+
+  .json-editor-pre {
+    pointer-events: none;
+    color: var(--color-text);
+  }
+
+  .json-editor-input {
+    border: 0;
+    outline: none;
+    resize: none;
+    background: transparent;
+    color: transparent;
+    caret-color: var(--color-text);
+  }
+
+  .json-editor-input::selection {
+    color: transparent;
+    background: color-mix(in srgb, var(--color-cyan) 28%, transparent);
+  }
+
+  .tok-key {
+    color: var(--color-cyan);
+    font-weight: 700;
+  }
+  .tok-str {
+    color: var(--color-mint);
+  }
+  .tok-num {
+    color: var(--color-amber);
+  }
+  .tok-bool {
+    color: var(--color-magenta);
+  }
+  .tok-punc {
+    color: var(--color-dim);
+  }
+
+  /* select:appearance: base-select 保留原生 picker 的同时开放样式;
+     ::picker(select) 是新加的伪元素,弹出列表终于可以跟主题走。
+     不支持的浏览器自动退回原生外观(渐进增强,零风险)。 */
+  select.field {
+    appearance: base-select;
+    padding-right: 1.7rem; /* 给原生箭头留位,文本不压箭头 */
+    cursor: pointer;
+  }
+
+  @supports selector(::picker-icon) {
+    select.field::picker-icon {
+      color: var(--color-ink);
+    }
+  }
+
+  @supports selector(::picker(select)) {
+    select.field::picker(select) {
+      border: 1.5px solid var(--color-ink);
+      background: var(--color-panel);
+      color: var(--color-text);
+      box-shadow: 6px 6px 0 var(--color-shadow);
+    }
+
+    select.field::picker(select) option {
+      padding: 0.35rem 0.6rem;
+      color: var(--color-text);
+    }
+
+    select.field::picker(select) option:checked {
+      background: var(--color-cyan);
+      color: var(--color-on-accent);
+    }
+
+    select.field::picker(select) option:hover {
+      background: var(--color-panel-2);
+    }
+  }
+
+  .log-line {
+    font-size: 11px;
+    color: var(--color-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@layer utilities {
+  /* 浮层硬阴影:印刷品贴纸感,代替发光 */
+  .shadow-hard {
+    box-shadow: 6px 6px 0 var(--color-shadow);
+  }
+
+  .shadow-hard-lg {
+    box-shadow: 10px 10px 0 var(--color-shadow);
+  }
+
+  .scan-reveal {
+    animation: scan-reveal 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .pulse-dot {
+    animation: pulse-dot 2.4s ease-in-out infinite;
+  }
+
+  .flicker {
+    animation: none;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes scan-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-reveal,
+  .pulse-dot {
+    animation: none;
+  }
+  * {
+    scroll-behavior: auto !important;
+  }
+}
+
+@layer components {
+  /* 数据表格:墨底表头 + 纸面行,行分隔用墨线 */
+  .data-grid {
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .data-grid th {
+    padding: 0.4rem 0.6rem;
+    background: var(--color-th-bg);
+    border: 1px solid var(--color-th-bg);
+    box-shadow: inset 0 -1px 0 var(--color-ink);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-th-fg);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .data-grid td {
+    padding: 0.42rem 0.6rem;
+    border-bottom: 1px solid var(--color-line);
+    border-right: 1px solid var(--color-line);
+    vertical-align: top;
+  }
+
+  .data-grid tbody tr:hover {
+    background: var(--color-panel-2);
+  }
+
+  .data-grid tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .menu-item {
+    display: block;
+    width: 100%;
+    padding: 0.4rem 0.6rem;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text);
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .menu-item:hover {
+    background: var(--color-cyan);
+    color: var(--color-on-accent);
+  }
+
+  summary {
+    list-style: none;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+}

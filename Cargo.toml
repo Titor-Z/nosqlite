@@ -1,6 +1,6 @@
 [package]
 name = "nodblite"
-version = "0.6.10"
+version = "0.6.11"
 edition = "2024"
 rust-version = "1.85"
 description = "一个像 SQLite 一样小巧的单文件 NoSQL 数据库(.nodb):MongoDB 风格文档模型,单文件零配置部署"
@@ -17,12 +17,22 @@ redb = "3"
 regex = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 
+[features]
+# Web 管理台:需要先产出 studio/nodblite.wasm(见 scripts/build-studio.sh)
+studio = []
+
 [dev-dependencies]
 redb = "3"
 
 [[bin]]
 name = "nodblite"
 path = "src/main.rs"
+
+# 单二进制 Web 管理台:内嵌前端资源与 wasm,默认不构建
+[[bin]]
+name = "nodblite-studio"
+path = "src/bin/nodblite-studio.rs"
+required-features = ["studio"]
 
 [lib]
 name = "nodblite"

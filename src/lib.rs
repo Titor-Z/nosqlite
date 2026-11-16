@@ -14,6 +14,7 @@
 //!
 //! [`Storage`]: engine::Storage
 
+pub mod aggregate;
 pub mod cli;
 pub mod database;
 pub mod document;
@@ -23,6 +24,7 @@ pub mod ffi;
 pub mod index;
 pub mod query;
 pub mod server;
+pub mod studio;
 
 pub use database::{Database, DatabaseError, ScanCursor, UpsertResult};
 pub use document::{Document, DocumentError};

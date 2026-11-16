@@ -13,3 +13,7 @@ npm/.npm-cache/
 npm/prebuilds/
 npm/dist/
 npm/*.tgz
+
+# studio 前端构建产物(由 scripts/build-studio.sh 生成后内嵌进二进制)
+studio-ui/dist/
+studio-ui/public/nodblite.wasm

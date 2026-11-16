@@ -168,6 +168,45 @@ const list = await users.find({ age: { $gte: 18 } }).sort({ age: -1 }).toArray()
 
 尚未支持:认证、副本集、分片、changeStream。
 
+## Web 管理台(nodblite-studio)
+
+构成主义风格(纸/墨/朱红)的单二进制 Web 界面:浏览器打开后**导入或直接拖入 `.nodb`**,
+即可浏览文档、过滤查询、编辑 JSON、管理索引、查看执行计划与统计。
+
+```bash
+./scripts/build-studio.sh          # 构建 wasm + 前端 + 单二进制
+./target/release/nodblite-studio   # 默认 http://127.0.0.1:8787
+```
+
+- **单文件分发**:HTML / CSS / JS / WASM 全部内嵌进可执行文件,无资源目录、无运行时依赖。
+- **引擎在页面内**:数据库操作由 `wasm32-wasip1` 产物在浏览器里执行,数据不上传;
+  服务端只提供静态资源。
+- **导入/导出**:导入即把文件字节放进内存文件系统;导出即下载当前内存中的 `.nodb`,
+  与原生 CLI、服务端读写完全互通。
+- **资源管理**(对标 MongoDB Compass Data Explorer):左侧 Databases 树、Documents/Indexes/Explain/Schema/Aggregation
+  五标签;查询栏(Filter/Project/Sort + ⋮ 菜单收纳 Options/History)、Table⇄JSON 双视图(列头排序、行内嵌套展开)、
+  Insert Document(s)/复制/行内编辑删除、`Documents X–Y of N` 翻页;索引表格 + builder;Explain 计划链 +
+  CLIENT MEASURED 指标;Schema 采样;Aggregation stage 编辑器(前缀管道逐 stage 预览);集合级 Import/Export(JSON/JSONL/CSV)。
+- **编辑器**:JSON 语法高亮 + 字段视图(按 string/number/boolean/null/date/array/object 类型编辑并校验);select 与输入框/按钮同一套视觉。
+- **主题**:跟随系统 / 亮 / 暗三态,首屏无闪烁。
+- **诚实降级**:引擎不支持的项(Collation、索引 Size·Usage、hidden·partial·TTL、真实扫描计数)显式标注 `—` 或 `NOT SUPPORTED`,不静默假装。
+
+开发模式(前后端分离热更新):
+
+```bash
+cargo build --target wasm32-wasip1 --lib
+mkdir -p studio-ui/public
+cp target/wasm32-wasip1/release/nodblite.wasm studio-ui/public/
+cd studio-ui && bun run dev
+```
+
+浏览器冒烟测试(需要系统 Chrome):
+
+```bash
+./target/release/nodblite-studio --addr 127.0.0.1:8799 &
+node studio-ui/e2e/smoke.mjs
+```
+
 ## 快速上手
 
 ```rust

@@ -223,6 +223,17 @@ NodbliteResult *nodblite_count(NodbliteDb *db, const char *collection, const cha
 /* 列出全部集合。docs 为集合名 JSON 数组。 */
 NodbliteResult *nodblite_list_collections(NodbliteDb *db);
 
+/* 删除整个集合(含其全部文档与索引)。affected = 删除的文档条数。 */
+NodbliteResult *nodblite_drop_collection(NodbliteDb *db, const char *collection);
+
+/*
+ * 执行聚合管道。pipeline_json 必须是 JSON 数组。
+ * 支持阶段:$match/$sort/$skip/$limit/$group/$project/$addFields/$set。
+ * docs 为输出文档。
+ */
+NodbliteResult *nodblite_aggregate(NodbliteDb *db, const char *collection,
+                                   const char *pipeline_json);
+
 /* ---------- 兜底 ---------- */
 
 /*
