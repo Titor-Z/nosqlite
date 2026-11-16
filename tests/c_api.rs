@@ -24,13 +24,20 @@ fn temp_path(tag: &str, ext: &str) -> PathBuf {
 }
 
 /// 定位编译产物目录(cdylib 与 rlib 都在 target/<profile> 下)。
+///
+/// 测试二进制通常在 `target/<profile>/deps/`,但 CI 上可能落在
+/// `target/<profile>/build/<crate>/<hash>/` 之类的子目录里 ——
+/// 只取固定两级会算错(曾在 GitHub Actions 上一直失败)。
+/// 这里改为向上找第一个名为 `debug` / `release` 的祖先目录。
 fn target_dir() -> PathBuf {
-    // 测试二进制位于 target/<profile>/deps/,其上两级即 target/<profile>
     let exe = std::env::current_exe().expect("应能取得测试二进制路径");
-    exe.parent()
-        .and_then(|p| p.parent())
-        .expect("应有 target/<profile> 目录")
-        .to_path_buf()
+    for ancestor in exe.ancestors().skip(1) {
+        match ancestor.file_name().and_then(|n| n.to_str()) {
+            Some("debug") | Some("release") => return ancestor.to_path_buf(),
+            _ => {}
+        }
+    }
+    panic!("未能从 {} 反推 target/<profile> 目录", exe.display());
 }
 
 /// 编译并运行 `tests/c_smoke.c`,断言其退出码为 0。

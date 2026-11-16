@@ -52,6 +52,8 @@ jobs:
         run: |
           rustup target add wasm32-wasip1
           cargo build --release --lib --target wasm32-wasip1
+          # public/ 里只有被 gitignore 的 wasm,仓库中不存在该目录
+          mkdir -p studio-ui/public
           cp target/wasm32-wasip1/release/nodblite.wasm studio-ui/public/nodblite.wasm
 
       - name: 安装 Bun
