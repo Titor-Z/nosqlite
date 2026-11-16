@@ -2,7 +2,7 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
-## [0.6.11] - 2026-11-15
+## [0.6.11] - 2026-11-16
 
 nodblite-studio:对标 MongoDB Compass Data Explorer 的单二进制 Web 管理台。
 
@@ -13,6 +13,14 @@ nodblite-studio:对标 MongoDB Compass Data Explorer 的单二进制 Web 管理�
 - **编辑器**:JSON 语法高亮(零依赖);`Fields` 视图按类型(含 date/array/object)编辑字段并校验,避免写错值类型。
 - **select 样式化**:`appearance: base-select` + `::picker(select)`(Chrome 135+),弹出列表跟主题走;不支持的浏览器自动退回原生外观。
 - **视觉系统改为构成主义**:纸底 `#f2ede3` + 墨黑 `#12100e` + 朱红 `#d6281e`;粗墨线、直角、斜切标签块、墨底表头、硬阴影浮层。移除扫描线、光晕、渐变、圆角与切角。正文改无衬线,数据区保留等宽。
+
+### 文档站与 Playground
+- **视觉改为苏联构成主义海报**:首页 `layout: false` + 自建 `HomePoster.vue` —— 斜向红条、巨型全大写标题 `NODBLITE`、红底错位标签、硬框内嵌物理构图(图注「图 01」)、数字条、01–06 规格网格、红黑对置「用它 / 别用它」、墨底 `ONE FILE. NO SERVER.` CTA;首页自带明暗切换(与文档站共用 localStorage)。
+- **文档页换皮**:纸/墨/朱红令牌、圆角归零、线宽三档(1 / 1.5 / 2px + 4px 强调)、导航大写加字距、侧栏活跃项列表外短朱红条、h2 以 2px 墨线分节、表头深底浅字、内联代码朱红字;代码高亮换 `min-light / min-dark`;logo、favicon 重画。
+- **官网部署 Playground(`/playground/`)**:studio 静态产物随文档站一起发布,打开网页拖入 `.nodb` 即可查看集合/文档/索引/查询计划。wasm 引擎在本页内运行,数据不出本机;编辑器为临时查看,刷新即丢。`site/.vitepress` 与 studio 共用一份构建(`base: './'`),不再需要两套产物。
+- **发布物**:Release 新增 `nodblite-studio-<platform>` 单二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256),供长期读写磁盘文件使用。
+- **文档纠正**:JS/TS 快速开始改为以官方 npm 包 `nodblite` 为主线(原为裸 koffi FFI 教程);wasm 独立成「快速开始 → wasm」一页,列明 Node 用 `node:wasi`、浏览器需自备 WASI、以及 wasm 侧缺少的 `findPage / explain / upsert / 复合索引`。
+- **窄屏修复**:playground 顶栏文字重叠、工作区被固定 `270px` 左树挤成竖条。
 
 ### 新增
 - **`nodblite-studio`(重构)**:信息架构对齐官方 Data Explorer —— 左侧 Databases 树(集合+文档数)、单集合工作区、二级标签 `Documents / Indexes / Explain / Schema / Aggregation`。

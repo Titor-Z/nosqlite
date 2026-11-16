@@ -79,8 +79,13 @@
   {#if !app.opened}
     <Landing />
   {:else}
-    <div class="grid min-h-0 flex-1 grid-cols-[270px_minmax(0,1fr)]">
-      <DatabaseTree />
+    <!-- 桌面:左树 + 工作区;窄屏:左树压到上方一条(限高),工作区占满 -->
+    <div
+      class="grid min-h-0 flex-1 grid-rows-[minmax(0,32vh)_minmax(0,1fr)] lg:grid-cols-[270px_minmax(0,1fr)] lg:grid-rows-1"
+    >
+      <div class="min-h-0 overflow-hidden border-b-2 border-ink lg:border-b-0">
+        <DatabaseTree />
+      </div>
 
       <main class="flex min-h-0 min-w-0 flex-col">
         <header class="flex items-center gap-3 border-b border-line bg-panel/40 px-4 py-2.5">

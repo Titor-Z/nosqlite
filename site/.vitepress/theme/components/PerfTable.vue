@@ -63,8 +63,7 @@ function cell(v) {
 /* 表格可以横向滚动,而不是压缩列宽 —— 数字挤在一起就失去可读性 */
 .nb-perf-scroll {
   overflow-x: auto;
-  border: 1px solid var(--nb-border);
-  border-radius: var(--nb-radius-md);
+  border: var(--nb-line-mid, 1.5px) solid var(--nb-border-strong);
 }
 
 table {
@@ -76,17 +75,18 @@ table {
 
 th {
   text-align: left;
-  font-size: 0.74rem;
-  font-weight: 500;
-  letter-spacing: 0.05em;
-  color: var(--nb-text-muted);
-  padding: 0.65rem 0.9rem;
-  border-bottom: 1px solid var(--nb-border-strong);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--nb-th-bg, var(--nb-text));
+  color: var(--nb-th-fg, var(--nb-bg));
+  padding: 0.6rem 0.9rem;
   white-space: nowrap;
 }
 
 td {
-  padding: 0.6rem 0.9rem;
+  padding: 0.55rem 0.9rem;
   border-bottom: 1px solid var(--nb-border);
   white-space: nowrap;
 }

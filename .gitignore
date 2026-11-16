@@ -17,3 +17,6 @@ npm/*.tgz
 # studio 前端构建产物(由 scripts/build-studio.sh 生成后内嵌进二进制)
 studio-ui/dist/
 studio-ui/public/nodblite.wasm
+
+# Pages 上的 playground:由 docs.yml 从 studio-ui/dist 复制而来
+site/public/playground/

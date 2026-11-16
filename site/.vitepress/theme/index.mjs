@@ -9,12 +9,14 @@ import DefaultTheme from 'vitepress/theme'
 import './style.css'
 
 import HeroPhysics from './components/HeroPhysics.vue'
+import HomePoster from './components/HomePoster.vue'
 import PerfTable from './components/PerfTable.vue'
 
 export default {
   extends: DefaultTheme,
   enhanceApp({ app }) {
     app.component('HeroPhysics', HeroPhysics)
+    app.component('HomePoster', HomePoster)
     app.component('PerfTable', PerfTable)
   },
 }

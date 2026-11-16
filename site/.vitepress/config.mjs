@@ -12,13 +12,12 @@ export default defineConfig({
   lastUpdated: true,
   ignoreDeadLinks: false,
 
-  // 深色优先(DESIGN.md:数据库文档大多开在编辑器旁边,深色不刺眼,
-  // 也让荧光绿强调色有对比度可依)。'dark' = 默认深色,用户仍可切换。
-  appearance: 'dark',
+  // 构成主义以纸感为主:纸底长文更耐读,暗色主题保留为可选项。
+  appearance: 'light',
 
   head: [
     ['link', { rel: 'icon', href: '/nosqlite/favicon.svg', type: 'image/svg+xml' }],
-    ['meta', { name: 'theme-color', content: '#08090A' }],
+    ['meta', { name: 'theme-color', content: '#F2EDE3' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:title', content: 'nodblite' }],
     [
@@ -31,7 +30,7 @@ export default defineConfig({
   ],
 
   themeConfig: {
-    logo: '/logo.svg',
+    logo: { light: '/logo.svg', dark: '/logo-dark.svg' },
 
     nav: [
       { text: '指南', link: '/quickstart/rust', activeMatch: '/quickstart/' },
@@ -39,8 +38,10 @@ export default defineConfig({
       { text: '性能', link: '/reference/performance' },
       { text: '兼容性', link: '/reference/compatibility' },
       { text: 'FAQ', link: '/reference/faq' },
+      // 静态目录不是 VitePress 路由,必须用绝对地址整页跳转
+      { text: 'Playground', link: 'https://titor-z.github.io/nosqlite/playground/' },
       {
-        text: 'v0.6.10',
+        text: 'v0.6.11',
         items: [
           { text: '更新日志', link: 'https://github.com/Titor-Z/nosqlite/blob/main/CHANGELOG.md' },
           { text: 'GitHub Releases', link: 'https://github.com/Titor-Z/nosqlite/releases' },
@@ -56,6 +57,7 @@ export default defineConfig({
             { text: 'Rust 内嵌', link: '/quickstart/rust' },
             { text: 'C ABI', link: '/quickstart/c-api' },
             { text: 'JavaScript', link: '/quickstart/javascript' },
+            { text: 'wasm(浏览器 / 边缘)', link: '/quickstart/wasm' },
             { text: '命令行', link: '/quickstart/cli' },
             { text: 'MongoDB 驱动', link: '/quickstart/wire' },
           ],
@@ -123,7 +125,8 @@ export default defineConfig({
   },
 
   markdown: {
-    theme: { light: 'github-light', dark: 'github-dark' },
+    // 低饱和高亮,与纸/墨/朱红同族(默认 github-light 的紫蓝与站点头色冲突)
+    theme: { light: 'min-light', dark: 'min-dark' },
     lineNumbers: false,
   },
 })

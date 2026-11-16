@@ -8,6 +8,11 @@ on:
     paths:
       - "site/**"
       - "package.json"
+      - "studio-ui/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "web/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -36,6 +41,33 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # Playground 是 studio 的静态产物,和文档站一起部署:
+      # 先编 wasm 引擎,再用 bun 构建前端,最后塞进 VitePress 的 public 目录。
+      - name: 缓存 Rust 构建
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
+      - name: 构建 WASM 引擎
+        run: |
+          rustup target add wasm32-wasip1
+          cargo build --release --lib --target wasm32-wasip1
+          cp target/wasm32-wasip1/release/nodblite.wasm studio-ui/public/nodblite.wasm
+
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: 构建 Playground 前端
+        working-directory: studio-ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: 复制 Playground 到站点
+        run: |
+          mkdir -p site/public/playground
+          cp -R studio-ui/dist/. site/public/playground/
+
       # VitePress 构建本身会检查死链(ignoreDeadLinks: false),
       # 失效链接会让构建失败 —— 防止文档慢慢腐化。
       - name: 构建站点
@@ -47,6 +79,8 @@ jobs:
           set -e
           test -f site/.vitepress/dist/index.html
           test -f site/.vitepress/dist/reference/performance.html
+          test -f site/.vitepress/dist/playground/index.html
+          test -f site/.vitepress/dist/playground/nodblite.wasm
           test -f site/.vitepress/dist/quickstart/rust.html
           ls site/.vitepress/dist/assets/chunks/ | grep -q matter && echo "matter chunk ok"
 

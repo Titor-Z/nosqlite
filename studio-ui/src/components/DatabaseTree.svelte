@@ -2,7 +2,7 @@
   import { app, selectCollection, refresh, openNewDoc } from '../lib/store.svelte.js';
 </script>
 
-<aside class="flex min-h-0 flex-col border-r border-line bg-panel/50">
+<aside class="flex h-full min-h-0 flex-col border-line bg-panel/50 lg:border-r">
   <div class="flex items-center gap-2 border-b border-line px-3 py-2.5">
     <span class="label">Databases</span>
     <span class="tag tabular">{app.collections.length}</span>

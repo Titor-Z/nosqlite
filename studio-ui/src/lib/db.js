@@ -24,7 +24,9 @@ export class StudioDb {
   async init() {
     if (this.exports) return;
     const wasi = createWasi(this.fs);
-    const response = await fetch('/nodblite.wasm');
+    // 相对当前页面解析:单二进制(根路径)与 Pages 子目录共用同一份产物
+    const wasmUrl = new URL('./nodblite.wasm', document.baseURI);
+    const response = await fetch(wasmUrl);
     if (!response.ok) throw new Error(`加载 wasm 失败: HTTP ${response.status}`);
     if (!this.module) this.module = await WebAssembly.compile(await response.arrayBuffer());
     const instance = await WebAssembly.instantiate(this.module, wasi.imports);

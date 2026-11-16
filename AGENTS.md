@@ -6,6 +6,12 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.11.16: 官网部署 **Playground**(`/playground/`)—— studio 静态产物随文档站一起发布,打开网页拖入 `.nodb` 即可查看集合/文档/索引/查询计划;同源 wasm 引擎,数据不离本机、刷新即丢,Release 继续提供 `nodblite-studio` 单二进制供长期使用。Landing 按官网海报语言重做,并修掉窄屏顶栏重叠与工作区被挤成竖条两处缺陷。参见 [taolun #79](#79-20261116-官网部署-studio-为-playgroundplayground)。
+
+- 2026.11.16: 文档纠正 —— JS/TS 快速开始改以官方 npm 包 `nodblite` 为主线(原为裸 koffi FFI 教程),wasm 独立成 `guide/wasm` 单独一栏(Node 用 `node:wasi`、浏览器自备 WASI、方法差异如实列出),删除过时的「wasm 当前没有做」FAQ。参见 [taolun #77](#77-20261116-文档纠正jsts-默认走官方-npm-包wasm-独立成指南)。
+
+- 2026.11.16: 文档站视觉转向**构成主义** —— hero 物理动效重做:圆形粒子 → 矩形板 + `inertia: Infinity` 禁止旋转(只允许平移,堆叠必然轴对齐),生成点按列对齐形成柱状栅格,高摩擦近零弹性落定即静止;叙事分批落下「文档块 → 朱红索引条 → 容器框成形」,状态行同步 `01 / DOCUMENTS` → `02 / INDEXES` → `03 / ONE .NODB`;文档页同步换皮:纸/墨/朱红令牌,圆角归零,线宽三档(1/1.5/2px + 4px 强调),导航大写加字距,侧栏活跃项左侧 4px 朱红条,h2 以 2px 墨线分节,表头深底浅字,内联代码朱红字;代码高亮换 `min-light/min-dark`;logo/favicon 重画为直角文件体 + 朱红索引块。**首页重做为苏联构成主义海报**(`layout: false` + 自建 `HomePoster.vue`):斜向红条横切、巨型全大写标题 `NODBLITE` + 红底错位标签、右侧硬框内嵌物理构图(图注「图 01」)、数字条、01–06 规格网格、红黑对置「用它 / 别用它」、墨底 `ONE FILE. NO SERVER.` CTA;海报页自带明暗切换(与文档站共用 localStorage,暗色整套反转为墨底纸线)。参见 [taolun #76](#76-20261116-文档站改构成主义hero-物理动效融入栅格) / [项目进度-已完成](#已完成)。
+
 - 2026.11.15: v0.6.11 —— **nodblite-studio 单二进制 Web 管理台**(构成主义 UI,Svelte 5 + Tailwind 4 + Vite 8,bun 构建):浏览器内运行 WASM 引擎,导入/拖入/导出 `.nodb`;对标 MongoDB Compass Data Explorer 重构为「左树 + 单集合工作区 + Documents/Indexes/Explain/Schema/Aggregation 五标签」,含查询栏(Filter/Project/Sort + Find,Reset/Options/Explain/History 收进 ⋮ 菜单)、Table⇄JSON 双视图、Insert Document(s)/Duplicate/行内操作、JSONL/JSON/CSV 集合级导入导出、索引表格 + builder、Explain 计划链 + CLIENT MEASURED 指标、Schema 采样、Aggregation stage 编辑器;**视觉改为构成主义**(纸/墨/朱红,粗线直角斜切块,去扫描线与发光),新增暗色模式、⋮ 查询菜单、视窗高度表格、类型化字段编辑器与 JSON 语法高亮;select 经 `appearance: base-select` + `::picker(select)/::picker-icon` 与 input/button 同族对齐;Rust 侧提取共享聚合执行器 `src/aggregate.rs` 并新增 C ABI `nodblite_aggregate`/`nodblite_drop_collection`;531 例 Rust 测试 + 28 项真实 Chrome e2e 全绿。参见 [taolun #73](#73-20261115-nodblite-studio-对标-compass-data-explorer-改造)、[#74](#74-20261115-studio-视觉改造复古未来主义--构成主义)、[#75](#75-20261115-studio-交互与编辑器增强暗色--⋮-菜单--视窗表格--类型化编辑) / [项目进度-已完成](#已完成)。
 
 - 2026.09.16: v0.1.0 发布 —— GitHub Release 附三平台 CLI 二进制(Linux x86_64 / macOS aarch64 / Windows x86_64 + SHA256,`release.yml` 自动构建);Cargo.toml 补齐 crates.io 元数据(rust-version 1.85/keywords/repository/license);README(定位/何时不用/跨平台性能表/内存与持久化语义)+ Apache-2.0 LICENSE;**crates.io 待发布**(需维护者 `cargo login`,`cargo publish --dry-run` 已验证通过)。
@@ -1418,6 +1424,74 @@
   - SchemaPane 的样本量下拉删掉 `py-1` 覆盖,高度与旁边 `ANALYZE` 按钮对齐(32.8 vs 33.9,差的是 border 1.5 vs 2,符合设计)。
 - 验证:`cargo test --features studio` 531 例、clippy 零警告;e2e 扩到 **28 项**(新增 `CSS.supports('selector(::picker(select))')` 与 `appearance === 'base-select'` 两项)全过。
 
+### 76. 2026.11.16 文档站改构成主义:hero 物理动效融入栅格
+
+- 背景:studio 已是构成主义(纸/墨/朱红),文档站仍是「深空 + 荧光绿 CRT + Matter.js 圆形粒子」,两套品牌语言。决定重做官网视觉,并让物理动效成为设计的一部分而不是氛围装饰。
+- 关键判断:**冲突的不是「物理」,是「圆粒子 + 无对齐」**。构成主义的核心是直角、轴对齐、栅格,而物理恰好能把它演出来 —— 只要约束形态。
+- 方案 A(刚体形态与约束):
+  - 粒子 → **矩形板**,`inertia: Infinity` **禁止旋转** —— 只允许平移,因此堆叠必然轴对齐,这是构成主义「严格直角体系」的物理表达;
+  - 生成点按**列(槽位)**对齐,块宽 = 列宽 − 间隙,块只会竖直落入本列 → 天然栅格,不靠事后 snap(取整吸附会把相邻块挤在一起,不做);
+  - 高摩擦 + 近零弹性 → 落定即静止;`enableSleeping` 冻结;
+  - **移除鼠标拖拽**:拖走一块就毁掉构图,严格栅格的优先度高于是不可控的交互;
+  - `prefers-reduced-motion` 直接跑 300 步到终态并只绘一帧。
+- 方案 B(物理即叙事):分批 stagger 落下 —— 文档块 → 索引(朱红细条)→ 容器框成形,左下状态行同步 `01 / DOCUMENTS` → `02 / INDEXES` → `03 / ONE .NODB`。比「粒子落进盒子」多表达了一层「文档 + 索引 → 单文件」。
+- 配色复用 studio 令牌:纸 `#fbf7ee` / 墨 `#12100e` / 朱红 `#d6281e`;深色文档站下块体采用「暗底 + 纸色描边」的构造图形态,朱红索引条实心。
+- **执行(hero)**:`site/.vitepress/theme/components/HeroPhysics.vue` 重写。矩形板 + `inertia: Infinity`、按列生成、`enableSleeping`、落定后停 rAF;分批时间线 `260 + order*230` ms,索引条落最高柱顶,容器框在索引后 520 ms 渐入(240 ms)。窄屏(<640)不挂画布 —— hero 上下堆叠时没有右侧空白,画布会压住文字。
+- **执行(文档页换皮)**:`style.css` 全量重写为构成主义 —— 令牌改纸/墨/朱红(浅色默认,`appearance: 'dark' → 'light'`),圆角归零,线宽三档(1/1.5/2px + 4px 强调),导航项大写加字距,侧栏活跃项左侧 4px 朱红条,h2 用 2px 墨线分为层级(不加任何说明性标签),表头深底浅字(两套主题都反色,新增 `--nb-th-bg/--nb-th-fg`),内联代码朱红字 + 淡底 + 内描边,特性卡 hover 反色成墨底。
+- 配套:`config.mjs` 的 `markdown.theme` 由 `github-light/dark` 改 `min-light/min-dark`(默认紫蓝与纸墨朱红冲突);`logo.svg`/`logo-dark.svg`(新增)/`favicon.svg` 重画为直角文件体 + 朱红索引块;`PerfTable.vue` 表头改深底浅字、去圆角。
+- **踩坑 ①**:`isDarkColor` 只认十进制数字的正则对 `#f2ede3` 解析失败(十六进制字母被当分隔符),导致永远判为深色 —— hero 在纸底页面画出暗块。必须显式处理 `#rgb`/`#rrggbb`。
+- **踩坑 ②**:VitePress 的主题样式在开发态**晚于**本文件注入,同等特异性会覆盖我们的规则(圆角、特性卡边框全部被还原成默认值)。结构件(按钮/卡片/开关/搜索/分页器)必须 `!important` 提权,范围刻意限死,不波及正文。
+- **踩坑 ③**:`config.mjs` 里已有一处 `markdown: { theme: github-light }`,我新加在 `appearance` 下方的那段被后者覆盖 —— 改配置前先 `grep` 同名键,不要以为只有一处。
+- **执行(首页海报)**:换皮之后首页仍是 VitePress `layout: home` 的卡片模板,不是「设计」而是「模板 + 换色」。改为 `layout: false` + 自建 `HomePoster.vue` 整页海报:
+  - 自建导航(带方块标识)与页脚 —— `layout: false` 不带 VitePress 的 nav/footer;
+  - 斜向红条(-2.2°、宽 108%、左右溢出)重复标语,横切画面上缘;
+  - 巨型压缩标题 `clamp(3.4rem, 11vw, 8.5rem)` + 红底错位小标签;
+  - 右侧 2px 硬框作海报插图,内嵌物理构图,底部图注「图 01 / 文档 → 索引 → 一个文件」;
+  - 数字条(4 列、1px 竖分隔、mono 大数字)、规格网格(01–06 编号 + 1px 网格线)、红黑对置的「用它 / 别用它」、墨底 CTA(`ONE FILE. NO SERVER.`);
+  - 海报页配色**固定不跟随暗色主题**(海报就是海报),HeroPhysics 新增 `[data-scheme]` 强制明暗。
+- **HeroPhysics 与首页解耦**:不再依赖 `.VPHero`,改为 `anchor = el.closest('.nb-poster-hero') || .VPHero`;构图参数改为「在宿主框内居中」(原先是「贴在 hero 右侧」),窄屏只判容器尺寸(<200×140)而非视口。
+- 死代码清理:首页不再用 `layout: home`,已删除 `style.css` 里的 `.VPHero`/`.VPFeature`/`.nb-stats` 三段(约 120 行)。
+- **首页主题切换**:海报页自建导航,切换按钮与 VitePress 共用 `localStorage['vitepress-theme-appearance']`,初始值直接读 `<html>` 上已有的 `dark` class(不自己猜系统偏好);暗色令牌整套反转(墨底纸线 + 朱红提亮到 `#e8402b`),并把写死的 `rgb(20 17 13 / x)` 半透明色收成 `--dim / --dim-2 / --rule` 三档 —— 否则暗色下网格线与次要文字全部消失。构图配色在宿主初始化时确定,用 `:key` 强制重建跟随主题。
+- **首页标题定版为 `NODBLITE`(全大写)**:苏联海报的拉丁字几乎都是全大写压缩;而全小写 `nodblite` 保留为 crate/npm/命令行里的写法 —— 海报标语与程序名双轨。放弃 `NoDBLite`:三个词界让它更像「No DB Lite」这类通用描述。
+- 验证:`npm run docs:build` 通过;桌面/移动、浅色/暗色分别截图核对。
+
+### 77. 2026.11.16 文档纠正:JS/TS 默认走官方 npm 包,wasm 独立成指南
+
+- 用户发现的问题:`site/quickstart/javascript.md` 整篇教「裸 koffi + 手写 `koffi.struct` 对齐 `NodbliteSlice`/`NodbliteResult`」并写 `npm install koffi` —— 而实际上 `nodblite@0.6.10` 这个官方 npm 包早已发布(内部依赖 koffi,提供 `Database` 类),文档一次都没提;wasm 也没提;FAQ 里还留着「编译成 WebAssembly 给浏览器用 —— **当前没有做**」这条**事实错误**。
+- 核对结果(不是猜):
+  - npm 包 = koffi 的**成品封装**,不是两条路;`Database` 提供 `find/findPage/get/count/collections/insert/insertMany/update/delete/upsert/createIndex/listIndexes/dropIndex/explain/close/[Symbol.dispose]` + 类型化错误类;
+  - wasm 是 `web/nodblite.js` 的 `loadWasm/openDb/NodbliteDb`,**Node 专用**(用 `node:wasi`);浏览器要自备 WASI,仓库里的最小实现在 `studio-ui/src/lib/wasi.js`(`MemoryFs` + `createWasi` → `{ imports, bind }`);
+  - wasm 侧方法**少几个**:无 `findPage`/`explain`/`upsert`,索引只有单字段 —— 这些都如实写进文档,不假装对等。
+- 落地:
+  - `quickstart/javascript.md` 重写:npm 包为主线(安装/CRUD/findPage/索引/错误类/平台),开篇就给「什么环境该用什么」表,wasm 与 wire 各指向对应页;裸 koffi 章节**删除**(内容在 `quickstart/c-api` 页已有等价覆盖),只保留「需要绕过封装时看 C ABI」一句。
+  - 新增 `guide/wasm.md`:什么时候用/不用、产物获取(Release 包与本地构建)、Node 用法、浏览器骨架(含 `wasi.bind(memory)` 顺序)、API 差异表、性能(读 1.01x;写 ≈1.3x,且必须 min 判据)。
+  - 侧栏 `使用指南` 增「wasm(浏览器 / 边缘)」一项。
+- 一个差点写错的地方:复合索引在 npm 包里是 `createIndex(coll, name, field, { fields: [...], directions: [...], unique })` —— 第三个位置参数仍必填(单字段路径),复合走 `opts.fields`。文档初稿按「数组当第三参数」写,核对 `index.js` 后改正。
+
+### 78. 2026.11.16 侧栏活跃项标记改成列表外的短竖线
+
+- 问题:活跃项用 `box-shadow: inset 4px 0 0 red` 画竖线,并配 `padding-left: 0.6rem` —— **阴影虽不占布局,但内边距占**,于是活跃项文字比其它项右移,整个列表的左边线歪了;且线高度等于整行,视觉上过高。
+- 改法:换成绝对定位的 `::before`,`left: -0.9rem` 放到列表外(落在侧栏内边距里,不溢出),高度 `0.95em` + `translateY(-50%)` 垂直居中;删掉 `padding-left` 与相关 transition。文字左边界因此与其它项完全对齐。
+- 顺带:活跃项文字改为墨色加粗(VitePress 自带品牌色在先,需 `!important` 提权),避免「红字 + 红条」重复强调。
+
+### 79. 2026.11.16 官网部署 studio 为 Playground(/playground/)
+
+- 需求:官网要能「拖入 .nodb 就查看」——把 studio 的静态产物一起部署到 Pages,同时 Release 继续提供单二进制。
+- 两个必须先解决的真障碍:
+  1. `studio-ui/src/lib/db.js` 里 `fetch('/nodblite.wasm')` 是绝对路径,放到 `/nosqlite/playground/` 会 404;`vite.config.js` 也没设 base。
+     → 改 **`base: './'` + `new URL('./nodblite.wasm', document.baseURI)`**:同一份产物既能被单二进制从根路径 serve,也能原样放进 Pages 子目录,不必两套构建。
+  2. VitePress **dev server 不会服务 public 子目录的 index.html**(走 SPA 路由 → 404)。所以 playground 只能在 `docs:build` 之后用静态服务器验证,dev 下无法预览 —— 用 `python3 -m http.server` 起 `dist` 的副本(挂在 `/nosqlite/` 下)验证。
+- Landing 重做(按官网海报语言):斜向红条、巨型压缩标题、红底错位标签、硬框拖入区(硬阴影)、底部「浏览器版 / 单二进制版」对置说明。**三条事实写在正文里而不是营销语**:文件本地读取不上传、数据在本页内存刷新即丢、长期使用请下载单二进制。
+- 删掉 Landing 里重复的 ENGINE 状态块 —— 底部 StatusBar 已常驻显示,按规范「让布局解释」不重复标注。
+- 窄屏修了三处(playground 一定会在手机上被打开):
+  - `TopBar` 文字重叠:logo 区加 `shrink-0`、隐藏 `// STUDIO`、`载入 .nodb` 收成「载入」、隐藏「新建库」、状态文字 truncate 且窄屏隐藏;
+  - 工作区被挤成竖条:根布局原为固定 `grid-cols-[270px_...]`,窄屏改成 `grid-rows-[minmax(0,32vh)_1fr]`,左树压到上方限高条,`lg` 以上恢复左右分栏;
+  - `DatabaseTree` 的 `border-r` 改 `lg:border-r`,窄屏用底边线。
+- 站点接入:首页 nav 与 hero 各加一个 Playground 入口(原生 `<a>`,因为它是静态目录不是 VitePress 路由);VitePress nav 用**绝对地址**(同样原因,内部路由链接会 404)。
+- CI(`docs.yml`):`rustup target add wasm32-wasip1` + `cargo build --release --lib` → `studio-ui/public/nodblite.wasm`,再 `bun install --frozen-lockfile && bun run build`,最后 `cp -R studio-ui/dist/. site/public/playground/`(必须在 `npm run docs:build` **之前**,否则不会被复制),产物校验加 `playground/index.html` 与 `playground/nodblite.wasm`。加了 `Swatinem/rust-cache` 缓存 wasm 构建。
+- 免费额度(用户关心):GitHub **公开仓库**的 Actions 与 Pages 都不计费(托管 runner 无限分钟;Pages 软限 站点 1GB / 月带宽 100GB / 每小时 10 次构建),私有仓库才按分钟消耗。代价是 docs 构建从 ~15 s 变成 2–3 分钟(首次),有 rust-cache 后会明显缩短。
+- `site/public/playground/` 不提交(已加 .gitignore),由 CI 生成。
+
 ## Agents
 
 ### 规范
@@ -1428,6 +1502,7 @@
 4. 版本发布格式:`YYYY.MM.DD.xxxx`,`xxxx` 为作为 git tag 前的 commitID,便于溯源。
 5. 写测试时,测试文件按功能模块拆分成多个文件,禁止在一个文件里写全部内容。
 6. 开发采用 OOP 面向对象方式(Rust 惯用 `struct + impl + trait`),模块单一职责,高内聚低耦合。
+7. 避免不必要的辅助标签与说明。让布局本身发挥解释作用。(Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.)
 
 ### 双形态路线(v0.2 起的总纲)
 
@@ -1496,6 +1571,8 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- v0.6.11:官网改苏联构成主义海报 + 文档页换皮 + **Playground 部署**(`/playground/`,拖入 `.nodb` 即查看,wasm 在本页运行)+ Release 新增 `nodblite-studio` 三平台单二进制;JS/TS 快速开始改以官方 npm 包为主线,wasm 独立成页。
+- 2026.11.16:文档站改构成主义 —— hero 物理动效融入栅格(矩形刚体禁转 → 柱状对齐,文档 → 索引 → 单文件叙事)+ 文档页换皮(纸/墨/朱红、圆角归零、墨线分节、表头反色、logo 重画、代码高亮换 min-light/min-dark)+ 首页重做为苏联构成主义海报(斜向红条、巨型标题、硬框插图、红黑对置、墨底 CTA)。
 - v0.6.11:nodblite-studio 对标 Compass Data Explorer 改造(构成主义视觉:纸/墨/朱红、粗线直角斜切块;暗色三态主题;⋮ 查询菜单;视窗高度 + sticky 表头;JSON 语法高亮与类型化 Fields 编辑器;select 与 input/button 同族对齐;左树+单集合工作区、Documents/Indexes/Explain/Schema/Aggregation 五标签、Table⇄JSON、Insert/Duplicate、集合级 JSONL/CSV 导入导出、索引 builder、Explain 计划链、Schema 采样、Aggregation stage 编辑器);Rust 提取共享聚合执行器 `src/aggregate.rs` + C ABI `nodblite_aggregate`;531 例 Rust 测试 + 28 项真实 Chrome e2e 全绿。
 - v0.6.7:WASM 形态(单文件跨平台)+ 写入路径实测优化(双重序列化 2.3x、流式批量会话 4x 内存);526 例全绿。
 - v0.6.6:JavaScript 生态接入 —— npm 包(koffi 直连 C ABI)+ C ABI 扩展(索引/explain/find_page/get/upsert)。

@@ -39,16 +39,16 @@
   }
 </script>
 
-<header class="flex h-16 shrink-0 items-center gap-4 border-b border-line bg-panel/80 px-5">
-  <div class="flex items-baseline gap-3">
+<header class="flex h-16 shrink-0 items-center gap-2 border-b border-line bg-panel/80 px-3 sm:gap-4 sm:px-5">
+  <div class="flex shrink-0 items-baseline gap-2 sm:gap-3">
     <span class="text-cyan glow text-lg leading-none">◈</span>
     <span class="text-[15px] font-bold tracking-[0.28em] text-text">NODBLITE</span>
-    <span class="text-[10px] tracking-[0.32em] text-dim">// STUDIO</span>
+    <span class="hidden text-[10px] tracking-[0.32em] text-dim sm:inline">// STUDIO</span>
   </div>
 
-  <div class="mx-2 h-8 w-px bg-line"></div>
+  <div class="mx-1 hidden h-8 w-px bg-line sm:mx-2 sm:block"></div>
 
-  <div class="min-w-0 flex-1">
+  <div class="min-w-0 flex-1 overflow-hidden">
     {#if app.opened}
       <div class="flex items-center gap-2 text-[12px]">
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-mint pulse-dot"></span>
@@ -56,13 +56,13 @@
         <span class="tag tabular">{bytesLabel(app.fileSize)}</span>
       </div>
     {:else if app.ready}
-      <div class="text-[10px] tracking-[0.22em] text-dim">NO DATABASE LOADED</div>
+      <div class="hidden truncate text-[10px] tracking-[0.22em] text-dim sm:block">NO DATABASE LOADED</div>
     {:else}
-      <div class="text-[10px] tracking-[0.22em] text-amber">INITIALIZING WASM ENGINE…</div>
+      <div class="hidden truncate text-[10px] tracking-[0.22em] text-amber sm:block">INITIALIZING WASM ENGINE…</div>
     {/if}
   </div>
 
-  <div class="flex items-center gap-2">
+  <div class="flex shrink-0 items-center gap-2">
     <button
       class="btn btn-ghost"
       onclick={cycleTheme}
@@ -87,8 +87,11 @@
         </svg>
       {/if}
     </button>
-    <button class="btn" disabled={!app.ready} onclick={() => input.click()}>载入 .nodb</button>
-    <button class="btn" disabled={!app.ready} onclick={newDatabase}>新建库</button>
+    <button class="btn" disabled={!app.ready} onclick={() => input.click()}>
+      载入<span class="hidden sm:inline"> .nodb</span>
+    </button>
+    <!-- 窄屏收掉「新建库」:Landing 与空态里都能新建,不值得挤占顶栏 -->
+    <button class="btn hidden sm:inline-flex" disabled={!app.ready} onclick={newDatabase}>新建库</button>
     <button class="btn btn-primary" disabled={!app.opened} onclick={exportDatabase}>导出</button>
     <input bind:this={input} type="file" accept=".nodb" class="hidden" onchange={pick} />
   </div>
