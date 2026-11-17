@@ -9,6 +9,7 @@
 //! - [`Update`]:更新操作(`$set` 字段点号路径赋值,嵌套自动创建/覆盖;路径段可为数组下标)。
 
 pub mod compare;
+pub mod expr;
 mod filter;
 mod options;
 mod update;
@@ -17,6 +18,7 @@ pub use compare::{
     as_date, as_number_double, as_number_long, as_oid, as_timestamp, compare_values, parse_iso8601,
     type_rank,
 };
-pub use filter::{Filter, FilterError};
+pub use expr::{ExprError, eval as eval_expr};
+pub use filter::{ArrayFilter, Filter, FilterError, parse_array_filter};
 pub use options::{FindOptions, Projection, ProjectionError, SortError, SortSpec};
 pub use update::{Update, UpdateError};

@@ -129,6 +129,18 @@ fn encode_element(buf: &mut Vec<u8>, key: &str, value: &Value) {
                     return;
                 }
             }
+            // SCRAM 的 SASL payload 必须是真正的 BSON binary,
+            // 否则驱动会把它当普通子文档解析失败(表现为握手卡住)。
+            "$binary" => {
+                if let Some((bytes, subtype)) = binary_parts(inner) {
+                    buf.push(T_BINARY);
+                    write_cstring(buf, key);
+                    buf.extend_from_slice(&(bytes.len() as i32).to_le_bytes());
+                    buf.push(subtype);
+                    buf.extend_from_slice(&bytes);
+                    return;
+                }
+            }
             "$minKey" => {
                 buf.push(T_MINKEY);
                 write_cstring(buf, key);
@@ -497,6 +509,18 @@ fn timestamp_parts(v: &Value) -> Option<(u32, u32)> {
     let t = m.get("t")?.as_u64()? as u32;
     let i = m.get("i")?.as_u64()? as u32;
     Some((t, i))
+}
+
+/// 解出 `{"base64": "...", "subType": "00"}` → (原始字节, 子类型)。
+fn binary_parts(v: &Value) -> Option<(Vec<u8>, u8)> {
+    let m = v.as_object()?;
+    let b64 = m.get("base64")?.as_str()?;
+    let subtype = m
+        .get("subType")
+        .and_then(|v| v.as_str())
+        .and_then(|s| u8::from_str_radix(s, 16).ok())
+        .unwrap_or(0);
+    Some((crate::crypto::base64::decode(b64)?, subtype))
 }
 
 /// 极简 base64 编码(binary 类型用,避免引入依赖)。

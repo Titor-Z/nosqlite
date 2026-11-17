@@ -620,6 +620,30 @@ fn write_index_entries(
     Ok(())
 }
 
+impl RedbEngine {
+    /// 压缩数据库文件,把空闲页还给文件系统(v0.7.1)。
+    ///
+    /// 删除数据不会缩小 `.nodb` —— redb 只把页放回空闲列表供后续写入复用。
+    /// 只有「数据量骤降后长期保持低量」时才需要压缩。
+    ///
+    /// 需要**独占访问**;有未结束的读事务(如持有 `ScanCursor`)时报错。
+    /// 返回 `true` 表示确实压缩了,`false` 表示已经无法再压。
+    pub fn compact(&mut self) -> Result<bool, StorageError> {
+        self.db.compact().map_err(|e| match e {
+            redb::CompactionError::TransactionInProgress => StorageError::Other(
+                "存在未结束的事务(如正在使用的扫描游标),无法压缩".to_string(),
+            ),
+            redb::CompactionError::PersistentSavepointExists => {
+                StorageError::Other("存在持久化 savepoint,无法压缩".to_string())
+            }
+            redb::CompactionError::EphemeralSavepointExists => {
+                StorageError::Other("存在临时 savepoint,无法压缩".to_string())
+            }
+            other => StorageError::Other(format!("压缩失败: {}", other)),
+        })
+    }
+}
+
 impl Storage for RedbEngine {
     fn create(path: &Path) -> Result<Self, StorageError> {
         // 1. 后缀校验:非 .nodb 一律拒绝

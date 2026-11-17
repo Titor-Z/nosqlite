@@ -2,6 +2,39 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
+## [0.7.0] - 2026-11-16
+
+聚合 / 查询 / 更新语义补齐、文件压缩、账号认证(SCRAM-SHA-256)。
+
+### 聚合(`src/aggregate.rs` 重写为逐阶段执行)
+- 新增 `$unwind` / `$lookup`(用 `$in` 一次查询,无 N+1)/ `$facet` / `$bucket` / `$replaceRoot`(`$replaceWith` 别名)/ `$count` / `$unset`;
+- 累加器补到 9 个:`$sum` / `$avg` / `$min` / `$max` / `$first` / `$last` / `$push` / `$addToSet` / `$count`;
+- 首 `$match` 下推存储层;未实现的 stage 明确报 `40324`,不静默返回空。
+
+### 查询
+- `$expr`(`src/query/expr.rs`,25 个表达式操作符,`$project` / `$addFields` / `$group._id` / 累加器共用同一求值器);
+- `$mod`;`$regex` 支持 `$options`(`i/m/s/x`)。
+
+### 更新
+- `$bit`(`and` / `or` / `xor`);
+- 数组位置运算符 `$[]` / `$[id]`(展开成具体下标路径,复用既有赋值逻辑)。
+
+### 运维
+- `.compact` 文件压缩(CLI + C ABI `nodblite_compact`):删除不缩文件是 redb 语义(空闲页复用),压缩是显式能力,不做自动后台触发;加密不做(指引 OS 级全盘加密);
+- `.stats` 维持原口径 —— 实测否掉 redb `fragmented_bytes` 当「空洞率」指标(方向反了),宁可只给压缩前后真实大小。
+
+### 账号认证(SCRAM-SHA-256)
+- 官方 Go / Node 驱动带账号密码直连验收通过;
+- 账号存真实集合 `admin.system.users`(`admin` 为保留命名空间,建库即写 `admin.system.version`),写路径拒绝 `system.*`、读时剥 `credentials`;
+- 库内无账号 = 不认证(等同 `noauth`);第一个账号自动 `root`;
+- 只做**认证**不做授权:通过认证即全权限,`roles` 字段已就位但暂不检查。
+
+### 测试
+- 626 例 Rust 全绿(新增 `tests/auth.rs` / `tests/auth_wire.rs` / `tests/compact.rs` / `tests/aggregate_stages.rs` 等);
+- 真实驱动:Go 18+4 项、Node 16+4 项、Mongoose 9 项。
+
+参见 AGENTS.md taolun #81–#84。
+
 ## [0.6.11] - 2026-11-16
 
 nodblite-studio:对标 MongoDB Compass Data Explorer 的单二进制 Web 管理台。

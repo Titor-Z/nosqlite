@@ -269,3 +269,33 @@ fn shell_parse_errors() {
         "--skip 非数字应报错"
     );
 }
+
+/// v0.7.0:`.user` 账号管理的解析。
+#[test]
+fn parse_user_commands() {
+    use nodblite::cli::UserOp;
+
+    assert_eq!(
+        parse_line(".user").unwrap(),
+        ShellCommand::User(UserOp::List)
+    );
+    assert_eq!(
+        parse_line(".user list").unwrap(),
+        ShellCommand::User(UserOp::List)
+    );
+    assert_eq!(
+        parse_line(".user add alice").unwrap(),
+        ShellCommand::User(UserOp::Add("alice".to_string()))
+    );
+    assert_eq!(
+        parse_line(".user passwd alice").unwrap(),
+        ShellCommand::User(UserOp::Passwd("alice".to_string()))
+    );
+    assert_eq!(
+        parse_line(".user drop alice").unwrap(),
+        ShellCommand::User(UserOp::Drop("alice".to_string()))
+    );
+    // 缺参数要明确报错,不能静默当成 list
+    assert!(parse_line(".user add").is_err());
+    assert!(parse_line(".user bogus alice").is_err());
+}

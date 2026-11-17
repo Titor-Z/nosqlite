@@ -142,10 +142,20 @@ impl Database {
     /// 创建新的 `.nodb` 数据库文件(目标文件必须不存在)。
     pub fn create(path: &Path) -> Result<Self, DatabaseError> {
         let engine = RedbEngine::create(path)?;
-        Ok(Database {
+        let db = Database {
             engine,
             path: path.display().to_string(),
-        })
+        };
+        // 写入 `admin.system.version`:使 `admin` 库从创建那一刻就存在,
+        // 与 mongod 一致(`system.version` 是 admin 库唯一默认存在的集合)。
+        let mut doc = crate::document::Document::from_value(serde_json::json!({
+            "_id": "featureCompatibilityVersion",
+            "version": "7.0",
+        }))
+        .map_err(DatabaseError::Document)?;
+        // 已存在时忽略(重复建库不会走到这里,但保持幂等更安全)
+        let _ = db.insert(crate::auth::VERSION_COLLECTION, &mut doc);
+        Ok(db)
     }
 
     /// 打开已存在的 `.nodb` 数据库文件,并校验魔数与版本。
@@ -399,8 +409,21 @@ impl Database {
         Ok(total)
     }
 
-    /// 列出数据库内全部集合名(去重,按集合名有序)。
+    /// 列出数据库内的**用户集合**名(去重,按集合名有序)。
+    ///
+    /// 不含 `admin.*` 系统集合 —— 它们是保留命名空间(账号、版本),
+    /// 不属于用户数据。需要看全部时用 [`Self::all_collections`]。
     pub fn collections(&self) -> Result<Vec<String>, DatabaseError> {
+        Ok(self
+            .engine
+            .list_collections()?
+            .into_iter()
+            .filter(|n| !n.starts_with("admin."))
+            .collect())
+    }
+
+    /// 列出全部集合名,**包括** `admin.*` 系统集合(wire 层列 `admin` 库时用)。
+    pub fn all_collections(&self) -> Result<Vec<String>, DatabaseError> {
         Ok(self.engine.list_collections()?)
     }
 
@@ -411,9 +434,20 @@ impl Database {
         Ok(self.engine.drop_collection(collection)?)
     }
 
+    /// 压缩数据库文件,把空闲页还给文件系统(v0.7.1)。
+    ///
+    /// 删除数据**不会**缩小 `.nodb` —— 空闲页只被后续写入复用。
+    /// 只有「数据量骤降后长期保持低量」才需要调用本方法。
+    ///
+    /// 需要 `&mut self`(独占访问);持有扫描游标时可能返回错误。
+    /// 返回 `true` 表示确实压缩了。
+    pub fn compact(&mut self) -> Result<bool, DatabaseError> {
+        Ok(self.engine.compact()?)
+    }
+
+
     /// 数据库文件路径。
-    pub fn path(&self) -> &str {
-        &self.path
+    pub fn path(&self) -> &str {        &self.path
     }
 
     // ==================== M11 新增:主键直接寻址与批量写入 ====================
@@ -770,6 +804,8 @@ impl Database {
 
         // 3. 应用 update(可能再次失败,如对缺失字段做非法操作)
         update.apply(doc.as_map_mut())?;
+        // `$setOnInsert` 只在插入时生效(Mongoose 的 timestamps 依赖这个语义)
+        update.apply_insert_only(doc.as_map_mut())?;
 
         // 4. 插入
         let id = self.insert(collection, &mut doc)?;

@@ -15,7 +15,9 @@
 //! [`Storage`]: engine::Storage
 
 pub mod aggregate;
+pub mod auth;
 pub mod cli;
+pub mod crypto;
 pub mod database;
 pub mod document;
 pub mod engine;

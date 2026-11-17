@@ -72,6 +72,7 @@ export default defineConfig({
             { text: '投影', link: '/guide/projection' },
             { text: '索引', link: '/guide/indexes' },
             { text: '聚合', link: '/guide/aggregate' },
+            { text: '账号与认证', link: '/guide/auth' },
           ],
         },
       ],

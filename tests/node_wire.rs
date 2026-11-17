@@ -88,22 +88,32 @@ fn node_available(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 用 Node 官方驱动跑完整验收。
-#[test]
-fn node_driver_end_to_end() {
+/// 拉起 server 并执行一个 Node 测试脚本。
+///
+/// 脚本缺失或依赖未装时**显式跳过并打印原因**,不静默通过。
+fn run_node_suite(tag: &str, script: &str, required_dep: &str) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/node_compat");
     if let Err(why) = node_available(&dir) {
-        eprintln!("跳过 Node 驱动验收: {}", why);
+        eprintln!("跳过 {} 验收: {}", tag, why);
+        return;
+    }
+    if !dir.join("node_modules").join(required_dep).join("package.json").exists() {
+        eprintln!(
+            "跳过 {} 验收: 缺少依赖 {},请在 {} 执行: npm install --cache ./.npm-cache",
+            tag,
+            required_dep,
+            dir.display()
+        );
         return;
     }
 
-    let db = temp_path("e2e");
+    let db = temp_path(tag);
     let Some(server) = start_server(&db) else {
         panic!("nodblite-server 未能在 5 秒内就绪");
     };
 
     let out = Command::new("node")
-        .args(["--test", "compat.test.mjs"])
+        .args(["--test", script])
         .current_dir(&dir)
         .env("NOSQLITE_URI", format!("mongodb://{}", server.addr))
         .output()
@@ -113,7 +123,8 @@ fn node_driver_end_to_end() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "Node 驱动验收失败\nstdout:\n{}\nstderr:\n{}",
+        "{} 验收失败\nstdout:\n{}\nstderr:\n{}",
+        tag,
         stdout,
         stderr
     );
@@ -121,10 +132,26 @@ fn node_driver_end_to_end() {
     // 防止「一个用例都没跑」也算通过
     assert!(
         stdout.contains("# pass") || stdout.contains("pass "),
-        "未看到测试统计输出,可能未真正执行:\n{}",
+        "{} 未看到测试统计输出,可能未真正执行:\n{}",
+        tag,
         stdout
     );
 
     drop(server);
     let _ = std::fs::remove_file(&db);
+}
+
+/// 用 Node 官方驱动跑完整验收。
+#[test]
+fn node_driver_end_to_end() {
+    run_node_suite("node", "compat.test.mjs", "mongodb");
+}
+
+/// 用 Mongoose(社区 ODM)跑完整验收。
+///
+/// 覆盖 ORM 层面的**隐性调用**:建模时的 `createIndexes`、timestamps 的 Date 往返、
+/// `ref` + `populate` 的 ObjectId 翻译、`countDocuments` 背后的 `aggregate/$group`。
+#[test]
+fn node_mongoose_end_to_end() {
+    run_node_suite("mongoose", "mongoose.test.mjs", "mongoose");
 }

@@ -12,10 +12,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
+use crate::auth::{MECHANISM, USERS_COLLECTION, UserStore};
 use crate::database::{Database, UpsertResult};
 use crate::document::Document;
 use crate::query::{Filter, FindOptions, Projection, SortSpec, Update};
 
+use super::scram::{ScramServer, payload_from_json, payload_to_json};
 use super::wire::{
     HEADER_LEN, OP_MSG, OP_QUERY, build_op_msg_response, build_op_reply, err_doc, ok_doc,
     parse_op_msg, parse_op_query,
@@ -160,6 +162,8 @@ static RESPONSE_ID: AtomicI32 = AtomicI32::new(1);
 
 /// 处理一条连接:循环读取帧、分发命令、写回响应。
 fn handle_connection(mut stream: TcpStream, db: Arc<Database>) -> std::io::Result<()> {
+    // 每条连接独立一份认证状态
+    let mut state = ConnState::new(&db);
     loop {
         // 1. 读 16 字节头
         let mut header = [0u8; HEADER_LEN];
@@ -199,7 +203,14 @@ fn handle_connection(mut stream: TcpStream, db: Arc<Database>) -> std::io::Resul
                         continue;
                     }
                 };
-                let response = dispatch(&db, &req.name, &req.command, &req.db, &req.sequences);
+                let response = dispatch(
+                    &db,
+                    &mut state,
+                    &req.name,
+                    &req.command,
+                    &req.db,
+                    &req.sequences,
+                );
                 let frame = build_op_msg_response(response_id, request_id, &response);
                 stream.write_all(&frame)?;
             }
@@ -207,7 +218,7 @@ fn handle_connection(mut stream: TcpStream, db: Arc<Database>) -> std::io::Resul
                 // 旧驱动握手:回 hello 的等价物
                 match parse_op_query(&body) {
                     Ok(Some(cmd)) => {
-                        let response = dispatch(&db, "hello", &cmd, "admin", &[]);
+                        let response = dispatch(&db, &mut state, "hello", &cmd, "admin", &[]);
                         let frame = build_op_reply(response_id, request_id, &response);
                         stream.write_all(&frame)?;
                     }
@@ -222,18 +233,151 @@ fn handle_connection(mut stream: TcpStream, db: Arc<Database>) -> std::io::Resul
     }
 }
 
+/// 每条连接的认证状态。
+///
+/// 认证是**访问路径**的属性:嵌入式(CLI/C ABI)不认证,只有 wire 连接才有这份状态。
+struct ConnState {
+    /// 已认证的用户名(未认证为 `None`)。
+    user: Option<String>,
+    /// 进行中的 SCRAM 会话(每连接最多一个)。
+    scram: Option<ScramServer>,
+    /// 数据库当前是否有用户(有则要求认证)。
+    ///
+    /// 缓存而非每命令重查,只在认证与账号管理命令后刷新。
+    users_required: bool,
+}
+
+impl ConnState {
+    fn new(db: &Database) -> Self {
+        ConnState {
+            user: None,
+            scram: None,
+            users_required: UserStore::new(db).has_users(),
+        }
+    }
+
+    /// 是否需要认证且尚未认证。
+    fn needs_login(&self) -> bool {
+        self.users_required && self.user.is_none()
+    }
+}
+
+/// 未认证时仍然允许的命令(握手、认证、探测)。
+///
+/// 其余命令一律 `13 Unauthorized` —— 与 MongoDB 一致。
+const AUTH_WHITELIST: &[&str] = &[
+    "hello",
+    "ismaster",
+    "ping",
+    "buildinfo",
+    "buildinfo1",
+    "saslstart",
+    "saslcontinue",
+    "logout",
+    "connectionstatus",
+    "endsessions",
+    "getsessioninfo",
+];
+
+/// `$db` → 物理集合名。
+///
+/// `admin` 是**保留命名空间**(存 `system.*`),其余库全部映射到扁平命名空间。
+/// 单库架构:一个 `.nodb` = 一个逻辑库(见 taolun #83)。
+fn physical_collection(db_name: &str, coll: &str) -> String {
+    if db_name.eq_ignore_ascii_case("admin") {
+        format!("admin.{}", coll)
+    } else {
+        coll.to_string()
+    }
+}
+
+/// 是否是受保护的系统集合(`admin.system.*`)。
+///
+/// 这些集合只能通过专用命令改(`createUser` 等),普通写路径一律拒绝 ——
+/// 否则一条 `drop` 就能把账号全删了。
+fn is_system_collection(coll: &str) -> bool {
+    coll.starts_with("admin.system.")
+}
+
+/// 把命令里承载集合名的那个键重写成物理名(`$db=admin` 时加前缀)。
+fn rewrite_collection(cmd: &Map<String, Value>, lower: &str, db_name: &str) -> Map<String, Value> {
+    let mut out = cmd.clone();
+    for key in cmd.keys().cloned().collect::<Vec<_>>() {
+        if key.eq_ignore_ascii_case(lower) {
+            if let Some(coll) = cmd.get(&key).and_then(|v| v.as_str()) {
+                out.insert(key, json!(physical_collection(db_name, coll)));
+            }
+            break;
+        }
+    }
+    out
+}
+
 /// 命令分发:按命令名路由到具体实现。
 fn dispatch(
     db: &Database,
+    state: &mut ConnState,
     name: &str,
     cmd: &Map<String, Value>,
-    _db_name: &str,
+    db_name: &str,
     sequences: &[(String, Vec<Map<String, Value>>)],
 ) -> Map<String, Value> {
     // 命令名大小写不敏感(驱动可能发 isMaster/ismaster)
     let lower = name.to_ascii_lowercase();
+
+    // ① 认证闸门:库里有用户且本连接未认证时,只放行白名单
+    if state.needs_login() && !AUTH_WHITELIST.contains(&lower.as_str()) {
+        return err_doc(
+            13,
+            "Unauthorized",
+            "需要先认证:请用 mongodb://<用户名>:<密码>@<主机>/?authSource=admin 连接",
+        );
+    }
+
+    // ② 认证与账号管理命令(需要连接状态)
     match lower.as_str() {
-        "hello" | "ismaster" => hello_response(),
+        "saslstart" => return cmd_sasl_start(db, state, cmd),
+        "saslcontinue" => return cmd_sasl_continue(db, state, cmd),
+        "logout" => {
+            state.user = None;
+            state.scram = None;
+            return ok_doc([]);
+        }
+        "connectionstatus" => return cmd_connection_status(state),
+        "createuser" => return cmd_create_user(db, state, cmd),
+        "updateuser" => return cmd_update_user(db, state, cmd),
+        "dropuser" => return cmd_drop_user(db, state, cmd),
+        "usersinfo" => return cmd_users_info(db, cmd),
+        _ => {}
+    }
+
+    // ③ 集合命名空间映射 + 系统集合写保护
+    let cmd = &rewrite_collection(cmd, &lower, db_name);
+    let coll = collection_name(cmd, &lower);
+    if is_system_collection(&coll) {
+        const WRITES: &[&str] = &[
+            "insert",
+            "update",
+            "delete",
+            "drop",
+            "createindexes",
+            "dropindexes",
+            "findandmodify",
+        ];
+        if WRITES.contains(&lower.as_str()) {
+            return err_doc(
+                13,
+                "Unauthorized",
+                &format!(
+                    "系统集合 `{}` 不允许直接写入,请使用 createUser / updateUser / dropUser",
+                    coll
+                ),
+            );
+        }
+    }
+
+    match lower.as_str() {
+        "hello" | "ismaster" => hello_response(db, cmd),
         "ping" => ok_doc([]),
         "endsessions" => ok_doc([]),
         "getmore" => cmd_get_more(cmd),
@@ -245,11 +389,12 @@ fn dispatch(
         "findandmodify" => cmd_find_and_modify(db, cmd),
         "count" => cmd_count(db, cmd),
         "distinct" => cmd_distinct(db, cmd),
-        "listcollections" => cmd_list_collections(db, cmd),
+        "listcollections" => cmd_list_collections(db, db_name, cmd),
         "listdatabases" => cmd_list_databases(db, cmd),
         "createindexes" => cmd_create_indexes(db, cmd),
         "listindexes" => cmd_list_indexes(db, cmd),
         "dropindexes" => cmd_drop_indexes(db, cmd),
+        "create" => cmd_create(cmd),
         "drop" => cmd_drop(db, cmd),
         "dropdatabase" => cmd_drop_database(db),
         "buildinfo" | "buildinfo1" => build_info(),
@@ -267,8 +412,8 @@ fn dispatch(
 /// `hello` / `isMaster` 响应。
 ///
 /// `maxWireVersion` 必须足够高,否则驱动直接拒连(驱动 v2.5 要求 >= 8,新驱动要求更高)。
-fn hello_response() -> Map<String, Value> {
-    ok_doc([
+fn hello_response(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let mut doc = ok_doc([
         ("ismaster", json!(true)),
         ("isWritablePrimary", json!(true)),
         ("helloOk", json!(true)),
@@ -283,7 +428,19 @@ fn hello_response() -> Map<String, Value> {
         ("logicalSessionTimeoutMinutes", json!(30)),
         ("compression", json!([])),
         ("ok", json!(1)),
-    ])
+    ]);
+    // 驱动连接串带账号时会问 `saslSupportedMechs: "db.user"`。
+    // 必须回 —— 不回的话 Go/Node 驱动会退到 MongoDB 4.0 前的兼容逻辑去试
+    // SCRAM-SHA-1,表现为「连不上」且报错不指向原因。
+    if let Some(asked) = cmd.get("saslSupportedMechs").and_then(|v| v.as_str()) {
+        let user = asked.split('.').next_back().unwrap_or("");
+        let exists = !user.is_empty() && UserStore::new(db).credential(user).is_some();
+        doc.insert(
+            "saslSupportedMechs".to_string(),
+            if exists { json!([MECHANISM]) } else { json!([]) },
+        );
+    }
+    doc
 }
 
 /// `buildInfo` 响应(驱动/工具常探测)。
@@ -330,6 +487,152 @@ fn collection_name(cmd: &Map<String, Value>, command: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// `saslStart`:开始 SCRAM-SHA-256 认证。
+///
+/// 请求:`{saslStart: 1, mechanism: "SCRAM-SHA-256", payload: BinData, options: {...}}`
+fn cmd_sasl_start(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let mechanism = cmd
+        .get("mechanism")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let Some(payload) = cmd.get("payload").and_then(payload_from_json) else {
+        return err_doc(2, "BadValue", "saslStart 缺少 payload");
+    };
+
+    let store = UserStore::new(db);
+    match ScramServer::start(&mechanism, &payload, |name| store.credential(name)) {
+        Ok((server, step)) => {
+            state.scram = Some(server);
+            ok_doc([
+                ("conversationId", json!(1)),
+                ("done", json!(step.done)),
+                ("payload", payload_to_json(&step.payload)),
+            ])
+        }
+        Err(e) => err_doc(18, "AuthenticationFailed", &e.to_string()),
+    }
+}
+
+/// `saslContinue`:推进 SCRAM 认证,成功后本连接获得身份。
+fn cmd_sasl_continue(
+    db: &Database,
+    state: &mut ConnState,
+    cmd: &Map<String, Value>,
+) -> Map<String, Value> {
+    let Some(payload) = cmd.get("payload").and_then(payload_from_json) else {
+        return err_doc(2, "BadValue", "saslContinue 缺少 payload");
+    };
+    let Some(server) = state.scram.as_mut() else {
+        return err_doc(17, "ProtocolError", "没有进行中的认证会话");
+    };
+    match server.continue_with(&payload) {
+        Ok(step) => {
+            if step.done {
+                state.user = Some(server.user().to_string());
+            }
+            // 认证后刷新「是否需要认证」的缓存(账号可能刚被创建/删除)
+            state.users_required = UserStore::new(db).has_users();
+            ok_doc([
+                ("conversationId", json!(1)),
+                ("done", json!(step.done)),
+                ("payload", payload_to_json(&step.payload)),
+            ])
+        }
+        Err(e) => {
+            state.scram = None;
+            err_doc(18, "AuthenticationFailed", &e.to_string())
+        }
+    }
+}
+
+/// `connectionStatus`:告知客户端当前身份。
+fn cmd_connection_status(state: &ConnState) -> Map<String, Value> {
+    let users = match &state.user {
+        Some(name) => json!([{"user": name, "db": "admin"}]),
+        None => json!([]),
+    };
+    ok_doc([(
+        "authInfo",
+        json!({
+            "authenticatedUsers": users,
+            "authenticatedUserRoles": [],
+        }),
+    )])
+}
+
+/// `createUser`:`{createUser: "alice", pwd: "...", roles: [...]}`
+fn cmd_create_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let Some(name) = cmd.get("createUser").and_then(|v| v.as_str()) else {
+        return err_doc(2, "BadValue", "createUser 需要用户名");
+    };
+    let Some(pwd) = cmd.get("pwd").and_then(|v| v.as_str()) else {
+        return err_doc(2, "BadValue", "createUser 需要 pwd(不接受空密码)");
+    };
+    let store = UserStore::new(db);
+    match store.create(name, pwd) {
+        Ok(()) => {
+            state.users_required = true;
+            ok_doc([])
+        }
+        Err(e) => err_doc(51003, "UserAlreadyExists", &e),
+    }
+}
+
+/// `updateUser`:目前支持改密码(`{updateUser: "alice", pwd: "新密码"}`)。
+fn cmd_update_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let Some(name) = cmd.get("updateUser").and_then(|v| v.as_str()) else {
+        return err_doc(2, "BadValue", "updateUser 需要用户名");
+    };
+    let Some(pwd) = cmd.get("pwd").and_then(|v| v.as_str()) else {
+        return err_doc(2, "BadValue", "updateUser 目前只支持改密码(需要 pwd)");
+    };
+    let store = UserStore::new(db);
+    match store.set_password(name, pwd) {
+        Ok(()) => {
+            state.users_required = store.has_users();
+            ok_doc([])
+        }
+        Err(e) => err_doc(11, "UserNotFound", &e),
+    }
+}
+
+/// `dropUser`:`{dropUser: "alice"}`
+fn cmd_drop_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let Some(name) = cmd.get("dropUser").and_then(|v| v.as_str()) else {
+        return err_doc(2, "BadValue", "dropUser 需要用户名");
+    };
+    let store = UserStore::new(db);
+    match store.drop_user(name) {
+        Ok(true) => {
+            state.users_required = store.has_users();
+            ok_doc([])
+        }
+        Ok(false) => err_doc(11, "UserNotFound", &format!("用户不存在: {}", name)),
+        Err(e) => err_doc(2, "BadValue", &e),
+    }
+}
+
+/// `usersInfo`:返回账号信息(**已剥掉 `credentials`**)。
+fn cmd_users_info(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+    let all = UserStore::new(db).list();
+    // `{usersInfo: 1}` / `{usersInfo: "alice"}` / `{usersInfo: {user: "alice", db: "admin"}}`
+    let asked = match cmd.get("usersInfo") {
+        Some(Value::String(name)) => Some(name.clone()),
+        Some(Value::Object(m)) => m.get("user").and_then(|v| v.as_str()).map(str::to_string),
+        _ => None,
+    };
+    let users: Vec<Value> = all
+        .into_iter()
+        .filter(|doc| match &asked {
+            Some(name) => doc.get("user").and_then(|v| v.as_str()) == Some(name.as_str()),
+            None => true,
+        })
+        .map(Value::Object)
+        .collect();
+    ok_doc([("users", Value::Array(users))])
 }
 
 /// 把 BSON 文档转成待插入的 `Document`(补 `_id`)。
@@ -384,6 +687,7 @@ fn cmd_insert(
 ///
 /// 返回游标结构(`cursor.id` 为 0 表示一次取完)。
 fn cmd_find(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+    // 注意:`coll` 已是物理名(`$db=admin` 时带 `admin.` 前缀),见 `rewrite_collection`
     let coll = cmd.get("find").and_then(|v| v.as_str()).unwrap_or("");
     let filter_value = cmd
         .get("filter")
@@ -457,7 +761,20 @@ fn cmd_find(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
     };
 
     match result {
-        Ok(docs) => build_cursor_response(coll, docs, batch_size, "firstBatch"),
+        // `admin.system.users` 是真实集合,但**不能**把密码摘要读出去:
+        // 否则一条 find 就能拿到所有用户的 SCRAM 摘要做离线爆破。
+        // 用专用的 usersInfo 才能看到账号信息(且已脱敏)。
+        Ok(docs) => {
+            let docs = if coll == USERS_COLLECTION {
+                docs.iter()
+                    .cloned()
+                    .map(crate::auth::strip_secrets)
+                    .collect()
+            } else {
+                docs
+            };
+            build_cursor_response(coll, docs, batch_size, "firstBatch")
+        }
         Err(e) => err_doc(2, "BadValue", &e.to_string()),
     }
 }
@@ -614,9 +931,15 @@ fn cmd_update(
             Ok(f) => f,
             Err(e) => return err_doc(2, "BadValue", &e.to_string()),
         };
+        // 数组过滤器(v0.7.0):服务端把它作为更新的附加参数传入
+        let array_filters = entry
+            .get("arrayFilters")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         // u 可能是操作符对象,也可能是整体替换文档(MongoDB 语义)
         let update = if is_update_operator_doc(u) {
-            match Update::from_value(u) {
+            match Update::from_value_with_filters(u, &array_filters) {
                 Ok(x) => x,
                 Err(e) => return err_doc(9, "FailedToParse", &e.to_string()),
             }
@@ -907,8 +1230,17 @@ fn resolve_field<'a>(doc: &'a Map<String, Value>, path: &str) -> Option<&'a Valu
 }
 
 /// `listCollections`
-fn cmd_list_collections(db: &Database, _cmd: &Map<String, Value>) -> Map<String, Value> {
-    let names = db.collections().unwrap_or_default();
+fn cmd_list_collections(db: &Database, db_name: &str, _cmd: &Map<String, Value>) -> Map<String, Value> {
+    // 单库架构:`admin` 是保留命名空间,其内容与数据库分开列出
+    let names: Vec<String> = if db_name.eq_ignore_ascii_case("admin") {
+        db.all_collections()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|n| n.strip_prefix("admin.").map(str::to_string))
+            .collect()
+    } else {
+        db.collections().unwrap_or_default()
+    };
     let first_batch: Vec<Value> = names
         .iter()
         .map(|n| {
@@ -930,18 +1262,28 @@ fn cmd_list_collections(db: &Database, _cmd: &Map<String, Value>) -> Map<String,
 /// `listDatabases`
 fn cmd_list_databases(db: &Database, _cmd: &Map<String, Value>) -> Map<String, Value> {
     let names = db.collections().unwrap_or_default();
+    // `admin` 库只装有系统集合(`system.version` / `system.users`)
+    let sys_names: Vec<String> = db
+        .all_collections()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| n.starts_with("admin."))
+        .collect();
     let mut total = 0usize;
     for n in &names {
         total += db.count(n, &Filter::match_all()).unwrap_or(0);
     }
+    let mut admin_docs = 0usize;
+    for n in &sys_names {
+        admin_docs += db.count(n, &Filter::match_all()).unwrap_or(0);
+    }
     ok_doc([
         (
             "databases",
-            json!([{
-                "name": "nodblite",
-                "sizeOnDisk": 0,
-                "empty": total == 0,
-            }]),
+            json!([
+                {"name": "admin", "sizeOnDisk": 0, "empty": admin_docs == 0},
+                {"name": "nodblite", "sizeOnDisk": 0, "empty": total == 0},
+            ]),
         ),
         ("totalSize", json!(0)),
         ("ok", json!(1)),
@@ -1105,6 +1447,17 @@ fn cmd_drop(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
     }
 }
 
+/// `create`(Mongoose/驱动建模时会调):nodblite 集合隐式存在,故只需校验名字并回 ok。
+///
+/// 不建任何东西 —— 集合在首次写入时自动出现(与 MongoDB 不同但对外等价)。
+fn cmd_create(cmd: &Map<String, Value>) -> Map<String, Value> {
+    let coll = cmd.get("create").and_then(|v| v.as_str()).unwrap_or("");
+    if coll.is_empty() {
+        return err_doc(2, "InvalidNamespace", "集合名不能为空");
+    }
+    ok_doc([])
+}
+
 /// `dropDatabase`
 fn cmd_drop_database(db: &Database) -> Map<String, Value> {
     let names = db.collections().unwrap_or_default();
@@ -1254,7 +1607,11 @@ mod tests {
     /// hello 响应必须带足够高的 maxWireVersion,否则驱动拒连。
     #[test]
     fn hello_has_wire_version() {
-        let resp = hello_response();
+        let path = std::env::temp_dir().join(format!("nodblite_hello_{}.nodb", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db = Database::create(&path).unwrap();
+        let resp = hello_response(&db, &Map::new());
+        let _ = std::fs::remove_file(&path);
         assert_eq!(resp.get("ok"), Some(&json!(1)));
         let v = resp["maxWireVersion"].as_i64().unwrap();
         assert!(v >= 8, "maxWireVersion 至少 8,实际 {}", v);

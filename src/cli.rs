@@ -76,12 +76,29 @@ pub enum ShellCommand {
         /// 源文件。
         file: String,
     },
-    /// 显示数据库统计(文件大小、集合数、各集合文档数)。
+    /// 显示数据库统计(文件大小、集合数、各集合文档数、空洞率)。
     Stats,
+    /// 压缩数据库文件(把空闲页还给文件系统)。
+    Compact,
+    /// 账号管理:`.user add|drop|passwd` 或 `.user`(列出)。
+    User(UserOp),
     /// 显示 shell 命令用法。
     Help,
     /// 退出 shell。
     Quit,
+}
+
+/// `.user` 的子操作。
+#[derive(Debug, PartialEq)]
+pub enum UserOp {
+    /// `.user`(无参)或 `.user list`:列出账号(不含密码摘要)。
+    List,
+    /// `.user add <name>`:创建账号(密码取自 `NODBLITE_PASSWORD` 或交互输入)。
+    Add(String),
+    /// `.user drop <name>`:删除账号。
+    Drop(String),
+    /// `.user passwd <name>`:重设密码(忘记密码时的逃生通道)。
+    Passwd(String),
 }
 
 /// CLI 程序入口(对齐 sqlite3):
@@ -246,6 +263,25 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
             Err(".import 缺少参数: .import <collection> <file>".to_string())
         }
         [cmd] if cmd == ".stats" => Ok(ShellCommand::Stats),
+        [cmd] if cmd == ".compact" => Ok(ShellCommand::Compact),
+        [cmd] if cmd == ".user" => Ok(ShellCommand::User(UserOp::List)),
+        [cmd, sub] if cmd == ".user" && sub == "list" => Ok(ShellCommand::User(UserOp::List)),
+        [cmd, sub, name] if cmd == ".user" && sub == "add" => {
+            Ok(ShellCommand::User(UserOp::Add(name.to_string())))
+        }
+        [cmd, sub, name] if cmd == ".user" && (sub == "drop" || sub == "del") => {
+            Ok(ShellCommand::User(UserOp::Drop(name.to_string())))
+        }
+        [cmd, sub, name] if cmd == ".user" && (sub == "passwd" || sub == "password") => {
+            Ok(ShellCommand::User(UserOp::Passwd(name.to_string())))
+        }
+        [cmd, ..] if cmd == ".user" => Err(
+            ".user 用法:`.user` 列出 / `.user add <name>` / `.user drop <name>` / `.user passwd <name>`"
+                .to_string(),
+        ),
+        [cmd, ..] if cmd == ".compact" => {
+            Err(".compact 不接受参数: .compact".to_string())
+        }
         [cmd, collection, filter] if cmd == "delete" => {
             Ok(ShellCommand::Delete(collection.clone(), filter.clone()))
         }
@@ -406,6 +442,12 @@ fn exec_shell(current: &mut Option<Database>, cmd: ShellCommand) -> ExitCode {
             require_db(current, |db| exec_import(db, &collection, &file))
         }
         ShellCommand::Stats => require_db(current, exec_stats),
+        // `.compact` 需要独占访问,所以不能用 `require_db`(它只给 &Database)
+        ShellCommand::User(op) => require_db(current, |db| exec_user(db, op)),
+        ShellCommand::Compact => match current.as_mut() {
+            Some(db) => exec_compact(db),
+            None => no_database_prompt(),
+        },
         ShellCommand::Help => {
             print_shell_help();
             ExitCode::SUCCESS
@@ -955,6 +997,141 @@ fn exec_import(db: &Database, collection: &str, path: &str) -> ExitCode {
     }
 }
 
+/// 账号管理(本地逃生通道:能打开文件就能管账号)。
+///
+/// 密码来源:`NODBLITE_PASSWORD` 环境变量优先,否则交互式读取。
+/// 命令行参数里不放密码 —— `ps` 能看到进程参数。
+fn exec_user(db: &Database, op: UserOp) -> ExitCode {
+    use crate::auth::UserStore;
+    let store = UserStore::new(db);
+    match op {
+        UserOp::List => {
+            let users = store.list();
+            if users.is_empty() {
+                println!("暂无账号(库内无用户时不做认证)");
+                return ExitCode::SUCCESS;
+            }
+            for doc in users {
+                let name = doc.get("user").and_then(|v| v.as_str()).unwrap_or("?");
+                let roles: Vec<String> = doc
+                    .get("roles")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|r| r.get("role").and_then(|v| v.as_str()))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                println!("  {:<24} {}", name, roles.join(", "));
+            }
+            ExitCode::SUCCESS
+        }
+        UserOp::Add(name) => {
+            let Some(pwd) = read_password(&name) else {
+                return ExitCode::FAILURE;
+            };
+            match store.create(&name, &pwd) {
+                Ok(()) => {
+                    println!("账号 `{}` 已创建(此后连接需认证)", name);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("创建账号失败: {}", e);
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        UserOp::Drop(name) => match store.drop_user(&name) {
+            Ok(true) => {
+                println!("账号 `{}` 已删除", name);
+                if !store.has_users() {
+                    println!("库内已无账号 —— 认证关闭");
+                }
+                ExitCode::SUCCESS
+            }
+            Ok(false) => {
+                eprintln!("账号不存在: {}", name);
+                ExitCode::FAILURE
+            }
+            Err(e) => {
+                eprintln!("删除账号失败: {}", e);
+                ExitCode::FAILURE
+            }
+        },
+        UserOp::Passwd(name) => {
+            let Some(pwd) = read_password(&name) else {
+                return ExitCode::FAILURE;
+            };
+            match store.set_password(&name, &pwd) {
+                Ok(()) => {
+                    println!("账号 `{}` 密码已更新", name);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("重设密码失败: {}", e);
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+/// 取密码:`NODBLITE_PASSWORD` 优先,否则从标准输入读一行。
+fn read_password(name: &str) -> Option<String> {
+    if let Ok(pwd) = std::env::var("NODBLITE_PASSWORD") {
+        if !pwd.is_empty() {
+            return Some(pwd);
+        }
+    }
+    println!("请输入账号 `{}` 的密码(注:交互输入会回显;脚本请用 NODBLITE_PASSWORD):", name);
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) => {
+            eprintln!("未读到密码");
+            None
+        }
+        Ok(_) => {
+            let pwd = line.trim_end_matches(['\r', '\n']).to_string();
+            if pwd.is_empty() {
+                eprintln!("密码不能为空");
+                return None;
+            }
+            Some(pwd)
+        }
+        Err(e) => {
+            eprintln!("读取密码失败: {}", e);
+            None
+        }
+    }
+}
+
+/// 压缩数据库文件,报告压缩前后大小。
+///
+/// 删除数据不会缩小 `.nodb` —— 空闲页只被后续写入复用。
+/// 只有「数据量骤降后长期保持低量」时才值得手动压一次。
+fn exec_compact(db: &mut Database) -> ExitCode {
+    let path = db.path().to_string();
+    let before = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    println!("正在压缩 {} ...", path);
+    match db.compact() {
+        Ok(_) => {
+            let after = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "压缩完成: {} → {}(释放 {})",
+                format_size(before),
+                format_size(after),
+                format_size(before.saturating_sub(after))
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("压缩失败: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// 显示数据库统计信息。
 fn exec_stats(db: &Database) -> ExitCode {
     let path = db.path();
@@ -1048,6 +1225,13 @@ fn print_shell_help() {
     println!();
     println!("其他:");
     println!("  .stats                                显示文件大小与各集合文档数");
+    println!("  .compact                              压缩文件(归还空闲页;需要独占访问,可能较慢)");
+    println!();
+    println!("账号(库内有账号后,wire 连接需认证):");
+    println!("  .user                                 列出账号");
+    println!("  .user add <name>                      创建账号(密码取 NODBLITE_PASSWORD 或交互输入)");
+    println!("  .user passwd <name>                   重设密码(忘记密码的逃生通道)");
+    println!("  .user drop <name>                     删除账号");
     println!("  .help                                 显示本帮助");
     println!("  .quit / .exit                         退出 shell");
     println!();

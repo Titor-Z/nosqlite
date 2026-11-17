@@ -227,8 +227,16 @@ NodbliteResult *nodblite_list_collections(NodbliteDb *db);
 NodbliteResult *nodblite_drop_collection(NodbliteDb *db, const char *collection);
 
 /*
+ * 压缩数据库文件,把空闲页还给文件系统。
+ * 删除数据不会让文件变小 —— 只在需要回收空间时调用。
+ * 需要独占访问:存在未结束的游标时会报错。调用期间不得并发使用同一句柄。
+ */
+NodbliteResult *nodblite_compact(NodbliteDb *db);
+
+/*
  * 执行聚合管道。pipeline_json 必须是 JSON 数组。
- * 支持阶段:$match/$sort/$skip/$limit/$group/$project/$addFields/$set。
+ * 支持阶段:$match/$project/$addFields/$set/$unset/$sort/$skip/$limit/
+ *           $count/$group/$unwind/$lookup/$facet/$bucket/$replaceRoot/$replaceWith。
  * docs 为输出文档。
  */
 NodbliteResult *nodblite_aggregate(NodbliteDb *db, const char *collection,

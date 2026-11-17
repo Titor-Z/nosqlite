@@ -245,3 +245,107 @@ test('aggregate 基础管道', async () => {
   const a = out.find((x) => x._id === 'a');
   assert.equal(a.total, 3, 'a 组总和应为 3');
 });
+
+// ==================== v0.7.0:新增聚合阶段 / 查询 / 更新 ====================
+
+test('$unwind 与 $group 累加器', async () => {
+  const coll = await freshCollection('agg_unwind');
+  await coll.insertMany([
+    { o: '1', items: [{ sku: 'x', qty: 2 }, { sku: 'y', qty: 5 }] },
+    { o: '2', items: [{ sku: 'x', qty: 1 }] },
+  ]);
+
+  const out = await coll
+    .aggregate([
+      { $unwind: '$items' },
+      { $group: { _id: '$items.sku', n: { $sum: 1 }, total: { $sum: '$items.qty' }, avg: { $avg: '$items.qty' } } },
+      { $sort: { _id: 1 } },
+    ])
+    .toArray();
+
+  assert.equal(out.length, 2);
+  assert.equal(out[0]._id, 'x');
+  assert.equal(out[0].n, 2);
+  assert.equal(out[0].total, 3);
+  assert.equal(out[0].avg, 1.5);
+  assert.equal(out[1].total, 5);
+});
+
+test('$lookup 关联与 $facet', async () => {
+  const authors = await freshCollection('agg_authors');
+  const books = await freshCollection('agg_books');
+  await authors.insertMany([
+    { _id: 'a1', name: '张三' },
+    { _id: 'a2', name: '李四' },
+  ]);
+  await books.insertMany([
+    { _id: 'b1', title: 'x', author: 'a1', qty: 3 },
+    { _id: 'b2', title: 'y', author: 'a1', qty: 1 },
+    { _id: 'b3', title: 'z', author: 'a2', qty: 2 },
+  ]);
+
+  const joined = await books
+    .aggregate([
+      { $lookup: { from: 'agg_authors', localField: 'author', foreignField: '_id', as: 'authorDoc' } },
+      { $match: { 'authorDoc.name': '张三' } },
+      { $sort: { title: 1 } },
+    ])
+    .toArray();
+  assert.equal(joined.length, 2, '应关联到 2 本张三的书');
+  assert.equal(joined[0].authorDoc[0].name, '张三');
+
+  const faceted = await books
+    .aggregate([
+      {
+        $facet: {
+          byAuthor: [{ $group: { _id: '$author', total: { $sum: '$qty' } } }, { $sort: { _id: 1 } }],
+          count: [{ $count: 'n' }],
+        },
+      },
+    ])
+    .toArray();
+  assert.equal(faceted[0].byAuthor.length, 2);
+  assert.equal(faceted[0].count[0].n, 3);
+});
+
+test('$expr / $mod 查询', async () => {
+  const coll = await freshCollection('query_extra');
+  await coll.insertMany([
+    { spent: 120, budget: 100, n: 9 },
+    { spent: 80, budget: 100, n: 8 },
+  ]);
+
+  const over = await coll.find({ $expr: { $gt: ['$spent', '$budget'] } }).toArray();
+  assert.equal(over.length, 1, '$expr 应命中超预算的文档');
+
+  const odd = await coll.find({ n: { $mod: [2, 1] } }).toArray();
+  assert.equal(odd.length, 1, '$mod 应命中奇数');
+
+  const icase = await coll
+    .find({ $expr: { $eq: [{ $toUpper: 'abc' }, 'ABC'] } })
+    .toArray();
+  assert.equal(icase.length, 2, '$toUpper 表达式应恒真');
+});
+
+test('数组位置运算符与 arrayFilters', async () => {
+  const coll = await freshCollection('update_positional');
+  await coll.insertOne({
+    items: [
+      { qty: 5, flag: false },
+      { qty: 15, flag: false },
+      { qty: 25, flag: false },
+    ],
+  });
+
+  await coll.updateOne({}, { $set: { 'items.$[].flag': true } });
+  let doc = await coll.findOne({});
+  assert.deepEqual(doc.items.map((i) => i.flag), [true, true, true], '$[] 应命中全部元素');
+
+  await coll.updateOne(
+    {},
+    { $set: { 'items.$[e].qty': 0 } },
+    { arrayFilters: [{ 'e.qty': { $gte: 20 } }] },
+  );
+  doc = await coll.findOne({});
+  assert.deepEqual(doc.items.map((i) => i.qty), [5, 15, 0], '$[e] 应只命中满足条件的元素');
+});

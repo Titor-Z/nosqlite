@@ -67,6 +67,11 @@ pub enum Condition {
     Nor(Vec<Condition>),
     /// `$not`:子条件不满足。
     Not(Box<Condition>),
+    /// `$expr`:对整篇文档求值一条聚合表达式(v0.7.0 新增)。
+    ///
+    /// 区别于字段操作符 —— `$expr` 看的是**整篇文档**,如
+    /// `{"$expr": {"$gt": ["$spent", "$budget"]}}`。
+    Expr(Box<Value>),
 }
 
 /// 查询操作符。
@@ -105,6 +110,8 @@ pub enum Operator {
     All(Vec<Value>),
     /// `$size`:数组长度必须**恰好**等于该值(v0.6.0 新增)。
     Size(usize),
+    /// `$mod`:取模(v0.7.0 新增),字段值须满足 `值 % divisor == remainder`。
+    Mod { divisor: f64, remainder: f64 },
 }
 
 /// `$type` 认可的类型名(对齐 MongoDB 的别名)。
@@ -348,6 +355,10 @@ impl Condition {
             Condition::Or(conds) => conds.iter().any(|c| c.matches(doc)),
             Condition::Nor(conds) => conds.iter().all(|c| !c.matches(doc)),
             Condition::Not(cond) => !cond.matches(doc),
+            // $expr:表达式结果为真即命中;求值失败(未知操作符)按不匹配处理
+            Condition::Expr(expr) => crate::query::expr::eval(expr, doc)
+                .map(|v| crate::query::expr::truthy(&v))
+                .unwrap_or(false),
         }
     }
 }
@@ -430,6 +441,13 @@ impl Operator {
             Operator::Size(n) => values
                 .iter()
                 .any(|v| matches!(v, Value::Array(arr) if arr.len() == *n)),
+            // $mod:任一候选数值取模后等于余数(浮点比较用可容忍误差)
+            Operator::Mod { divisor, remainder } => values.iter().any(|v| {
+                crate::query::expr::as_number(v).is_some_and(|n| {
+                    let rem = n % divisor;
+                    (rem - remainder).abs() < f64::EPSILON
+                })
+            }),
         }
     }
 }
@@ -550,6 +568,10 @@ fn parse_condition_object(map: &Map<String, Value>) -> Result<Condition, FilterE
                     .ok_or_else(|| FilterError::InvalidOperator("$not 需要一个对象".to_string()))?;
                 not = Some(Box::new(parse_condition_object(obj)?));
             }
+            // `$expr`:对整篇文档求值一条聚合表达式
+            "$expr" => {
+                fields.push(Condition::Expr(Box::new(value.clone())));
+            }
             // 普通字段:解析字段条件
             field_path => fields.push(parse_field_condition(field_path, value)?),
         }
@@ -622,6 +644,9 @@ fn parse_field_condition(path: &str, value: &Value) -> Result<Condition, FilterE
 
 /// 解析操作符对象(如 `{"$gt": 18, "$lt": 60}`)。
 fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, FilterError> {
+    // `$options` 是 `$regex` 的兄弟键(如 `{"$regex": "^a", "$options": "i"}`),
+    // 它是修饰符而非独立操作符,先取出来供 `$regex` 使用。
+    let regex_options = map.get("$options").and_then(|v| v.as_str()).unwrap_or("");
     let mut ops = Vec::new();
     for (key, value) in map {
         let op = match key.as_str() {
@@ -704,8 +729,7 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
                 let pattern = value.as_str().ok_or_else(|| {
                     FilterError::InvalidOperator("$regex 需要一个字符串模式".to_string())
                 })?;
-                let re = regex::Regex::new(pattern)
-                    .map_err(|e| FilterError::InvalidRegex(e.to_string()))?;
+                let re = build_regex(pattern, regex_options)?;
                 Operator::Regex(re)
             }
             "$not" => {
@@ -757,6 +781,31 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
                 };
                 Operator::ElemMatch(Box::new(spec))
             }
+            "$mod" => {
+                let arr = value.as_array().ok_or_else(|| {
+                    FilterError::InvalidOperator("$mod 需要 [除数, 余数] 数组".to_string())
+                })?;
+                if arr.len() != 2 {
+                    return Err(FilterError::InvalidOperator(
+                        "$mod 需要 [除数, 余数] 两个元素".to_string(),
+                    ));
+                }
+                let divisor = crate::query::expr::as_number(&arr[0]).ok_or_else(|| {
+                    FilterError::InvalidOperator("$mod 的除数必须是数字".to_string())
+                })?;
+                let remainder = crate::query::expr::as_number(&arr[1]).ok_or_else(|| {
+                    FilterError::InvalidOperator("$mod 的余数必须是数字".to_string())
+                })?;
+                if divisor == 0.0 {
+                    return Err(FilterError::InvalidOperator("$mod 的除数不能为 0".to_string()));
+                }
+                Operator::Mod {
+                    divisor,
+                    remainder,
+                }
+            }
+            // `$options` 已在上方取出,不是独立操作符
+            "$options" => continue,
             unknown => {
                 return Err(FilterError::InvalidOperator(format!(
                     "不支持的字段操作符: {}",
@@ -767,6 +816,102 @@ fn parse_operator_object(map: &Map<String, Value>) -> Result<Vec<Operator>, Filt
         ops.push(op);
     }
     Ok(ops)
+}
+
+/// 按 `$options` 构建正则(`i` 忽略大小写 / `m` 多行 / `s` 点匹配换行 / `x` 忽略空白)。
+///
+/// 未知字符明确报错 —— 静默忽略会让查询结果悄无声息地多出一堆。
+fn build_regex(pattern: &str, options: &str) -> Result<regex::Regex, FilterError> {
+    let mut builder = regex::RegexBuilder::new(pattern);
+    for ch in options.chars() {
+        match ch {
+            'i' => {
+                builder.case_insensitive(true);
+            }
+            'm' => {
+                builder.multi_line(true);
+            }
+            's' => {
+                builder.dot_matches_new_line(true);
+            }
+            'x' => {
+                builder.ignore_whitespace(true);
+            }
+            other => {
+                return Err(FilterError::InvalidOperator(format!(
+                    "$options 不支持修饰符: {}",
+                    other
+                )));
+            }
+        }
+    }
+    builder
+        .build()
+        .map_err(|e| FilterError::InvalidRegex(e.to_string()))
+}
+
+/// `arrayFilters` 的一项(v0.7.0):标识符 + 元素的匹配条件。
+///
+/// 用于更新路径中的位置占位符,如 `{"items.$[e].qty": 0}` 配合
+/// `arrayFilters: [{"e.qty": {"$gte": 10}}]`。
+///
+/// 条件解析与查询共用同一套操作符与比较语义(不另写一套判断)。
+#[derive(Debug, Clone)]
+pub struct ArrayFilter {
+    /// 占位符名字(`$[e]` 中的 `e`)。
+    pub identifier: String,
+    /// 元素内部路径(标识符之后的段)。
+    path: Vec<String>,
+    /// 须同时满足的操作符。
+    ops: Vec<Operator>,
+}
+
+impl ArrayFilter {
+    /// 判断单个数组元素是否满足该过滤器。
+    pub fn matches(&self, element: &Value) -> bool {
+        // 无内部路径 → 直接对元素本身求值(标量数组的用法)
+        let values: Vec<&Value> = if self.path.is_empty() {
+            vec![element]
+        } else {
+            match element {
+                Value::Object(map) => resolve_paths(map, &self.path),
+                _ => Vec::new(),
+            }
+        };
+        self.ops.iter().all(|op| op.matches_values(&values))
+    }
+}
+
+/// 解析一条 `arrayFilters` 项,如 `{"e.qty": {"$gte": 10}}`。
+pub fn parse_array_filter(value: &Value) -> Result<ArrayFilter, FilterError> {
+    let map = value.as_object().ok_or_else(|| {
+        FilterError::InvalidOperator("arrayFilters 的每一项必须是对象".to_string())
+    })?;
+    if map.len() != 1 {
+        return Err(FilterError::InvalidOperator(
+            "arrayFilters 的每一项必须恰好包含一个标识符".to_string(),
+        ));
+    }
+    let (key, cond) = map.iter().next().unwrap();
+    let mut segments = key.split('.');
+    let identifier = segments.next().unwrap_or("").to_string();
+    if identifier.is_empty() {
+        return Err(FilterError::InvalidOperator(
+            "arrayFilters 的标识符不能为空".to_string(),
+        ));
+    }
+    let path: Vec<String> = segments.map(|s| s.to_string()).collect();
+    let ops = match cond {
+        Value::Object(m) if m.keys().any(|k| k.starts_with('$')) && !is_extended_json_literal(cond) => {
+            parse_operator_object(m)?
+        }
+        other => vec![Operator::Eq(other.clone())],
+    };
+    Ok(ArrayFilter {
+        identifier,
+        path,
+        ops,
+    })
 }
 
 /// 判断一个对象是否是 Extended JSON 字面量(应作为**值**而非操作符对象)。

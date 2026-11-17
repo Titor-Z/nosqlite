@@ -6,6 +6,14 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.11.16: **账号认证(SCRAM-SHA-256)** —— 与 MongoDB 同一套机制,官方 Go/Node 驱动可直接带账号密码连接。库内**无账号时不做认证**(等同 `noauth`),`.user add` 建第一个账号即开启;B 阶段角色暂不检查(通过认证即全权限)。账号存在**真实集合** `admin.system.users`(`admin` 为保留命名空间,建库即写 `admin.system.version`),写路径拒绝 `system.*`、读时剥掉 `credentials`。密码原语(SHA-256/HMAC/PBKDF2/base64)零依赖自实现并用 RFC 向量锁定,`getrandom` 是唯一新依赖。参见 [taolun #83](#83-20261116-设计账号认证scram-sha-256保留命名空间-admin) / [#84](#84-20261116-执行账号认证scram-sha-256保留命名空间-admin) / [项目进度-已完成](#已完成)。
+
+- 2026.11.16: **`.compact` 文件压缩**(CLI + C ABI `nodblite_compact`)—— 删除数据不会缩小 `.nodb`(空闲页只供后续写入复用),故提供显式压缩把空洞还给文件系统。实测 2.0 MiB → 16.0 KiB。**不做自动后台压缩**(不可预期停顿代价大于省磁盘收益),**wire 层不曝**(会阻塞整个服务进程)。加密不做,文档指引 OS 级全盘加密。参见 [taolun #82](#82-20261116-文件压缩compact与加密取舍) / [项目进度-已完成](#已完成)。
+
+- 2026.11.16: **聚合 / 查询 / 更新三块补齐** —— 新增共用**表达式求值器**(`$expr`、`$project`、`$addFields`、`$group._id` 与累加器参数共用一套,25 个操作符);聚合改为**逐阶段执行**,补齐 `$unwind`/`$lookup`/`$facet`/`$bucket`/`$replaceRoot`/`$count`/`$unset`,累加器补到 9 个;查询补 `$expr`/`$mod`/`$regex` 的 `$options`;更新补 `$bit` 与数组位置运算符 `$[]`/`$[id]`(带 `arrayFilters`)。590 例全绿,Node 驱动 16 项 / Mongoose 9 项全通过。参见 [taolun #81](#81-20261116-补齐聚合--查询--更新) / [项目进度-已完成](#已完成)。
+
+- 2026.11.16: **Mongoose 全链路验收通过(9 项)** —— 用社区最常用的 ODM 跑完 wire 协议栈,覆盖建模建索引、timestamps 的 Date 往返、`ref`+`populate` 的 ObjectId 翻译、`countDocuments` 背后的 `aggregate/$group`。首次运行打出两个真实缺口并补上:缺 `create` 命令(Mongoose 建模会发,只需校验名并回 ok)、缺 `$setOnInsert`(Mongoose timestamps 给每个 `updateOne` 都附上,不实现则所有带 timestamps 的模型更新全报错)。同轮确认 **不做 Prisma 扩展包** —— Prisma 的可插入面只有 SQL 或 wire 协议,嵌入模式接不进去,唯一路径是 `provider = "mongodb"` 指向 `nodblite-server`。529 例全绿。参见 [taolun #80](#80-20261116-mongoose-全链路验收prisma-讨论后的取舍) / [项目进度-已完成](#已完成)。
+
 - 2026.11.16: 官网部署 **Playground**(`/playground/`)—— studio 静态产物随文档站一起发布,打开网页拖入 `.nodb` 即可查看集合/文档/索引/查询计划;同源 wasm 引擎,数据不离本机、刷新即丢,Release 继续提供 `nodblite-studio` 单二进制供长期使用。Landing 按官网海报语言重做,并修掉窄屏顶栏重叠与工作区被挤成竖条两处缺陷。参见 [taolun #79](#79-20261116-官网部署-studio-为-playgroundplayground)。
 
 - 2026.11.16: 文档纠正 —— JS/TS 快速开始改以官方 npm 包 `nodblite` 为主线(原为裸 koffi FFI 教程),wasm 独立成 `guide/wasm` 单独一栏(Node 用 `node:wasi`、浏览器自备 WASI、方法差异如实列出),删除过时的「wasm 当前没有做」FAQ。参见 [taolun #77](#77-20261116-文档纠正jsts-默认走官方-npm-包wasm-独立成指南)。
@@ -1492,6 +1500,205 @@
 - 免费额度(用户关心):GitHub **公开仓库**的 Actions 与 Pages 都不计费(托管 runner 无限分钟;Pages 软限 站点 1GB / 月带宽 100GB / 每小时 10 次构建),私有仓库才按分钟消耗。代价是 docs 构建从 ~15 s 变成 2–3 分钟(首次),有 rust-cache 后会明显缩短。
 - `site/public/playground/` 不提交(已加 .gitignore),由 CI 生成。
 
+### 80. 2026.11.16 Mongoose 全链路验收(Prisma 讨论后的取舍)
+
+- 需求:用户问「要不要封装一个 Prisma 扩展包,让嵌入式模式也能用 Prisma」。
+- **结论:不做,而且不是工作量问题,是抽象边界不对。**
+  - Prisma Client = TS 生成客户端 + **Rust 查询引擎**,对外只有连接串这一个入口;
+  - `provider` 是固定枚举(postgresql/mysql/sqlite/sqlserver/mongodb/cockroachdb),**没有自定义 provider 机制**;
+  - 能扩展的三处(`$extends` 中间件、**driver adapter**、generator)都注入不了一个非 SQL、非 wire 的引擎 ——
+    driver adapter 的位置在「查询编译器 → 驱动」之间,而编译器对 `sqlite` 生成的是 **SQLite SQL 文本**,
+    要当这个 adapter 等于实现一个 SQL 执行器;
+  - 于是嵌入式模式接 Prisma **不可行**;唯一可行路径是 `provider = "mongodb"` 指向 `nodblite-server`(我们已有 wire 协议),不需要任何 npm 包。
+- **取舍**:文档库的 ORM 首选是 **Mongoose** —— 走 wire 协议、天然贴合文档模型、`populate` 是多次 query 而非 `$lookup`,
+  且与已验收的 Node 官方驱动同一条路。**先做 Mongoose 全链路验收**(直接产出可用能力),
+  Prisma 留作「低成本探针」:将来若真要做,只跑一次 `prisma db push` + CRUD 拿到断点清单再决定补哪个协议洞。
+- 待办(本轮执行):`tests/node_compat/mongoose.test.mjs` + `tests/node_wire.rs` 增加一个用例。
+
+#### 执行结果
+
+- 新增 `tests/node_compat/mongoose.test.mjs`(9 项)与 `tests/node_wire.rs::node_mongoose_end_to_end`;
+  把两者共用的「拉 server + 跑 node --test + 依赖缺失则显式跳过」抽成 `run_node_suite`,`mongodb` 与 `mongoose` 两条验收共用。
+- 覆盖范围(只测 ORM 会隐性调用、而裸驱动验收没覆盖到的路径):
+  建模时的 `createIndexes` + 复合索引、`timestamps` 的 **Date 往返**、默认值与必填校验、
+  `$inc`/`$set`/`findOneAndUpdate{new:true}`、`countDocuments`(底层 `aggregate` + `$group`)、
+  `ref` + `populate` 的 **ObjectId ↔ hex 字符串翻译**、`aggregate` 直通、`deleteMany`。
+- **首次运行 7/9 通过,打出两个真实缺口**(单靠现有 Node 驱动验收发现不了):
+  1. 未实现 `create` 命令 —— Mongoose 建模时会发 `db.createCollection()`;
+     但 nodblite 集合隐式存在,**只需校验名非空并回 `ok`**,不建任何东西(对外等价)。
+  2. 不支持 `$setOnInsert` —— Mongoose 的 `timestamps` 会给**每个** `updateOne` 附上
+     `$setOnInsert: {createdAt}`,即使不是 upsert;不实现则所有带 timestamps 模型的更新全报错。
+- `$setOnInsert` 落地:`Update` 新增 `set_on_insert_fields`,`KNOWN_OPS` 12 → 13;
+  **只在 upsert 插入分支生效** —— 新增 `Update::apply_insert_only()`,由
+  `Database::update_or_insert` 在插入前调用;普通 `apply` 刻意忽略它(与 MongoDB 一致)。
+  新增 2 例单测:插入时生效、命中更新时忽略。
+- 验收:Node 驱动 13 项 + Mongoose **9 项**全通过;**529 例全绿**(526 + 2 upsert + 1 mongoose harness),clippy 零警告。
+
+### 81. 2026.11.16 补齐聚合 / 查询 / 更新
+
+- 需求:用户要求一次补齐聚合、查询、更新三块。
+- 架构改造:`aggregate.rs` 从「把 stage 收集到局部变量」改为**逐阶段执行** ——
+  旧结构无法支持 `$unwind`/`$lookup`/`$facet`(它们需要中间结果参与后续阶段)。
+- 新增 `src/query/expr.rs`:共用的**表达式求值器**。一套实现同时服务
+  `$expr`(过滤)、`$project`/`$addFields`(聚合)与 `$group` 累加器参数 ——
+  避免像旧 `group_docs` 那样把「只认 `"$path"` 字符串」的退化逻辑写两遍。
+- 查询:`$expr`、`$mod`、`$regex` 的 `$options`(`i/m/s/x`)。
+- 更新:`$bit`(and/or/xor)+ 数组过滤器 `$[]`/`$[id]`(带 `arrayFilters`)。
+- 聚合:`$unwind`/`$lookup`/`$facet`/`$bucket`/`$replaceRoot`/`$count`/`$unset`,
+  累加器补到 9 个(`$sum/$avg/$min/$max/$first/$last/$push/$addToSet/$count`)。
+- 明确不做(需要索引或 JS 引擎,性价比低):`$text`、`$where`、地理查询、`$out`/`$merge`、
+  其余累加器与表达式 —— 均给明确报错(`40324`),不静默忽略。
+
+#### 执行结果
+
+- **`src/query/expr.rs`**(新,~440 行):路径引用(`$a.b`、`$$ROOT`)、`$literal`、算术/比较/逻辑/条件/
+  集合/字符串共 25 个操作符;真值语义严格对齐 MongoDB(空数组、空字符串为**真**)。
+- **查询**:`$expr`、`$mod`、`$regex` 的 `$options`(`i/m/s/x`;未知修饰符报错)。
+  `$options` 是 `$regex` 的**兄弟键**而非操作符,解析时先取出再跳过 —— 否则会报「未知操作符」。
+- **更新**:`$bit`(and/or/xor,字段缺失按 0,非整数报错;`$bit` 必须计入「至少一个非空操作符」
+  否则单独的 `{$bit:...}` 被判空更新)+ 数组位置运算符 `$[]`/`$[id]`。
+  位置运算符的实现关键:展开成**具体数字下标路径**,然后复用既有的 `set_in_map`/`unset_in_map`,
+  **不另写一套寻址逻辑**;无占位符的路径原样返回,所以既有行为零回归。
+- **聚合**:`aggregate.rs` 重写为逐阶段执行(225 → ~700 行)。首个 `$match` 下推到存储层
+  (保住索引能力);`$lookup` 用「收集本地值 → 一次 `$in` 查询 → 分组挂载」避免 N+1。
+  累加器 9 个,`$min`/`$max` 走 BSON 类型序,`$avg` 无数值时输出 `null`。
+- **wire**:`update` 命令把 `arrayFilters` 透传给 `Update::from_value_with_filters`。
+- **测试**:+54 例(函数级 61 个断言场景)+ 7 例 `expr` 单测,新增
+  `tests/filter_extra.rs`(12)、`tests/update_positional.rs`(15)、
+  `tests/aggregate_stages.rs`(20)、`tests/aggregate_accumulators.rs`(7);
+  Node 驱动验收 +4 例(`$unwind`+累加器、`$lookup`+`$facet`、`$expr`/`$mod`、`$[]`+`arrayFilters`)。
+- **踩坑**:ObjectId 的 5 字节随机段使**插入顺序 ≠ 扫描顺序**(同毫秒内 counter 无法决定全局顺序),
+  故 `$first`/`$last`/`$unwind` 保序测试必须用**显式 `_id`** 或先 `$sort`,不能假设插入序。
+- 验收:**590 例全绿**,Node 驱动 **16 项**、Mongoose **9 项**全通过,clippy 零警告。
+
+### 82. 2026.11.16 文件压缩(.compact)与加密取舍
+
+- 问题:「无 compact(文件只会长不会缩)、无加密」值不值得做。
+- **先实测再判断**(三轮探针,不入测试套件):
+
+  | 操作 | 文件大小 |
+  |---|---|
+  | 插入 20000 条(200 B/条) | 16.8 MB |
+  | 全部删除 | **16.8 MB(不变)** |
+  | 再插回 20000 条 | 33.7 MB(翻倍) |
+  | 删到剩 100 条 | 33.7 MB |
+  | 连续 20 次全量 update | **一个字节不涨** |
+
+  2000 条档的循环:1.05 → 2.1 → 2.1 → 2.1 MB。
+- **结论修正了原先的担心**:不是「无限膨胀」,而是**涨到峰值就钉死** ——
+  自由页复用很有效,**更新密集的 CMS 场景没问题**;真正的问题只在「数据量験降后长期低量」。
+- **decision:compact 做,加密不做。**
+  - compact 的理由不是「运维指标」而是**产品特性**:定位是单文件可复制粘贴,
+    一个 1 GB 文件里只有 10 MB 数据,直接违背这个定位。实现走 redb 现成的 `Database::compact(&mut self)`,不碰格式。
+  - **入口只给显式调用**:CLI `.compact`、C ABI `nodblite_compact`;
+    **wire 层不曝** —— 它会阻塞整个服务进程,不应被远程触发。
+  - **不做自动后台压缩**:收益是省磁盘,代价是不可预期的停顿 + 不可预测的耗时,
+    对嵌入式库后者更贵。也没做「按空闲页占比自动触发」—— 阈值设错就是深夜写入卡 30 秒。
+  - 加密不做:密钥存无解(同一文件等于没加,分文件破坏单文件性),
+    且自研加密的出错方式是「看起来正常但已被破解」。文档指引 OS 级全盘加密。
+- **踩坑(值得记)**:原计划在 `.stats` 里加「空洞率」给用户当判断依据,用的是
+  redb `DatabaseStats::fragmented_bytes()`。实测**否掉了这个指标**:
+  删光 2000 条后 `fragmented/allocated` 只有 **14%**、而文件里实际 98% 是垃圾;
+  反过来刚插入时却显示 48%。`allocated_pages` 也不是活跃数据量(删光后不变)。
+  于是**把 `usage()` API 也一并删除** —— 与其给一个会误导的指标,不如只给
+  `.compact` 的真实前后大小(实测 2.0 MiB → 16.0 KiB)。
+- 测试:`tests/compact.rs` 3 例 —— 删除不缩文件、压缩后显著变小且数据完好、
+  幂等与重开不变;**593 例全绿**,clippy 零警告。
+
+### 83. 2026.11.16 设计:账号认证(SCRAM-SHA-256)+ 保留命名空间 admin
+
+- 需求:用 MongoDB 的账号认证方式,让官方驱动/客户端带账号密码连接。
+  「默认空用户空密码;建库时或之后设用户密码」。
+- **关键讨论结论(逐条定下)**:
+  1. **认证是访问路径的属性,不是运行模式开关**。嵌入式(CLI/C ABI)打开文件**不做认证** ——
+     能读文件字节就等于拥有全部数据,密码只是自我安慰。认证只作用于 wire 边界。
+  2. **只做 authn,暂不做 authz**。MongoDB 的 RBAC 只到 `{db, collection}` 粒度,
+     而应用真正需要的是**行级权限**(「用户 A 看不到用户 B 的数据」),DB 无从判断。
+     内置角色能覆盖「只读报表账号/ETL/多服务最小权限」,但**不能**替应用消灭权限逻辑。
+     因此分阶段:A 做认证 + 账号管理,B 紧接着做角色,检查**下沉到数据访问层**
+     (不能只加在 `dispatch` —— `$lookup`/`$out`/`explain`/projection 都会旁路泄漏)。
+  3. **`AuthContext` 从 A 阶段就建**,哪怕只记「已认证」,避免 B 阶段返工。
+  4. **只做 SCRAM-SHA-256**,不做 SCRAM-SHA-1 / MONGODB-CR(均已过时)。
+     代价:极老客户端连不上,文档写明。
+- **`admin` 用保留命名空间 + 真实集合**,不用隐藏表:
+  - 我们的集合名本就是扁平命名空间,故把库名烤进集合名即可得到**真实集合**,
+    格式**仍为 v1**,零迁移;
+  - 映射:`$db == "admin"` → 集合名 `admin.<coll>`;否则裸集合名;
+    `admin.` 成为**保留前缀**,普通集合抢不到;
+  - 建库时写入 `admin.system.version`(`{_id:"featureCompatibilityVersion", version:"7.0"}`)
+    → `admin` 库从创建那一刻就存在,与 mongod 一致;
+  - **不做 `local` / `config`**:前者是「不参与复制的本机数据」、后者是分片路由表,
+    我们没有这两个机制,造出来是假承诺。
+- **实集合必须补的保护**(MongoDB 靠特殊规则保护 `system.users`,我们照做):
+  - 写路径拒绝 `system.*`(insert/update/delete/drop 一律报错),只能经
+    `createUser`/`updateUser`/`dropUser` 改;
+  - 读 `admin.system.users` 时**剥掉 `credentials` 字段**(否则一条 `find` 就能拿到
+    所有用户的 SCRAM 摘要做离线爆破);
+  - `.collect` / `.export` 排除 `system.*`;
+  - 禁止在 `system.*` 上建索引。
+- **空 = 无认证的具体规则**:新建库无用户 → 任何连接可访问(等同 MongoDB `noauth`);
+  建了用户 → 此后**新**连接必须认证;已有连接**不踢**(MongoDB 行为,踢会中断在跑的写入)。
+  **不做默认管理员账号** —— 默认密码等于所有 nodblite 库共用一个后门。
+  要建账号**必须同时给密码**(空密码 admin 比不认证更糟:看起来被保护了)。
+- **单库架构确认**:一个 server 进程 = 一个 `.nodb` = 一个逻辑库,MongoDB 的多库共存
+  我们**没有**。`$db` 只用于识别 `admin`。当前 `dropDatabase` 会清空整个文件
+  (`src/server/serve.rs:1127`),单库下恰好正确,多库时才会变成缺陷。
+  多库(key 加库名前缀)列为**独立后续项**,不与本轮一起做 —— 否则出问题分不清责任。
+- **技术选型**:零加密依赖 → 自实现 SHA-256/HMAC/PBKDF2/base64(必须带 RFC 测试向量,
+  否则静默算错);唯一新依赖 `getrandom` 取 salt —— 自写 CSPRNG 是最不该手写的东西之一。
+  密码存储照抄 MongoDB 格式 `SCRAM-SHA-256$<iter>:<salt>$<storedKey>:<serverKey>`,
+  迭代数 15000(MongoDB 默认,便于对照与移植)。
+- **`hello` 必须回 `saslSupportedMechs`**:不回的话 Go/Node 驱动会退到 4.0 前的
+  兼容逻辑去试 SCRAM-SHA-1,表现为「连不上」但报错不指向原因。
+- 阶段 A 交付:密码原语 + base64 → 集合名映射/保留字 → SCRAM 状态机 →
+  wire(`saslStart/saslContinue/logout/connectionStatus/createUser/updateUser/dropUser/usersInfo`
+  + 未认证命令白名单 → `13 Unauthorized`)→ CLI `.user add/remove/list/reset`
+  (本地逃生通道,`reset` 是忘密码的出路)→ **真实 Go + Node 驱动带账号验收**。
+
+### 84. 2026.11.16 执行:账号认证(SCRAM-SHA-256)+ 保留命名空间 admin
+
+- **密码原语**(`src/crypto/`,零依赖自实现,全部用 RFC 官方向量锁死):
+  - `sha256.rs`:SHA-256(FIPS 180-4)+ HMAC-SHA256(RFC 4231)+ PBKDF2-HMAC-SHA256(RFC 8018);
+  - `base64.rs`:RFC 4648 编解码;
+  - `mod.rs`:`random_bytes` 走 `getrandom`(唯一新依赖)、`ct_eq` 定长比较抗时序侧信道。
+  - 7 条测试 + 4 条 base64 测试 + 2 条模块测试,**首次运行全绿**(含多块 PBKDF2、超长 key HMAC)。
+- **SCRAM 状态机**(`src/server/scram.rs`):只支持 SCRAM-SHA-256、不支持信道绑定;
+  - **RFC 7677 §3 官方向量直接作测试** —— 一条测试同时锁死 PBKDF2/HMAC/SHA-256/证明校验四件事,
+    这是「我们理解的 SCRAM 与标准一致」的唯一硬证据;
+  - 用户不存在与密码错误返回**同一个** `AuthenticationFailed`(防用户名枚举)。
+- **账号存储**(`src/auth.rs`):真实集合 `admin.system.users`,`_id = "admin.<user>"`,
+  凭据形状与 MongoDB 完全一致(`credentials["SCRAM-SHA-256"] = {iterationCount, salt, storedKey, serverKey}`),
+  迭代数 15000。第一个账号 `root`,后续 `readWrite`。
+- **保留命名空间**:`$db == "admin"` → 物理集合名 `admin.<coll>`,其余库裸名;
+  `admin.` 前缀普通集合抢不到。建库时写入 `admin.system.version`
+  → `admin` 库从创建那刻就存在。
+- **边界保护**(因为它是真集合,必须靠规则守):
+  - wire 写路径拒绝 `admin.system.*`(insert/update/delete/drop/createIndexes/findAndModify),
+    只能经 `createUser`/`updateUser`/`dropUser`;
+  - `find admin.system.users` **剥掉 credentials**;
+  - `Database::collections()` 过滤 `admin.*`(新增 `all_collections()` 给 wire 列 admin 库用)
+    —— 这一条让既有 593 例测试零修改通过(C 冒烟里「应有 1 个集合」不再受系统集合干扰)。
+- **wire 接入**(`src/server/serve.rs`):
+  - 每连接一份 `ConnState { user, scram, users_required }`;
+  - 未认证时只放行白名单(`hello/ismaster/ping/buildInfo/saslStart/saslContinue/logout/connectionStatus/endSessions/getSessionInfo`),其余 `13 Unauthorized`;
+  - **`hello` 回 `saslSupportedMechs`**(不过滤就是驱动去试 SHA-1 后失败,报错还不指向原因);
+  - 新增 `createUser/updateUser/dropUser/usersInfo/connectionStatus/logout`;
+  - `listDatabases` 现在报 `admin` + `nodblite`,`listCollections` 按 `$db` 区分。
+- **CLI**:`.user` / `.user add|drop|passwd <name>`(密码走 `NODBLITE_PASSWORD` 或交互输入,
+  **不放命令行参数** —— `ps` 能看到)。`.collect` / `.stats` 不受系统集合影响。
+- **两个真实缺陷(被真实驱动打出来的)**:
+  1. **BSON 编码器不支持 `$binary`** —— 解码支持、编码没做。SASL payload 于是被当成普通子文档发出去,
+     驱动收不到合法 SCRAM 消息 → **握手卡住**(测试 900 秒超时)。补 `binary_parts` 编码分支后全通。
+     教训:扩展 JSON 的「解码支持」不等于「编码支持」,往返测试必须双向写。
+  2. **`ping` 属于免认证命令** —— 最初把「未认证连接必须失败」写成断言,结果 Go 驱动
+     Ping 成功导致测试失败。核对后确认 MongoDB 同样放行 `hello`/`ping`;
+     真正的闸门在数据命令上。测试改为「未认证可以探活,但不能读写」。
+- 测试:**626 例全绿**(新增 `tests/auth.rs` 6 例 + `tests/auth_wire.rs` 2 例 + cli_shell 1 例);
+  **真实 Go 驱动 4 项 + Node 驱动 4 项带账号密码全部通过**(含错误密码被拒、匿名可探活但不可读写、
+  createUser→usersInfo→dropUser 全链路);clippy `-D warnings` 零警告。
+- 文档:新增 `site/guide/auth.md`(边界、默认零账号、连接串、管理方式、支持范围与「只做认证不做授权」的明说),
+  FAQ 增补两条,侧栏加「账号与认证」。
+
 ## Agents
 
 ### 规范
@@ -1571,6 +1778,10 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- 2026.11.16:**账号认证(SCRAM-SHA-256)** —— 真实集合 `admin.system.users` + 保留命名空间 `admin` + wire `saslStart/saslContinue` + `createUser/updateUser/dropUser/usersInfo` + CLI `.user`;真实 Go/Node 驱动带账号验收通过;626 例全绿。
+- 2026.11.16:`.compact` 压缩(CLI + `nodblite_compact` C ABI)+ `tests/compact.rs`;确认不做加密(指引 OS 级全盘加密)。
+- 2026.11.16:聚合 `$unwind/$lookup/$facet/$bucket/$replaceRoot/$count/$unset` + 9 个累加器;查询 `$expr/$mod/$regex $options`;更新 `$bit` + 数组位置运算符 `$[]`/`$[id]`;新增共用表达式求值器。
+- 2026.11.16:Mongoose 验收 9 项通过(建模建索引 / timestamps Date 往返 / ref+populate 的 ObjectId 翻译 / countDocuments 的 aggregate);补齐 `create` 命令与 `$setOnInsert`;确认不做 Prisma 扩展包。
 - v0.6.11:官网改苏联构成主义海报 + 文档页换皮 + **Playground 部署**(`/playground/`,拖入 `.nodb` 即查看,wasm 在本页运行)+ Release 新增 `nodblite-studio` 三平台单二进制;JS/TS 快速开始改以官方 npm 包为主线,wasm 独立成页。
 - 2026.11.16:文档站改构成主义 —— hero 物理动效融入栅格(矩形刚体禁转 → 柱状对齐,文档 → 索引 → 单文件叙事)+ 文档页换皮(纸/墨/朱红、圆角归零、墨线分节、表头反色、logo 重画、代码高亮换 min-light/min-dark)+ 首页重做为苏联构成主义海报(斜向红条、巨型标题、硬框插图、红黑对置、墨底 CTA)。
 - v0.6.11:nodblite-studio 对标 Compass Data Explorer 改造(构成主义视觉:纸/墨/朱红、粗线直角斜切块;暗色三态主题;⋮ 查询菜单;视窗高度 + sticky 表头;JSON 语法高亮与类型化 Fields 编辑器;select 与 input/button 同族对齐;左树+单集合工作区、Documents/Indexes/Explain/Schema/Aggregation 五标签、Table⇄JSON、Insert/Duplicate、集合级 JSONL/CSV 导入导出、索引 builder、Explain 计划链、Schema 采样、Aggregation stage 编辑器);Rust 提取共享聚合执行器 `src/aggregate.rs` + C ABI `nodblite_aggregate`;531 例 Rust 测试 + 28 项真实 Chrome e2e 全绿。
@@ -1620,6 +1831,15 @@
 ## 认知修正
 
 > AI 开发过程中的踩坑记录、用户纠正与明确结论,避免重复死循环。
+
+- **扩展 JSON 的「解码支持」不等于「编码支持」**:`src/server/bson.rs` 早就能把 BSON binary 解成
+  `{"$binary": {...}}`,但**编码方向没实现**。于是 SCRAM 的 SASL payload 被当成普通子文档发出去,
+  驱动收不到合法消息 → **握手直接卡住**(表现为测试超时而非报错)。补 `binary_parts` 后全通。
+  写「JSON ↔ 二进制」两向映射时,必须两个方向都写测试,否则单向支持会以「卡住」这种最难查的方式暴露。
+- **`ping` / `hello` 是免认证命令**:MongoDB 允许未认证连接探活(驱动与监控依赖),
+  真正的闸门在数据命令上。所以「未认证连接必须失败」这个直觉是错的 —— 要断言的是「不能读写」。
+- **SCRAM 的硬证据只有一种**:用 RFC 7677 官方测试向量。自己写服务端再自己写客户端对拍,
+  两边错在同一处也照样「通过」。真实驱动验收同理 —— Go/Node 各跑一遍才知道协议齐不齐。
 
 - **VitePress 首页把自定义组件挂到 hero 的唯一可靠方式是 JS 搬运 DOM**:layout:home 的 markdown 内容渲染在 `.vp-doc container` 内,中间有主题自带的 `position:relative` 包装 div,CSS 的 absolute 锚会被它截断(试过负 margin、锚定 VPHome/VPContent 全部失败 —— VPContent 还有 padding-top: var(--vp-nav-height) 的偏移)。在组件 onMounted 里 `hero.appendChild(el)` 直接把宿主 DOM 搬进 .VPHero 才可靠。
 - **Matter.js 粒子穿墙的三个原因**:墙体太薄(10px)、落差太高(落地速度超求解器单步位移)、重力太强。修法:墙 60px 厚并向外侧偏移、出生点限制在盒口上方 260px 内、重力降到 0.55。**先降参数,再怀疑引擎。**

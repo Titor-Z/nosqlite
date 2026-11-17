@@ -1,6 +1,6 @@
 [package]
 name = "nodblite"
-version = "0.6.11"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.85"
 description = "一个像 SQLite 一样小巧的单文件 NoSQL 数据库(.nodb):MongoDB 风格文档模型,单文件零配置部署"
@@ -13,6 +13,7 @@ readme = "README.md"
 exclude = ["tests/node_compat/node_modules", "tests/node_compat/.npm-cache"]
 
 [dependencies]
+getrandom = "0.4.3"
 redb = "3"
 regex = "1"
 serde_json = { version = "1", features = ["preserve_order"] }

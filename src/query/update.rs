@@ -14,10 +14,14 @@
 //! v0.1.4 新增字段操作符:`$inc`/`$mul`/`$min`/`$max`/`$rename`/`$push`/`$addToSet`/`$currentDate`。
 //!
 //! 数组操作符(`$push`/`$addToSet`)支持 `$each` / `$position` / `$slice` / `$sort` 修饰符。
+//!
+//! v0.7.0 新增:`$bit`(按位与/或/异或)与数组位置运算符
+//! `$[]`(全部元素)/ `$[id]`(配合 `arrayFilters` 筛选元素)。
 
 use serde_json::{Map, Value};
 
 use super::compare::compare_values;
+use crate::query::ArrayFilter;
 
 /// 更新操作错误。
 #[derive(Debug)]
@@ -156,10 +160,27 @@ pub struct Update {
     pull_fields: Vec<PullSpec>,
     /// `$pop` 列表(v0.6.1)。
     pop_fields: Vec<PopSpec>,
+    /// `$setOnInsert` 列表(v0.6.12)—— **只在 upsert 插入时生效**,普通更新忽略。
+    set_on_insert_fields: Vec<(Vec<String>, Value)>,
+    /// `$bit` 列表(v0.7.0):路径 + 按位操作 + 操作数。
+    bit_fields: Vec<(Vec<String>, BitOp, i64)>,
+    /// `arrayFilters`(v0.7.0):供路径中的 `$[id]` 使用。
+    array_filters: Vec<ArrayFilter>,
+}
+
+/// `$bit` 的三种运算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitOp {
+    /// 按位与。
+    And,
+    /// 按位或。
+    Or,
+    /// 按位异或。
+    Xor,
 }
 
 /// 已知的更新操作符。
-const KNOWN_OPS: [&str; 12] = [
+const KNOWN_OPS: [&str; 14] = [
     "$set",
     "$unset",
     "$inc",
@@ -172,6 +193,8 @@ const KNOWN_OPS: [&str; 12] = [
     "$currentDate",
     "$pull",
     "$pop",
+    "$setOnInsert",
+    "$bit",
 ];
 
 /// 把点号路径字符串拆成路径段,并校验不含空段。
@@ -206,6 +229,24 @@ impl Update {
     ///
     /// 空更新(`{}` 或无操作符的 `{"$set": {}}`)一律报错,不静默当作无操作。
     pub fn from_value(value: &Value) -> Result<Self, UpdateError> {
+        Self::from_value_with_filters(value, &[])
+    }
+
+    /// 同 [`Update::from_value`],但带上 `arrayFilters`(v0.7.0)。
+    ///
+    /// 路径中出现的 `$[id]` 必须在 `array_filters` 里找到同名定义,
+    /// 否则报错 —— 静默不生效会让用户以为更新成功了。
+    pub fn from_value_with_filters(
+        value: &Value,
+        array_filters: &[Value],
+    ) -> Result<Self, UpdateError> {
+        let mut filters: Vec<ArrayFilter> = Vec::new();
+        for raw in array_filters {
+            let parsed = crate::query::parse_array_filter(raw)
+                .map_err(|e| UpdateError::InvalidUpdate(e.to_string()))?;
+            filters.push(parsed);
+        }
+
         let map = value
             .as_object()
             .ok_or_else(|| UpdateError::InvalidUpdate("update 顶层必须是 JSON 对象".to_string()))?;
@@ -279,6 +320,17 @@ impl Update {
             "$pop",
             UpdateError::InvalidUpdate("$pop 的值必须是 JSON 对象".to_string()),
         )?;
+        let set_on_insert_map = op_object(
+            map,
+            "$setOnInsert",
+            UpdateError::InvalidUpdate("$setOnInsert 的值必须是 JSON 对象".to_string()),
+        )?;
+
+        let bit_map = op_object(
+            map,
+            "$bit",
+            UpdateError::InvalidUpdate("$bit 的值必须是 JSON 对象".to_string()),
+        )?;
 
         // 至少要有一个非空操作符
         let any_non_empty = [
@@ -294,6 +346,8 @@ impl Update {
             current_date_map,
             pull_map,
             pop_map,
+            set_on_insert_map,
+            bit_map,
         ]
         .into_iter()
         .flatten()
@@ -357,6 +411,7 @@ impl Update {
         };
         let min_fields = value_map(min_map, "$min")?;
         let max_fields = value_map(max_map, "$max")?;
+        let set_on_insert_fields = value_map(set_on_insert_map, "$setOnInsert")?;
 
         // ---------- $rename ----------
         let mut rename_fields = Vec::new();
@@ -386,6 +441,45 @@ impl Update {
         let mut add_to_set_fields = Vec::new();
         for (key, value) in add_to_set_map.into_iter().flatten() {
             add_to_set_fields.push(parse_add_to_set(key, value)?);
+        }
+
+        // ---------- $bit ----------
+        let mut bit_fields = Vec::new();
+        if let Some(bit_map) = bit_map {
+            for (key, value) in bit_map {
+                let path = parse_path(key)?;
+                if path.first().map(|s| s.as_str()) == Some("_id") {
+                    return Err(UpdateError::InvalidUpdate("不允许修改主键 _id".to_string()));
+                }
+                let spec = value.as_object().ok_or_else(|| {
+                    UpdateError::InvalidUpdate(format!(
+                        "$bit 的字段值必须是 {{and|or|xor: 整数}},字段: {}",
+                        key
+                    ))
+                })?;
+                if spec.len() != 1 {
+                    return Err(UpdateError::InvalidUpdate(format!(
+                        "$bit 每字段只能用一个操作,字段: {}",
+                        key
+                    )));
+                }
+                let (op_name, operand) = spec.iter().next().unwrap();
+                let op = match op_name.as_str() {
+                    "and" => BitOp::And,
+                    "or" => BitOp::Or,
+                    "xor" => BitOp::Xor,
+                    other => {
+                        return Err(UpdateError::InvalidUpdate(format!(
+                            "$bit 不支持的操作: {}",
+                            other
+                        )));
+                    }
+                };
+                let operand = operand.as_i64().ok_or_else(|| {
+                    UpdateError::InvalidUpdate("$bit 的操作数必须是整数".to_string())
+                })?;
+                bit_fields.push((path, op, operand));
+            }
         }
 
         // ---------- $currentDate ----------
@@ -444,6 +538,9 @@ impl Update {
             current_date_fields,
             pull_fields,
             pop_fields,
+            set_on_insert_fields,
+            bit_fields,
+            array_filters: filters,
         })
     }
 
@@ -455,7 +552,7 @@ impl Update {
     ///
     /// `_id` 字段不允许被修改或删除(主键不可变)。
     pub fn apply(&self, doc: &mut Map<String, Value>) -> Result<(), UpdateError> {
-        // $rename:先取旧值再删旧键,最后按 $set 逻辑写新路径
+        // $rename:先取旧值再删旧键,最后按 $set 逻辑写新路径($rename 不支持数组过滤器)
         for (from, to) in &self.rename_fields {
             let taken = take_in_map(doc, from);
             if let Some(value) = taken {
@@ -466,139 +563,182 @@ impl Update {
         // $inc:字段缺失视为 0;存在但非数值 → 报错(不静默覆盖)
         for (path, delta) in &self.inc_fields {
             check_not_id(path)?;
-            let current = number_at(doc, path, "$inc")?.unwrap_or(0.0);
-            set_in_map(doc, path, &number_value(current + delta))?;
+            for target in self.targets(doc, path)? {
+                let current = number_at(doc, &target, "$inc")?.unwrap_or(0.0);
+                set_in_map(doc, &target, &number_value(current + delta))?;
+            }
         }
 
         // $mul:字段缺失视为 0(MongoDB 行为);存在但非数值 → 报错
         for (path, factor) in &self.mul_fields {
             check_not_id(path)?;
-            let current = number_at(doc, path, "$mul")?.unwrap_or(0.0);
-            set_in_map(doc, path, &number_value(current * factor))?;
+            for target in self.targets(doc, path)? {
+                let current = number_at(doc, &target, "$mul")?.unwrap_or(0.0);
+                set_in_map(doc, &target, &number_value(current * factor))?;
+            }
+        }
+
+        // $bit:仅整数,操作数必须是整数(v0.7.0)
+        for (path, op, operand) in &self.bit_fields {
+            check_not_id(path)?;
+            for target in self.targets(doc, path)? {
+                let current = match resolve_owned(doc, &target) {
+                    Some(Value::Number(n)) => n.as_i64(),
+                    Some(_) => None,
+                    None => Some(0),
+                }
+                .ok_or_else(|| UpdateError::TypeMismatch {
+                    op: "$bit".to_string(),
+                    path: target.join("."),
+                    expected: "整数".to_string(),
+                })?;
+                let result = match op {
+                    BitOp::And => current & operand,
+                    BitOp::Or => current | operand,
+                    BitOp::Xor => current ^ operand,
+                };
+                set_in_map(doc, &target, &Value::from(result))?;
+            }
         }
 
         // $min / $max:字段缺失直接写入,否则按比较结果决定
         for (path, value) in &self.min_fields {
             check_not_id(path)?;
-            let current = resolve_owned(doc, path);
-            // 仅当「字段缺失」或「新值更小」时才写入
-            let keep = matches!(
-                &current,
-                Some(cur) if compare_values(Some(cur), Some(value)) != std::cmp::Ordering::Greater
-            );
-            if !keep {
-                set_in_map(doc, path, value)?;
+            for target in self.targets(doc, path)? {
+                let current = resolve_owned(doc, &target);
+                // 仅当「字段缺失」或「新值更小」时才写入
+                let keep = matches!(
+                    &current,
+                    Some(cur) if compare_values(Some(cur), Some(value)) != std::cmp::Ordering::Greater
+                );
+                if !keep {
+                    set_in_map(doc, &target, value)?;
+                }
             }
         }
         for (path, value) in &self.max_fields {
             check_not_id(path)?;
-            let current = resolve_owned(doc, path);
-            // 仅当「字段缺失」或「新值更大」时才写入
-            let keep = matches!(
-                &current,
-                Some(cur) if compare_values(Some(cur), Some(value)) != std::cmp::Ordering::Less
-            );
-            if !keep {
-                set_in_map(doc, path, value)?;
+            for target in self.targets(doc, path)? {
+                let current = resolve_owned(doc, &target);
+                // 仅当「字段缺失」或「新值更大」时才写入
+                let keep = matches!(
+                    &current,
+                    Some(cur) if compare_values(Some(cur), Some(value)) != std::cmp::Ordering::Less
+                );
+                if !keep {
+                    set_in_map(doc, &target, value)?;
+                }
             }
         }
 
         // $set
         for (path, value) in &self.set_fields {
             check_not_id(path)?;
-            set_in_map(doc, path, value)?;
+            for target in self.targets(doc, path)? {
+                set_in_map(doc, &target, value)?;
+            }
         }
 
         // $unset
         for path in &self.unset_fields {
-            unset_in_map(doc, path)?;
+            for target in self.targets(doc, path)? {
+                unset_in_map(doc, &target)?;
+            }
         }
 
         // $push
         for spec in &self.push_fields {
             check_not_id(&spec.path)?;
-            let mut arr = match resolve_owned(doc, &spec.path) {
-                Some(Value::Array(a)) => a,
-                Some(_) => {
-                    return Err(UpdateError::TypeMismatch {
-                        op: "$push".to_string(),
-                        path: spec.path.join("."),
-                        expected: "数组".to_string(),
-                    });
-                }
-                None => Vec::new(),
-            };
-            apply_push(&mut arr, spec)?;
-            set_in_map(doc, &spec.path, &Value::Array(arr))?;
+            for target in self.targets(doc, &spec.path)? {
+                let mut arr = match resolve_owned(doc, &target) {
+                    Some(Value::Array(a)) => a,
+                    Some(_) => {
+                        return Err(UpdateError::TypeMismatch {
+                            op: "$push".to_string(),
+                            path: target.join("."),
+                            expected: "数组".to_string(),
+                        });
+                    }
+                    None => Vec::new(),
+                };
+                apply_push(&mut arr, spec)?;
+                set_in_map(doc, &target, &Value::Array(arr))?;
+            }
         }
 
         // $addToSet
         for spec in &self.add_to_set_fields {
             check_not_id(&spec.path)?;
-            let mut arr = match resolve_owned(doc, &spec.path) {
-                Some(Value::Array(a)) => a,
-                Some(_) => {
-                    return Err(UpdateError::TypeMismatch {
-                        op: "$addToSet".to_string(),
-                        path: spec.path.join("."),
-                        expected: "数组".to_string(),
-                    });
+            for target in self.targets(doc, &spec.path)? {
+                let mut arr = match resolve_owned(doc, &target) {
+                    Some(Value::Array(a)) => a,
+                    Some(_) => {
+                        return Err(UpdateError::TypeMismatch {
+                            op: "$addToSet".to_string(),
+                            path: target.join("."),
+                            expected: "数组".to_string(),
+                        });
+                    }
+                    None => Vec::new(),
+                };
+                for value in &spec.values {
+                    if !arr
+                        .iter()
+                        .any(|el| compare_values(Some(el), Some(value)) == std::cmp::Ordering::Equal)
+                    {
+                        arr.push(value.clone());
+                    }
                 }
-                None => Vec::new(),
-            };
-            for value in &spec.values {
-                if !arr
-                    .iter()
-                    .any(|el| compare_values(Some(el), Some(value)) == std::cmp::Ordering::Equal)
-                {
-                    arr.push(value.clone());
-                }
+                set_in_map(doc, &target, &Value::Array(arr))?;
             }
-            set_in_map(doc, &spec.path, &Value::Array(arr))?;
         }
 
         // $pull:移除所有满足条件的元素
         for spec in &self.pull_fields {
             check_not_id(&spec.path)?;
-            let Some(current) = resolve_owned(doc, &spec.path) else {
-                continue; // 字段缺失 → 无操作
-            };
-            let Value::Array(arr) = current else {
-                return Err(UpdateError::TypeMismatch {
-                    op: "$pull".to_string(),
-                    path: spec.path.join("."),
-                    expected: "数组".to_string(),
-                });
-            };
-            let kept: Vec<Value> = arr
-                .into_iter()
-                .filter(|el| !pull_matches(&spec.matcher, &spec.field, el))
-                .collect();
-            set_in_map(doc, &spec.path, &Value::Array(kept))?;
+            for target in self.targets(doc, &spec.path)? {
+                let Some(current) = resolve_owned(doc, &target) else {
+                    continue; // 字段缺失 → 无操作
+                };
+                let Value::Array(arr) = current else {
+                    return Err(UpdateError::TypeMismatch {
+                        op: "$pull".to_string(),
+                        path: target.join("."),
+                        expected: "数组".to_string(),
+                    });
+                };
+                let kept: Vec<Value> = arr
+                    .into_iter()
+                    .filter(|el| !pull_matches(&spec.matcher, &spec.field, el))
+                    .collect();
+                set_in_map(doc, &target, &Value::Array(kept))?;
+            }
         }
 
         // $pop:移除首/尾元素
         for spec in &self.pop_fields {
             check_not_id(&spec.path)?;
-            let Some(current) = resolve_owned(doc, &spec.path) else {
-                continue; // 字段缺失 → 无操作
-            };
-            let Value::Array(mut arr) = current else {
-                return Err(UpdateError::TypeMismatch {
-                    op: "$pop".to_string(),
-                    path: spec.path.join("."),
-                    expected: "数组".to_string(),
-                });
-            };
-            if arr.is_empty() {
-                continue; // 空数组 → 无操作
+            for target in self.targets(doc, &spec.path)? {
+                let Some(current) = resolve_owned(doc, &target) else {
+                    continue; // 字段缺失 → 无操作
+                };
+                let Value::Array(mut arr) = current else {
+                    return Err(UpdateError::TypeMismatch {
+                        op: "$pop".to_string(),
+                        path: target.join("."),
+                        expected: "数组".to_string(),
+                    });
+                };
+                if arr.is_empty() {
+                    continue; // 空数组 → 无操作
+                }
+                if spec.last {
+                    arr.pop();
+                } else {
+                    arr.remove(0);
+                }
+                set_in_map(doc, &target, &Value::Array(arr))?;
             }
-            if spec.last {
-                arr.pop();
-            } else {
-                arr.remove(0);
-            }
-            set_in_map(doc, &spec.path, &Value::Array(arr))?;
         }
 
         // $currentDate:需实时取时间,放最后
@@ -606,10 +746,36 @@ impl Update {
             let now = current_millis();
             for path in &self.current_date_fields {
                 check_not_id(path)?;
-                set_in_map(doc, path, &date_literal(now))?;
+                for target in self.targets(doc, path)? {
+                    set_in_map(doc, &target, &date_literal(now))?;
+                }
             }
         }
 
+        Ok(())
+    }
+
+    /// 把带位置占位的路径展开成**具体路径**列表。
+    ///
+    /// 不含 `$[]` / `$[id]` 的路径原样返回(只有一个元素),所以既有行为完全不变。
+    fn targets(
+        &self,
+        doc: &Map<String, Value>,
+        path: &[String],
+    ) -> Result<Vec<Vec<String>>, UpdateError> {
+        expand_targets(doc, path, &self.array_filters)
+    }
+
+    /// 应用 `$setOnInsert`(仅 upsert **插入**分支调用,普通更新忽略)。
+    ///
+    /// Mongoose 的 `timestamps` 会给每个 `updateOne` 附上
+    /// `$setOnInsert: {createdAt}`——即使不是 upsert。因此必须**接受**这个操作符,
+    /// 且只在插入时生效,与 MongoDB 一致。
+    pub fn apply_insert_only(&self, doc: &mut Map<String, Value>) -> Result<(), UpdateError> {
+        for (path, value) in &self.set_on_insert_fields {
+            check_not_id(path)?;
+            set_in_map(doc, path, value)?;
+        }
         Ok(())
     }
 
@@ -683,8 +849,7 @@ fn number_at(
 /// 按路径取引用(不穿透数组,仅对象下钻;数组下标按数字寻址)。
 fn resolve_ref<'a>(doc: &'a Map<String, Value>, path: &[String]) -> Option<&'a Value> {
     let (first, rest) = path.split_first()?;
-    let mut current = doc.get(first)?;
-    for seg in rest {
+    let mut current = doc.get(first)?;    for seg in rest {
         current = match current {
             Value::Object(map) => map.get(seg)?,
             Value::Array(arr) => arr.get(seg.parse::<usize>().ok()?)?,
@@ -692,6 +857,67 @@ fn resolve_ref<'a>(doc: &'a Map<String, Value>, path: &[String]) -> Option<&'a V
         };
     }
     Some(current)
+}
+
+/// 把含位置占位符的路径展开成**具体路径**列表(v0.7.0)。
+///
+/// 占位符两种形态:
+/// - `$[]`:数组全部元素;
+/// - `$[id]`:只取满足 `arrayFilters` 中同名条件的元素。
+///
+/// 展开后的「数组下标」写成数字段,因此下游可以继续复用
+/// [`set_in_map`] / [`unset_in_map`] 等既有实现 —— 不另写一套寻址逻辑。
+fn expand_targets(
+    doc: &Map<String, Value>,
+    path: &[String],
+    filters: &[crate::query::ArrayFilter],
+) -> Result<Vec<Vec<String>>, UpdateError> {
+    // 无占位符:原样返回,行为与引入位置运算符之前完全一致
+    if !path.iter().any(|s| s.starts_with("$[")) {
+        return Ok(vec![path.to_vec()]);
+    }
+
+    let mut current: Vec<Vec<String>> = vec![Vec::new()];
+    for seg in path {
+        let Some(identifier) = placeholder(seg) else {
+            for prefix in current.iter_mut() {
+                prefix.push(seg.clone());
+            }
+            continue;
+        };
+        // `$[]`:无标识符,不筛元素;`$[id]`:必须在 arrayFilters 里找到定义
+        let filter = if identifier.is_empty() {
+            None
+        } else {
+            Some(filters.iter().find(|f| f.identifier == identifier).ok_or_else(|| {
+                UpdateError::InvalidUpdate(format!(
+                    "路径使用了 $[{}], 但 arrayFilters 未提供对应定义",
+                    identifier
+                ))
+            })?)
+        };
+
+        let mut next = Vec::new();
+        for prefix in &current {
+            let Some(Value::Array(items)) = resolve_ref(doc, prefix) else {
+                continue; // 目标不是数组 → 该分支无操作(MongoDB 行为)
+            };
+            for (index, element) in items.iter().enumerate() {
+                if filter.is_none_or(|f| f.matches(element)) {
+                    let mut expanded = prefix.clone();
+                    expanded.push(index.to_string());
+                    next.push(expanded);
+                }
+            }
+        }
+        current = next;
+    }
+    Ok(current)
+}
+
+/// 若是 `$[]` / `$[id]` 段,返回其中的标识符(`$[]` 返回空字符串)。
+fn placeholder(seg: &str) -> Option<&str> {
+    seg.strip_prefix("$[")?.strip_suffix(']')
 }
 
 /// 按路径取值的克隆(不穿透数组)。

@@ -1047,6 +1047,26 @@ pub unsafe extern "C" fn nodblite_drop_collection(
     }
 }
 
+/// 压缩数据库文件,把空闲页还给文件系统(v0.7.1)。
+///
+/// 删除数据不会让文件变小,只在需要回收空间时调用。
+/// **需要独占访问** —— 存在未结束的扫描游标时会报错。
+///
+/// # Safety
+///
+/// 调用期间宿主不得并发使用同一句柄。返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_compact(db: *mut NodbliteDb) -> *mut NodbliteResult {
+    // 压缩需要 &mut,故用 as_mut 取独占句柄
+    let Some(db) = (unsafe { db.as_mut() }) else {
+        return err_result(set_error_msg("compact", ErrorCode::Internal, "数据库句柄为空"));
+    };
+    match db.inner.compact() {
+        Ok(_) => ok_empty(),
+        Err(e) => err_result(set_error("compact", &e)),
+    }
+}
+
 /// 执行聚合管道(`pipeline_json` 必须是 JSON 数组)。
 ///
 /// `docs` 为输出文档;支持的阶段与 wire 层一致。

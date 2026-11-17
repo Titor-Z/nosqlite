@@ -287,3 +287,47 @@ fn upsert_persists() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
+/// `$setOnInsert`:未命中插入时生效(Mongoose 的 timestamps 依赖此语义)。
+#[test]
+fn set_on_insert_applies_on_insert() {
+    let (path, db) = setup("soi_insert");
+    db.update_or_insert(
+        "users",
+        &f(json!({"email": "a@b.c"})),
+        &u(json!({"$set": {"name": "张三"}, "$setOnInsert": {"source": "seed"}})),
+    )
+    .unwrap();
+    let doc = only(&db, "users");
+    assert_eq!(doc["name"], json!("张三"));
+    assert_eq!(doc["source"], json!("seed"), "$setOnInsert 在插入时应生效");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// `$setOnInsert`:命中更新时**忽略**(不覆盖已存在的字段)。
+#[test]
+fn set_on_insert_ignored_on_update() {
+    let (path, db) = setup("soi_update");
+    db.update_or_insert(
+        "users",
+        &f(json!({"email": "a@b.c"})),
+        &u(json!({"$setOnInsert": {"source": "seed"}})),
+    )
+    .unwrap();
+    // 第二次 upsert 命中,`$setOnInsert` 不得改写 source
+    let res = db
+        .update_or_insert(
+            "users",
+            &f(json!({"email": "a@b.c"})),
+            &u(json!({"$setOnInsert": {"source": "later"}})),
+        )
+        .unwrap();
+    assert!(matches!(res, UpsertResult::Updated(_)));
+    let doc = only(&db, "users");
+    assert_eq!(doc["source"], json!("seed"), "命中时 $setOnInsert 应被忽略");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
