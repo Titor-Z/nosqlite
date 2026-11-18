@@ -41,6 +41,14 @@
   JS 宿主一直漏(浏览器里调用会直接报 `undefined`);
 - wasm 冒烟扩到 **22 项**;studio 的 wasm 封装同步补 `compact` 与 `arrayFilters`。
 
+### studio 界面
+- `AggregationPane` 阶段清单改为与引擎一致的 15 个(`$lookup`/`$unwind`/`$facet`/`$bucket`/
+  `$replaceRoot`/`$count`/`$unset` 等),累加器补到 9 个;
+- `+ Add Stage` 改为下拉:选阶段直接插入对应模板(此前只会插 `$match`);
+- 重新构建 wasm + 前端 + `nodblite-studio` 单二进制(内嵌新引擎);
+- **修掉 e2e 的过期断言**:它等 `ENGINE READY`,而 UI 早已改为 `NO DATABASE LOADED`
+  (说明该套件在视觉改版后没再跑过);补 2 项断言,30 项全过。
+
 ### 文档
 - `site/reference/compatibility.md`「服务端能力」由「无认证」改为实测事实:
   SCRAM-SHA-256 + 6 个内置角色,并列出仍未支持项(SCRAM-SHA-1、行级权限、TLS 等);

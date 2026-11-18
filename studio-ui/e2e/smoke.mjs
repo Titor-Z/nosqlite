@@ -41,8 +41,13 @@ const bulkDocs = Array.from({ length: 24 }, (_, i) => ({
 try {
   await page.goto(url, { waitUntil: 'networkidle' });
 
-  // 1. WASM 引擎
-  await page.waitForSelector('text=ENGINE READY', { timeout: 20000 });
+  // 1. WASM 引擎:就绪后顶栏从「INITIALIZING」变成「NO DATABASE LOADED」,
+  //    并被 landing 的「新建空数据库」按钮取代(旧版文案 ENGINE READY 已不存在)
+  await page.waitForFunction(
+    () => !document.body.innerText.includes('INITIALIZING WASM ENGINE'),
+    { timeout: 20000 },
+  );
+  await page.getByRole('button', { name: '新建空数据库' }).waitFor({ timeout: 20000 });
   check(true, 'WASM 引擎加载完成');
 
   // 2. 新建数据库 → 工作台
@@ -147,6 +152,16 @@ try {
   await page.getByRole('button', { name: 'Run' }).click();
   await page.getByText('OUTPUT').waitFor();
   check((await page.locator('main').innerText()).includes('26'), 'Aggregation $group 输出 26');
+
+  // 13b. Add Stage 下拉:阶段清单与引擎一致,选中即插入模板
+  await page.getByRole('button', { name: /Add Stage/ }).click();
+  await page.getByRole('button', { name: '$lookup', exact: true }).click();
+  const lookupStage = await page.locator('textarea').nth(1).inputValue();
+  check(lookupStage.includes('"$lookup"'), 'Add Stage 下拉插入 $lookup 模板');
+  check(
+    (await page.locator('main').innerText()).includes('$bucket'),
+    '阶段提示列出 $bucket(与引擎一致)',
+  );
 
   // 14. Export JSONL
   await page.getByRole('button', { name: 'Documents', exact: true }).click();

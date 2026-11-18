@@ -679,8 +679,9 @@ export function runSchema(sampleSize) {
 
 /* ---------------- Aggregation ---------------- */
 
-export function addStage() {
-  app.pipeline = [...app.pipeline, { text: '{\n  "$match": {}\n}' }];
+/** 追加一个阶段。`template` 缺省为 `$match`,由 AggregationPane 按所选阶段传入。 */
+export function addStage(template = '{\n  "$match": {}\n}') {
+  app.pipeline = [...app.pipeline, { text: template }];
 }
 
 export function removeStage(index) {

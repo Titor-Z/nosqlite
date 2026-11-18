@@ -1778,6 +1778,15 @@
   npm 测试 18 项全过(新增聚合 `$group`/`$unwind`、`dropCollection`、`compact` 压缩断言、
   `$lookup` 跨集合、`$expr`/`$mod`/`$regex $options`、`$bit` + `$[id]`),
   `tsc -p tsconfig.json` 通过。
+- **studio 界面补齐(v0.7.2)**:`AggregationPane` 的阶段清单是 v0.6.11 写的,
+  只有 8 个 + 「累加器仅 `$sum`/`$count`」—— 引擎早就有 15 个阶段与 9 个累加器,
+  用户会以为 `$lookup`/`$unwind` 不能用。改为与 `src/aggregate.rs` 一一对应的 15 项,
+  并把 `+ Add Stage` 做成**下拉选阶段即插入模板**(原来只会插 `$match`)。
+  产物:重新构建 wasm → 前端 → `nodblite-studio` 单二进制(3.3 MB,内嵌新 wasm 2.78 MB),
+  并 `curl` 校验二进制里的 `app.js` 含 `$bucket`。
+  - **e2e 第一句就过期了**:它等 `ENGINE READY`,而 UI 早改成 `NO DATABASE LOADED`
+    → 说明这套 e2e 在那次改版后**没再跑过**。改为等「INITIALIZING 消失 + 新建按钮出现」。
+  - e2e 新增 2 项(下拉插入 `$lookup` 模板、提示含 `$bucket`),共 30 项全过。
 - **第三处同类漂移:wasm 宿主与 studio**(`web/nodblite.js`、`studio-ui/src/lib/nodblite.js`)。
   新增测试 `js_hosts_cover_all_c_abi_functions` 后立刻抓出 `web/nodblite.js` 缺 6 个:
   `find_page`/`upsert`/`explain`/`create_index_composite`/`find_cursor`/`cursor_next`(及 close)。
