@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.11.16: **v0.7.2 发布** —— npm / wasm / studio / 站点四端与引擎能力对齐。npm 补齐 `aggregate`/`dropCollection`/`compact`,新增 C ABI `nodblite_update_array_filters`(此前 `$[id]` 在嵌入模式根本用不了);wasm 宿主补 6 个漏绑函数 + 流式游标;studio 聚合阶段清单由 8 个旧值与「累加器仅 2 个」改为引擎真实的 15 阶段 + 9 累加器,`+ Add Stage` 改下拉;修掉过期 e2e 断言。两条防漂移测试(头文件 ↔ npm / ↔ wasm+studio)锁死此后不再漂。npm 18 项、wasm smoke 22 项、studio e2e 30 项、Rust 637 例全绿。参见 [taolun #87](#87-20261116-回归对齐npm--wasm--studio--站点四端同步)。
 - 2026.11.16: **角色授权(B 阶段)** —— 6 个内置角色(`read`/`readWrite`/`dbAdmin`/`userAdmin`/`dbOwner`/`root`),检查下沉到 wire 边界(嵌入式仍不认证);堵掉三个凭据读旁路(`distinct`/`aggregate`/`$lookup` 指向 `admin.system.users`),修掉「账号管理命令绕过角色闸」的真实漏洞。630 例全绿,Go 9 项 / Node 8 项带角色验收通过。参见 [taolun #85](#85-20261116-设计b-阶段--角色下沉认证之后是授权) / [#86](#86-20261116-执行b-阶段--角色下沉) / [项目进度-已完成](#已完成)。
 - 2026.11.16: **账号认证(SCRAM-SHA-256)** —— 与 MongoDB 同一套机制,官方 Go/Node 驱动可直接带账号密码连接。库内**无账号时不做认证**(等同 `noauth`),`.user add` 建第一个账号即开启;B 阶段角色暂不检查(通过认证即全权限)。账号存在**真实集合** `admin.system.users`(`admin` 为保留命名空间,建库即写 `admin.system.version`),写路径拒绝 `system.*`、读时剥掉 `credentials`。密码原语(SHA-256/HMAC/PBKDF2/base64)零依赖自实现并用 RFC 向量锁定,`getrandom` 是唯一新依赖。参见 [taolun #83](#83-20261116-设计账号认证scram-sha-256保留命名空间-admin) / [#84](#84-20261116-执行账号认证scram-sha-256保留命名空间-admin) / [项目进度-已完成](#已完成)。
 
@@ -1809,6 +1810,34 @@
 - 文档:`site/guide/auth.md` 新增「角色与权限」(含动作覆盖面、未授权报错示例、
   `db` 字段只作记录、明确不做行级/字段级);系统集合保护补上 `distinct`/`aggregate`/`$lookup` 三条。
 
+### 87. 2026.11.16 回归对齐:npm / wasm / studio / 站点四端同步
+
+- 起因:用户问「查询/`$lookup` 这些都同步到 npm 了吗」——一查发现**三端都不齐**,
+  而且**已经漏过三次**(每次都是 C 端加了函数,JS 端没跟)。
+- **npm**:`aggregate` / `dropCollection` / `compact` 三个 C ABI 从未绑定;
+  - 新增 C ABI **`nodblite_update_array_filters`** —— `$[id]` 位置运算符需要 `arrayFilters`,
+    而 `nodblite_update` 签名里没有该参数,所以 **`$[id]` 在嵌入模式根本用不了**;
+  - README 操作符清单过期(`$expr`/`$mod`/`$regex $options`/`$bit`/`$[]`/`$[id]`/`$setOnInsert` 全缺)。
+- **wasm 宿主**(`web/nodblite.js`)缺 6 个:`find_page`/`upsert`/`explain`/
+  `create_index_composite`/`find_cursor`/`cursor_next` —— 浏览器里调用直接 `undefined`。
+- **studio 界面**在骗用户:聚合阶段清单是 v0.6.11 的 8 个、累加器写着「仅 `$sum`/`$count`」,
+  而引擎已有 15 阶段 + 9 累加器。
+- **站点**写着「服务端能力:无认证」—— 这是**事实错误**(v0.7.0 就有了)。
+- 结论:**新增两条防漂移测试**,而不是靠记性:
+  - `npm_bindings_cover_all_c_abi_functions`:头文件 ↔ `npm/src/bindings.js`,
+    有意不暴露的 9 个进 SKIP 并写理由,且反向校验 SKIP 不腐化;
+  - `js_hosts_cover_all_c_abi_functions`:头文件 ↔ `web/nodblite.js` 与 `studio-ui/src/lib/nodblite.js`,
+    studio 不做流式游标进 `STUDIO_SKIP`。
+  - 实测:临时往头文件加一个假函数 → 立刻红。
+- 顺带修掉的真实缺陷/坑:
+  - **wasm 的 `uint64_t` 参数必须传 BigInt**,`findPage` 传 Number 报 `Cannot convert 0 to a BigInt`;
+  - `findPage` 的**总数在 C ABI 的 `affected`**,不在 `count`(`count` 是当页条数);
+  - npm 测试用固定 `/tmp/nodblite_npm_test.nodb` → 并行跑互相踩,改按 `pid+时间戳` 唯一;
+  - **studio e2e 第一句断言过期**(等 `ENGINE READY`,而 UI 已改为 `NO DATABASE LOADED`)
+    → 说明该套件在视觉改版后**没再跑过**,之前「28 项全过」是改版前的记录。
+- 验收:npm 18 项 / wasm smoke 22 项 / studio e2e 30 项(真实 Chrome)/ Rust 637 例(含 studio)
+  / clippy 零警告 / docs:build 通过。
+
 ## Agents
 
 ### 规范
@@ -1888,6 +1917,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- 2026.11.16:**v0.7.2 四端对齐** —— npm(`aggregate`/`dropCollection`/`compact`/`arrayFilters`)+ C ABI `nodblite_update_array_filters` + wasm 宿主补 6 个漏绑函数与流式游标 + studio 聚合清单对齐引擎(15 阶段/9 累加器)+ 站点同步 + 两条防漂移测试。
 - 2026.11.16:**角色授权(B 阶段)** —— 6 个内置角色 + 命令级授权检查 + 凭据旁路全堵;Go 9 项 / Node 8 项验收;629 例全绿。
 - 2026.11.16:**账号认证(SCRAM-SHA-256)** —— 真实集合 `admin.system.users` + 保留命名空间 `admin` + wire `saslStart/saslContinue` + `createUser/updateUser/dropUser/usersInfo` + CLI `.user`;真实 Go/Node 驱动带账号验收通过;626 例全绿。
 - 2026.11.16:`.compact` 压缩(CLI + `nodblite_compact` C ABI)+ `tests/compact.rs`;确认不做加密(指引 OS 级全盘加密)。
