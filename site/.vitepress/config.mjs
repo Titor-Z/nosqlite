@@ -1,4 +1,11 @@
+import { readFileSync } from 'node:fs'
+
 import { defineConfig } from 'vitepress'
+
+// 版本号从 Cargo.toml 读(Cargo.toml 才是 crate/npm/站点共用的唯一真源)。
+// 之前这里是手写的 v0.6.11,升版本时忘了改 —— 站点导航与首页一直显示旧版本。
+const cargoToml = readFileSync(new URL('../../Cargo.toml', import.meta.url), 'utf8')
+const version = `v${/^version\s*=\s*"([^"]+)"/m.exec(cargoToml)[1]}`
 
 export default defineConfig({
   lang: 'zh-CN',
@@ -8,6 +15,12 @@ export default defineConfig({
 
   // GitHub Pages 项目站点,路径前缀必须与仓库名一致
   base: '/nosqlite/',
+  // 首页组件里用 `__APP_VERSION__`(编译期替换),避免再手写一份版本号
+  vite: {
+    define: {
+      __APP_VERSION__: JSON.stringify(version),
+    },
+  },
   cleanUrls: true,
   lastUpdated: true,
   ignoreDeadLinks: false,
@@ -41,7 +54,7 @@ export default defineConfig({
       // 静态目录不是 VitePress 路由,必须用绝对地址整页跳转
       { text: 'Playground', link: 'https://titor-z.github.io/nosqlite/playground/' },
       {
-        text: 'v0.6.11',
+        text: version,
         items: [
           { text: '更新日志', link: 'https://github.com/Titor-Z/nosqlite/blob/main/CHANGELOG.md' },
           { text: 'GitHub Releases', link: 'https://github.com/Titor-Z/nosqlite/releases' },

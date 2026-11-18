@@ -1793,6 +1793,13 @@
   - **e2e 第一句就过期了**:它等 `ENGINE READY`,而 UI 早改成 `NO DATABASE LOADED`
     → 说明这套 e2e 在那次改版后**没再跑过**。改为等「INITIALIZING 消失 + 新建按钮出现」。
   - e2e 新增 2 项(下拉插入 `$lookup` 模板、提示含 `$bucket`),共 30 项全过。
+- **站点版本号硬编码**(用户指出):导航 `config.mjs` 与首页 `HomePoster.vue` 各自写死
+  `v0.6.11`,升到 0.7.x 后忘了改 —— 官网一直显示旧版本。改为**从 `Cargo.toml` 读**
+  (`Cargo.toml` 是 crate/npm/站点共用的唯一真源),首页通过 `vite.define` 注入 `__APP_VERSION__`。
+  顺带发现根 `package.json` 是文档站自己的、**没有 version 字段**(第一次改错源,构建出 `vundefined`)。
+  新增 `tests/release_meta.rs` 4 条:Cargo ↔ `npm/package.json` 版本一致、CHANGELOG 有当前版本段落、
+  站点不得硬编码版本、站点确实从 Cargo.toml 取版本。
+  **这条测试立刻抓到 CHANGELOG 里没有 `[0.7.2]` 段落**(0.7.2 的变更被我误写进了 0.7.1),已拆开。
 - **npm 发布的 flaky 失败定位到一个真 UB(最重要的一条)**:CI 上 18 项里偶发挂 1 项
   (`find` 返回 0 条),本地复现率约 7%。
   - 排查路径:Rust 引擎循环 300 轮全对 → Rust 直调 C ABI 循环 300 轮全对 →

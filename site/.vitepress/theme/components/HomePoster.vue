@@ -16,8 +16,8 @@ import HeroPhysics from './HeroPhysics.vue'
 
 const base = import.meta.env.BASE_URL
 
-// 版本号与页脚信息是首页唯一需要手改的地方
-const version = 'v0.6.11'
+// 版本号由 config.mjs 从 package.json 注入(vite define)
+const version = __APP_VERSION__
 
 // 主题:与 VitePress 共用同一个 localStorage key,首页与文档页的状态互不打架。
 // 初始值不自己猜,直接读 VitePress 内联脚本已经写在 <html> 上的 class。
@@ -138,7 +138,7 @@ const unfit = ['多进程并发写同一个库', 'TB 级数据 / 高吞吐集群
           <a class="btn line" :href="`${base}reference/performance`">性能报告</a>
           <a class="btn line" :href="`${base}playground/`">在浏览器里试试</a>
         </div>
-        <div class="meta">{{ version }} · Apache-2.0 · 531 例测试</div>
+        <div class="meta">{{ version }} · Apache-2.0 · 单文件零配置</div>
       </div>
 
       <!-- 海报插图:物理构图框(文档块 → 索引条 → 容器成形) -->

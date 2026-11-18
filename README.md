@@ -294,7 +294,7 @@ nodblite> .import users backup.jsonl
 ## 开发
 
 ```bash
-cargo test --all-targets     # 526 例测试
+cargo test --all-targets     # 全量测试
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- app.nodb   # CLI
 ```
