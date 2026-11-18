@@ -125,7 +125,8 @@ export function loadBindings(libPath = resolveLibPath()) {
     count: fn('void *nodblite_count(void *db, const char *coll, const char *filter)'),
     find: fn(
       'void *nodblite_find(void *db, const char *coll, const char *filter, ' +
-        'const char *sort, const char *fields, uint64_t skip, uint64_t limit)',
+        'const char *sort, const char *fields, uint64_t skip, uint64_t limit, ' +
+        'uint8_t limit_is_null)',
     ),
     findPage: fn(
       'void *nodblite_find_page(void *db, const char *coll, const char *filter, ' +

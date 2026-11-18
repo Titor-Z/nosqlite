@@ -56,6 +56,12 @@
 - `site/quickstart/javascript.md` 新增聚合、`$[id]`+arrayFilters、集合与运维小节;
 - `site/quickstart/wasm.md` 修正「findPage/explain/复合索引/upsert 没有封装」的过期说明。
 
+### 修复
+- **koffi 绑定漏参数导致的 UB**:`npm/src/bindings.js` 的 `nodblite_find` 只声明 7 个参数,
+  而 C 函数有 8 个(`limit_is_null`)—— koffi 不校验 arity,缺的参数读到未初始化寄存器,
+  表现为**偶发查不到任何数据**(实测约 7%)。补齐并新增 `npm_binding_arity_matches_header`
+  测试(逐个比对 20 个函数的参数个数)。
+
 ### 防漂移
 - 新增测试 `npm_bindings_cover_all_c_abi_functions`:头文件里每个 `nodblite_*` 必须被
   `npm/src/bindings.js` 绑定,或进入带理由的 SKIP 清单;反向校验 SKIP 不腐化。

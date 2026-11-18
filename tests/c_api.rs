@@ -345,3 +345,98 @@ fn js_hosts_cover_all_c_abi_functions() {
         );
     }
 }
+
+/// koffi 绑定的**参数个数**必须与头文件一致。
+///
+/// 名字对得上、参数少一个,是最难查的一类 bug:koffi 不校验 arity,
+/// 缺的参数会读到未初始化的寄存器。真实事故:`nodblite_find` 少声明了第 8 个参数
+/// (`limit_is_null`),于是一部分调用把 limit 当成 0 → 偶尔「查不到任何数据」,
+/// 而且只在 C ABI 路径复现(Rust 侧循环 300 轮全对)。
+#[test]
+fn npm_binding_arity_matches_header() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let header = std::fs::read_to_string(root.join("include/nodblite.h")).expect("应能读头文件");
+    let bindings =
+        std::fs::read_to_string(root.join("npm/src/bindings.js")).expect("应能读 npm 绑定");
+
+    /// 取 `name(` 之后配对括号内的参数,返回参数个数(无参数为 0)。
+    fn arity_of(text: &str, name: &str) -> Option<usize> {
+        let at = text.find(&format!("{}(", name))?;
+        let rest = &text[at + name.len() + 1..];
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, ch) in rest.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        let params = rest[..end?].trim();
+        if params.is_empty() {
+            return Some(0);
+        }
+        // 按顶层逗号切(参数里没有嵌套括号,头文件里都是简单类型)
+        Some(params.split(',').count())
+    }
+
+    // 绑定里 koffi 的签名是跨行字符串拼接,先把 "' +\n ... '" 归一成一段
+    let mut flat = String::with_capacity(bindings.len());
+    let mut prev_quote = false;
+    for ch in bindings.chars() {
+        if prev_quote && ch == '+' {
+            prev_quote = false;
+            continue;
+        }
+        if ch == '\'' {
+            prev_quote = true;
+            continue;
+        }
+        if prev_quote && ch.is_whitespace() {
+            continue;
+        }
+        flat.push(ch);
+        prev_quote = false;
+    }
+
+    let mut checked = 0;
+    for name in [
+        "nodblite_open",
+        "nodblite_insert",
+        "nodblite_insert_many",
+        "nodblite_get",
+        "nodblite_update",
+        "nodblite_update_array_filters",
+        "nodblite_upsert",
+        "nodblite_delete",
+        "nodblite_count",
+        "nodblite_find",
+        "nodblite_find_page",
+        "nodblite_create_index",
+        "nodblite_create_index_composite",
+        "nodblite_list_indexes",
+        "nodblite_drop_index",
+        "nodblite_explain",
+        "nodblite_drop_collection",
+        "nodblite_compact",
+        "nodblite_aggregate",
+        "nodblite_list_collections",
+    ] {
+        let in_header = arity_of(&header, name)
+            .unwrap_or_else(|| panic!("头文件里找不到 {}", name));
+        let in_js = arity_of(&flat, name).unwrap_or_else(|| panic!("bindings.js 里找不到 {}", name));
+        assert_eq!(
+            in_js, in_header,
+            "koffi 绑定 `{}` 的参数个数是 {},头文件是 {} —— 少传的参数会读到未初始化的寄存器",
+            name, in_js, in_header
+        );
+        checked += 1;
+    }
+    assert!(checked >= 20, "应检查至少 20 个函数,实际 {}", checked);
+}

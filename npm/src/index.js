@@ -149,6 +149,9 @@ export class Database {
         opts.fields ? JSON.stringify(opts.fields) : null,
         BigInt(opts.skip ?? 0),
         BigInt(opts.limit ?? 0),
+        // 第 8 个参数:limit 是否为 null。漏传时底层会读到未初始化的寄存器值,
+        // 表现为「偶尔查不到任何数据」(limit 被当成 0)—— 曾经真的发生过。
+        opts.limit == null ? 1 : 0,
       ),
     );
     return r.docs.map((s) => JSON.parse(s));

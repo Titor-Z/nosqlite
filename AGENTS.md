@@ -11,7 +11,7 @@
   registry 上 `latest` 仍是 **0.6.10**(0.6.11 那次也是同样失败,一直没发出去)。
   需维护者到 npmjs.com 建一个勾选 **Bypass 2FA** 的 Granular Access Token,更新仓库 Environment `npm` 的 `TOKEN` 后重跑 `npm` workflow。
   顺带修掉 Release 说明为空的老问题(`generate_release_notes: true`)。
-- 2026.11.16: **v0.7.2 发布** —— npm / wasm / studio / 站点四端与引擎能力对齐。npm 补齐 `aggregate`/`dropCollection`/`compact`,新增 C ABI `nodblite_update_array_filters`(此前 `$[id]` 在嵌入模式根本用不了);wasm 宿主补 6 个漏绑函数 + 流式游标;studio 聚合阶段清单由 8 个旧值与「累加器仅 2 个」改为引擎真实的 15 阶段 + 9 累加器,`+ Add Stage` 改下拉;修掉过期 e2e 断言。两条防漂移测试(头文件 ↔ npm / ↔ wasm+studio)锁死此后不再漂。npm 18 项、wasm smoke 22 项、studio e2e 30 项、Rust 637 例全绿。参见 [taolun #87](#87-20261116-回归对齐npm--wasm--studio--站点四端同步)。
+- 2026.11.16: **v0.7.2 发布** —— npm / wasm / studio / 站点四端与引擎能力对齐。npm 补齐 `aggregate`/`dropCollection`/`compact`,新增 C ABI `nodblite_update_array_filters`(此前 `$[id]` 在嵌入模式根本用不了);wasm 宿主补 6 个漏绑函数 + 流式游标;studio 聚合阶段清单由 8 个旧值与「累加器仅 2 个」改为引擎真实的 15 阶段 + 9 累加器,`+ Add Stage` 改下拉;修掉过期 e2e 断言。两条防漂移测试(头文件 ↔ npm / ↔ wasm+studio)锁死此后不再漂。npm 18 项、wasm smoke 22 项、studio e2e 30 项、Rust 633 例全绿。参见 [taolun #87](#87-20261116-回归对齐npm--wasm--studio--站点四端同步)。
 - 2026.11.16: **角色授权(B 阶段)** —— 6 个内置角色(`read`/`readWrite`/`dbAdmin`/`userAdmin`/`dbOwner`/`root`),检查下沉到 wire 边界(嵌入式仍不认证);堵掉三个凭据读旁路(`distinct`/`aggregate`/`$lookup` 指向 `admin.system.users`),修掉「账号管理命令绕过角色闸」的真实漏洞。630 例全绿,Go 9 项 / Node 8 项带角色验收通过。参见 [taolun #85](#85-20261116-设计b-阶段--角色下沉认证之后是授权) / [#86](#86-20261116-执行b-阶段--角色下沉) / [项目进度-已完成](#已完成)。
 - 2026.11.16: **账号认证(SCRAM-SHA-256)** —— 与 MongoDB 同一套机制,官方 Go/Node 驱动可直接带账号密码连接。库内**无账号时不做认证**(等同 `noauth`),`.user add` 建第一个账号即开启;B 阶段角色暂不检查(通过认证即全权限)。账号存在**真实集合** `admin.system.users`(`admin` 为保留命名空间,建库即写 `admin.system.version`),写路径拒绝 `system.*`、读时剥掉 `credentials`。密码原语(SHA-256/HMAC/PBKDF2/base64)零依赖自实现并用 RFC 向量锁定,`getrandom` 是唯一新依赖。参见 [taolun #83](#83-20261116-设计账号认证scram-sha-256保留命名空间-admin) / [#84](#84-20261116-执行账号认证scram-sha-256保留命名空间-admin) / [项目进度-已完成](#已完成)。
 
@@ -1793,6 +1793,19 @@
   - **e2e 第一句就过期了**:它等 `ENGINE READY`,而 UI 早改成 `NO DATABASE LOADED`
     → 说明这套 e2e 在那次改版后**没再跑过**。改为等「INITIALIZING 消失 + 新建按钮出现」。
   - e2e 新增 2 项(下拉插入 `$lookup` 模板、提示含 `$bucket`),共 30 项全过。
+- **npm 发布的 flaky 失败定位到一个真 UB(最重要的一条)**:CI 上 18 项里偶发挂 1 项
+  (`find` 返回 0 条),本地复现率约 7%。
+  - 排查路径:Rust 引擎循环 300 轮全对 → Rust 直调 C ABI 循环 300 轮全对 →
+    **JS 侧 300 轮挂 20 条** ⇒ 问题在 koffi 绑定层。
+  - 根因:`npm/src/bindings.js` 的 `nodblite_find` 只声明了 **7 个参数**,
+    而 C 函数有 **8 个**(`uint8_t limit_is_null`)。koffi 不校验 arity,
+    缺的那个参数读到**未初始化的寄存器**:运气好非 0(`limit=None`,全量返回),
+    运气差为 0 → `limit = 0` → **查不到任何数据**。
+  - 修法:补齐第 8 个参数并传 `opts.limit == null ? 1 : 0`;修完 300 轮 0 失败。
+    studio 与 wasm 宿主本来就传对了,只有 npm 少一个。
+  - 新增测试 **`npm_binding_arity_matches_header`**:逐个比对 koffi 签名的参数个数与头文件
+    (20 个函数),实测把第 8 个参数删掉立刻报
+    「参数个数是 7,头文件是 8」。
 - **第三处同类漂移:wasm 宿主与 studio**(`web/nodblite.js`、`studio-ui/src/lib/nodblite.js`)。
   新增测试 `js_hosts_cover_all_c_abi_functions` 后立刻抓出 `web/nodblite.js` 缺 6 个:
   `find_page`/`upsert`/`explain`/`create_index_composite`/`find_cursor`/`cursor_next`(及 close)。
