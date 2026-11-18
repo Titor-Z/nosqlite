@@ -105,6 +105,8 @@ jobs:
       - name: 上传到 Release
         uses: softprops/action-gh-release@v2
         with:
+          # 之前每个 Release 的说明都是空的 —— 用 GitHub 自动生成的变更列表兜底
+          generate_release_notes: true
           files: |
             ${{ matrix.archive }}
             ${{ matrix.archive }}.sha256

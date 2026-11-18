@@ -6,6 +6,11 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.11.16: **v0.7.2 发布状态** —— tag 已推,GitHub Release 20 个产物齐全(CLI/FFI/studio/wasm × 3 平台 + SHA256)、Pages 已上线(`/guide/auth` 可访问)、CI/Bench/Docs 全绿。
+  **npm 仍阻塞**:CI 发布报 `E403 ... granular access token with bypass 2fa enabled is required`;
+  registry 上 `latest` 仍是 **0.6.10**(0.6.11 那次也是同样失败,一直没发出去)。
+  需维护者到 npmjs.com 建一个勾选 **Bypass 2FA** 的 Granular Access Token,更新仓库 Environment `npm` 的 `TOKEN` 后重跑 `npm` workflow。
+  顺带修掉 Release 说明为空的老问题(`generate_release_notes: true`)。
 - 2026.11.16: **v0.7.2 发布** —— npm / wasm / studio / 站点四端与引擎能力对齐。npm 补齐 `aggregate`/`dropCollection`/`compact`,新增 C ABI `nodblite_update_array_filters`(此前 `$[id]` 在嵌入模式根本用不了);wasm 宿主补 6 个漏绑函数 + 流式游标;studio 聚合阶段清单由 8 个旧值与「累加器仅 2 个」改为引擎真实的 15 阶段 + 9 累加器,`+ Add Stage` 改下拉;修掉过期 e2e 断言。两条防漂移测试(头文件 ↔ npm / ↔ wasm+studio)锁死此后不再漂。npm 18 项、wasm smoke 22 项、studio e2e 30 项、Rust 637 例全绿。参见 [taolun #87](#87-20261116-回归对齐npm--wasm--studio--站点四端同步)。
 - 2026.11.16: **角色授权(B 阶段)** —— 6 个内置角色(`read`/`readWrite`/`dbAdmin`/`userAdmin`/`dbOwner`/`root`),检查下沉到 wire 边界(嵌入式仍不认证);堵掉三个凭据读旁路(`distinct`/`aggregate`/`$lookup` 指向 `admin.system.users`),修掉「账号管理命令绕过角色闸」的真实漏洞。630 例全绿,Go 9 项 / Node 8 项带角色验收通过。参见 [taolun #85](#85-20261116-设计b-阶段--角色下沉认证之后是授权) / [#86](#86-20261116-执行b-阶段--角色下沉) / [项目进度-已完成](#已完成)。
 - 2026.11.16: **账号认证(SCRAM-SHA-256)** —— 与 MongoDB 同一套机制,官方 Go/Node 驱动可直接带账号密码连接。库内**无账号时不做认证**(等同 `noauth`),`.user add` 建第一个账号即开启;B 阶段角色暂不检查(通过认证即全权限)。账号存在**真实集合** `admin.system.users`(`admin` 为保留命名空间,建库即写 `admin.system.version`),写路径拒绝 `system.*`、读时剥掉 `credentials`。密码原语(SHA-256/HMAC/PBKDF2/base64)零依赖自实现并用 RFC 向量锁定,`getrandom` 是唯一新依赖。参见 [taolun #83](#83-20261116-设计账号认证scram-sha-256保留命名空间-admin) / [#84](#84-20261116-执行账号认证scram-sha-256保留命名空间-admin) / [项目进度-已完成](#已完成)。
@@ -1917,6 +1922,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- 2026.11.16:**v0.7.2 发布** —— GitHub Release 20 产物 + Pages 上线;npm 待维护者更新带 Bypass 2FA 的 token。
 - 2026.11.16:**v0.7.2 四端对齐** —— npm(`aggregate`/`dropCollection`/`compact`/`arrayFilters`)+ C ABI `nodblite_update_array_filters` + wasm 宿主补 6 个漏绑函数与流式游标 + studio 聚合清单对齐引擎(15 阶段/9 累加器)+ 站点同步 + 两条防漂移测试。
 - 2026.11.16:**角色授权(B 阶段)** —— 6 个内置角色 + 命令级授权检查 + 凭据旁路全堵;Go 9 项 / Node 8 项验收;629 例全绿。
 - 2026.11.16:**账号认证(SCRAM-SHA-256)** —— 真实集合 `admin.system.users` + 保留命名空间 `admin` + wire `saslStart/saslContinue` + `createUser/updateUser/dropUser/usersInfo` + CLI `.user`;真实 Go/Node 驱动带账号验收通过;626 例全绿。
