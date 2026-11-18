@@ -35,6 +35,11 @@
   并加 `$lookup` 示例;
 - npm 测试 18 项全过(含 `$lookup` 跨集合、`$expr`、`$[id]`+arrayFilters),`tsc` 通过。
 
+### 防漂移
+- 新增测试 `npm_bindings_cover_all_c_abi_functions`:头文件里每个 `nodblite_*` 必须被
+  `npm/src/bindings.js` 绑定,或进入带理由的 SKIP 清单;反向校验 SKIP 不腐化。
+  「C 端加了函数、JS 端没跟」这类漂移此后会立刻变红。
+
 ### 测试
 - 630 例 Rust 全绿;真实驱动:Go 9 项、Node 8 项带角色验收(只读账号写/建索引被拒、
   readWrite 建号被拒、userAdmin 建号与看别人通过、`$lookup`/`distinct`/`aggregate`

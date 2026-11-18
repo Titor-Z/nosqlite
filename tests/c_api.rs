@@ -190,3 +190,84 @@ fn header_macros_match_rust() {
         );
     }
 }
+
+/// 头文件里的每个 `nodblite_*` 函数,要么被 npm 的 `bindings.js` 声明,要么在允许清单里。
+///
+/// 为什么需要这条:**已经两次**出现「C 端加了函数、JS 端没跟」
+/// (`aggregate`/`drop_collection`/`compact` 与 `update_array_filters`)。
+/// 头文件宏与 Rust `ErrorCode` 早有对照测试,但**函数列表**没有,于是漂移无人发现。
+#[test]
+fn npm_bindings_cover_all_c_abi_functions() {
+    use std::collections::BTreeSet;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let header = std::fs::read_to_string(root.join("include/nodblite.h")).expect("应能读头文件");
+    let bindings =
+        std::fs::read_to_string(root.join("npm/src/bindings.js")).expect("应能读 npm 绑定");
+
+    // 从头文件与 JS 里抽出所有 `nodblite_xxx` 标识符
+    let names = |text: &str| -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while let Some(pos) = text[i..].find("nodblite_") {
+            let start = i + pos;
+            let mut end = start + "nodblite_".len();
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            out.insert(text[start..end].to_string());
+            i = end.max(start + 1);
+        }
+        out
+    };
+
+    let in_header = names(&header);
+    let in_npm = names(&bindings);
+
+    // 有意不在 npm 里暴露的函数(每一条都要写明理由,便于将来复核)
+    const SKIP: &[(&str, &str)] = &[
+        ("nodblite_malloc", "wasm 宿主用(在线性内存里分配字符串),Node 走 koffi 不需要"),
+        ("nodblite_free", "同上,与 nodblite_malloc 配对"),
+        ("nodblite_open_ex", "版本化 options;npm 用简单的 nodblite_open 已足够"),
+        ("nodblite_exec", "兜底入口;npm 的每个方法都有专用函数"),
+        ("nodblite_find_cursor", "分块游标;npm 用 findPage 做分页"),
+        ("nodblite_bulk_begin", "流式批量会话;npm 用 insertMany 一次提交"),
+        ("nodblite_bulk_add", "同上"),
+        ("nodblite_bulk_commit", "同上"),
+        ("nodblite_bulk_abort", "同上"),
+    ];
+
+    let missing: Vec<&String> = in_header
+        .iter()
+        .filter(|n| !in_npm.contains(*n))
+        .filter(|n| !SKIP.iter().any(|(s, _)| s == &n.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "头文件声明了但 npm/src/bindings.js 没有绑定的函数: {:?}\n\
+         如果是有意不暴露,请加入本测试的 SKIP 清单并写明理由。",
+        missing
+    );
+
+    // 反向检查:SKIP 里不能有已经不存在(或已经绑定)的条目,否则清单会慢慢腐化
+    for (name, why) in SKIP {
+        assert!(
+            in_header.contains(*name),
+            "SKIP 清单里的 `{}` 已不在头文件中,请删除该条({})",
+            name,
+            why
+        );
+        assert!(
+            !in_npm.contains(*name),
+            "`{}` 其实已经绑定了,请从 SKIP 清单删除({})",
+            name,
+            why
+        );
+    }
+}

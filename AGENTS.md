@@ -1778,6 +1778,11 @@
   npm 测试 18 项全过(新增聚合 `$group`/`$unwind`、`dropCollection`、`compact` 压缩断言、
   `$lookup` 跨集合、`$expr`/`$mod`/`$regex $options`、`$bit` + `$[id]`),
   `tsc -p tsconfig.json` 通过。
+- **加了防漂移测试** `npm_bindings_cover_all_c_abi_functions`(`tests/c_api.rs`):
+  从 `include/nodblite.h` 抽出全部 `nodblite_*` 函数名,与 `npm/src/bindings.js`
+  里声明的逐个比对;有意不暴露的 9 个(malloc/free/open_ex/exec/find_cursor/bulk_*)
+  进 SKIP 清单**并写明理由**,且反向校验 SKIP 没有腐化(函数已删或已绑定都要报错)。
+  已实测:临时往头文件加一个假函数 → 测试立刻红。
 - **又一处 ABI 缺口**:`$[id]` 位置运算符需要 `arrayFilters`,而 `nodblite_update`
   的签名里没有这个参数 —— **嵌入模式根本用不了 `$[id]`**。新增
   `nodblite_update_array_filters`(不改老函数签名,ABI 演进靠新增),npm 侧
