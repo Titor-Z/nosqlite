@@ -102,6 +102,34 @@ console.log(plan.stage);      // 'IXSCAN' 或 'COLLSCAN'
 console.log(plan.indexName);  // 'age_1'
 ```
 
+## 聚合
+
+```js
+const rows = db.aggregate('orders', [
+  { $match: { status: 'paid' } },
+  { $group: { _id: '$item', total: { $sum: '$qty' } } },
+  { $sort: { total: -1 } },
+  { $limit: 10 },
+]);
+```
+
+支持的阶段:`$match` `$project` `$addFields` `$set` `$unset` `$sort` `$skip`
+`$limit` `$count` `$group` `$unwind` `$lookup` `$facet` `$bucket`
+`$replaceRoot` / `$replaceWith`。累加器:`$sum` `$avg` `$min` `$max` `$first`
+`$last` `$push` `$addToSet` `$count`。
+
+未实现的阶段会**明确抛错**,不会静默返回空结果。
+
+## 集合与运维
+
+```js
+db.collections();              // ['users', 'orders']
+db.dropCollection('orders');   // 返回删除的文档条数
+
+// 删除数据不会让文件变小(空闲页只被后续写入复用),需要时手动压缩
+db.compact();
+```
+
 ## TypeScript
 
 ```ts
@@ -183,6 +211,11 @@ try {
 
 **Deno / Bun 能用吗?**
 这个包依赖 koffi(Node 原生模块),目前只在 Node.js 上验证过。Deno/Bun 推荐用 wire 协议。
+
+**这个包支持账号密码吗?**
+不支持,也不需要 —— 进程内直连意味着「能打开文件就等于拥有全部数据」,密码在这层没有意义。
+需要认证与角色时用 `nodblite-server`(SCRAM-SHA-256 + 6 个内置角色),
+也可以让 Node 客户端用官方 `mongodb` 包连过去。
 
 **性能如何?**
 查询走索引时是高选择率快 300–4000 倍(10 万文档实测)。批量写入用 `insertMany`,比逐条快两个数量级。详见[性能文档](https://titor-z.github.io/nosqlite/reference/performance/)。

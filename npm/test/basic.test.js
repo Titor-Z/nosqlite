@@ -5,7 +5,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, statSync, unlinkSync } from 'node:fs';
+
+const statSize = (p) => statSync(p).size;
 import { Database, Errors } from '../src/index.js';
 
 const DB = '/tmp/nodblite_npm_test.nodb';
@@ -175,4 +177,64 @@ test('关闭后调用报错', () => {
   db.close();
   assert.throws(() => db.find('u'), /数据库已关闭/);
   unlinkSync(DB);
+});
+
+test('聚合:aggregate 走 C ABI', () => {
+  const db = fresh();
+  db.insertMany('orders', [
+    { item: 'a', qty: 2, price: 10 },
+    { item: 'b', qty: 1, price: 20 },
+    { item: 'a', qty: 5, price: 10 },
+  ]);
+
+  // $group 汇总
+  const grouped = db.aggregate('orders', [
+    { $group: { _id: '$item', total: { $sum: '$qty' } } },
+    { $sort: { _id: 1 } },
+  ]);
+  assert.equal(grouped.length, 2);
+  assert.deepEqual(
+    grouped.map((d) => [d._id, d.total]),
+    [['a', 7], ['b', 1]],
+  );
+
+  // $unwind + $match
+  db.insert('tags', { _id: '1', tags: ['x', 'y'] });
+  const unwound = db.aggregate('tags', [
+    { $unwind: '$tags' },
+    { $match: { tags: 'y' } },
+  ]);
+  assert.equal(unwound.length, 1);
+  assert.equal(unwound[0].tags, 'y');
+
+  // 未实现的阶段必须报错,不能静默返回空
+  assert.throws(() => db.aggregate('orders', [{ $out: 'x' }]));
+  db.close();
+  if (existsSync(DB)) unlinkSync(DB);
+});
+
+test('dropCollection 返回删除条数', () => {
+  const db = fresh();
+  db.insertMany('tmp', [{ a: 1 }, { a: 2 }]);
+  assert.equal(db.collections().includes('tmp'), true);
+  assert.equal(db.dropCollection('tmp'), 2);
+  assert.equal(db.collections().includes('tmp'), false);
+  // 不存在的集合删 0 条,不报错
+  assert.equal(db.dropCollection('nope'), 0);
+  db.close();
+  if (existsSync(DB)) unlinkSync(DB);
+});
+
+test('compact 压缩文件', () => {
+  const db = fresh();
+  const bulk = Array.from({ length: 2000 }, (_, i) => ({ i, payload: 'x'.repeat(200) }));
+  db.insertMany('blob', bulk);
+  const before = statSize(DB);
+  db.delete('blob', {});
+  db.compact();
+  const after = statSize(DB);
+  assert.ok(after < before / 2, `压缩后应显著变小: ${before} → ${after}`);
+  assert.equal(db.count('blob'), 0);
+  db.close();
+  if (existsSync(DB)) unlinkSync(DB);
 });

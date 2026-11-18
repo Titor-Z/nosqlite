@@ -298,6 +298,15 @@ export class Database {
     update: Update<T>,
   ): { updated: number } | { inserted: string };
 
+  /** 删除整个集合(含文档与索引),返回删除的文档条数。 */
+  dropCollection(collection: string): number;
+
+  /** 执行聚合管道。 */
+  aggregate<T = Record<string, unknown>>(
+    collection: string,
+    pipeline: Record<string, unknown>[],
+  ): T[];
+
   // ---------- 索引 ----------
 
   /** 创建索引(单字段或复合)。 */
@@ -320,6 +329,15 @@ export class Database {
     filter?: Record<string, unknown>,
     sort?: Sort | null,
   ): ExplainResult;
+
+  // ---------- 运维 ----------
+
+  /**
+   * 压缩数据库文件,把空闲页还给文件系统。
+   *
+   * 删除数据不会让文件变小(空闲页只被后续写入复用);需要独占访问。
+   */
+  compact(): boolean;
 
   // ---------- 生命周期 ----------
 

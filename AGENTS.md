@@ -1771,6 +1771,12 @@
   (只读账号写/建索引被拒、readWrite 建号被拒、userAdmin 建号与看别人通过、
   `$lookup` 与 `distinct`/`aggregate` 读凭据被拒、`find` 放行且已脱敏);
   clippy `-D warnings` 零警告。
+- **npm 包补齐三个漏掉的 C ABI**(v0.6.11/v0.7.0 加了 C 端却没跟 JS 端):
+  `aggregate`(聚合管道)、`dropCollection`(删除整集合)、`compact`(文件压缩)——
+  `bindings.js` 签名 + `index.js` 封装 + `index.d.ts` 类型 + README + 测试一起补。
+  嵌入模式**不暴露账号/角色**(能打开文件就是全权限),README 写明该用 `nodblite-server`。
+  npm 测试 15 项全过(新增聚合 `$group`/`$unwind`、`dropCollection`、`compact` 压缩断言),
+  `tsc -p tsconfig.json` 通过。
 - 文档:`site/guide/auth.md` 新增「角色与权限」(含动作覆盖面、未授权报错示例、
   `db` 字段只作记录、明确不做行级/字段级);系统集合保护补上 `distinct`/`aggregate`/`$lookup` 三条。
 

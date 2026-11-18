@@ -195,6 +195,30 @@ export class Database {
     return this.#call(this.#f.listCollections(this.#db)).docs.map((s) => JSON.parse(s));
   }
 
+  /** 删除整个集合(含文档与索引),返回删除的文档条数。 */
+  dropCollection(collection) {
+    return this.#call(this.#f.dropCollection(this.#db, collection)).affected;
+  }
+
+  /**
+   * 执行聚合管道。
+   *
+   * 支持的阶段:`$match` `$project` `$addFields` `$set` `$unset` `$sort` `$skip`
+   * `$limit` `$count` `$group` `$unwind` `$lookup` `$facet` `$bucket`
+   * `$replaceRoot` / `$replaceWith`。
+   *
+   * @param {string} collection
+   * @param {object[]} pipeline
+   * @returns {object[]}
+   */
+  aggregate(collection, pipeline) {
+    if (!Array.isArray(pipeline)) throw new TypeError('aggregate 需要 pipeline 数组');
+    const r = this.#call(
+      this.#f.aggregate(this.#db, collection, JSON.stringify(pipeline)),
+    );
+    return r.docs.map((s) => JSON.parse(s));
+  }
+
   // ==================== 写 ====================
 
   /** 插入一条,返回 `_id`。 */
@@ -290,6 +314,19 @@ export class Database {
       ),
     );
     return JSON.parse(r.value);
+  }
+
+  /**
+   * 压缩数据库文件,把空闲页还给文件系统。
+   *
+   * 删除数据**不会**让 `.nodb` 变小(空闲页只被后续写入复用);
+   * 只有「数据量骤降后长期保持低量」时才需要调用。**需要独占访问**(不能有打开的游标)。
+   *
+   * @returns {boolean} 是否确实压缩了
+   */
+  compact() {
+    this.#call(this.#f.compact(this.#db));
+    return true;
   }
 
   // ==================== 生命周期 ====================

@@ -24,6 +24,12 @@
 - 修掉「未知角色被静默写进库」—— 校验只做在 wire 解析层,CLI `.user add <name> superuser`
   绕过了它;现改在 `UserStore` 层校验,所有入口一起覆盖。
 
+### npm 包
+- 补上三个此前有 C ABI 却没暴露的接口:`aggregate`(聚合管道)、`dropCollection`、
+  `compact`(文件压缩)—— 绑定 + 封装 + 类型声明 + README + 测试一起补齐;
+- 嵌入模式不暴露账号/角色(能打开文件即全权限),README 写明该场景用 `nodblite-server`;
+- npm 测试 15 项全过,`tsc -p tsconfig.json` 通过。
+
 ### 测试
 - 630 例 Rust 全绿;真实驱动:Go 9 项、Node 8 项带角色验收(只读账号写/建索引被拒、
   readWrite 建号被拒、userAdmin 建号与看别人通过、`$lookup`/`distinct`/`aggregate`

@@ -15,6 +15,13 @@ const names: string[] = db.collections();
 db.createIndex('users', 'age_1', 'age', { unique: false });
 db.createIndex('users', 'a_b', 'a', { fields: ['a', 'b'], directions: [1, -1] });
 const plan = db.explain('users', { age: { $gte: 18 } });
+
+// 聚合 / 集合管理 / 压缩(v0.7.x 新增)
+const agg: Array<Record<string, unknown>> = db.aggregate('users', [
+  { $group: { _id: '$age', n: { $sum: 1 } } },
+]);
+const dropped: number = db.dropCollection('tmp');
+const compacted: boolean = db.compact();
 const stage: 'IXSCAN' | 'COLLSCAN' = plan.stage;
 
 db.update<User>('users', { name: '张三' }, { $inc: { age: 1 }, $push: { tags: 'x' } });

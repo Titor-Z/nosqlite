@@ -129,6 +129,11 @@ export function loadBindings(libPath = resolveLibPath()) {
         'uint8_t limit_is_null)',
     ),
     listCollections: fn('void *nodblite_list_collections(void *db)'),
+    dropCollection: fn('void *nodblite_drop_collection(void *db, const char *coll)'),
+    aggregate: fn(
+      'void *nodblite_aggregate(void *db, const char *coll, const char *pipeline)',
+    ),
+    compact: fn('void *nodblite_compact(void *db)'),
 
     createIndex: fn(
       'void *nodblite_create_index(void *db, const char *coll, const char *name, ' +
