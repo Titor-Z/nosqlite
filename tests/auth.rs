@@ -58,7 +58,7 @@ fn user_is_real_collection_and_credentials_never_leak() {
     let db = Database::create(&path).unwrap();
     let store = UserStore::new(&db);
 
-    store.create("alice", "pencil").unwrap();
+    store.create("alice", "pencil", None).unwrap();
     assert!(store.has_users());
 
     // 真集合:出现在 all_collections 里,并且能按普通集合查出文档
@@ -97,8 +97,8 @@ fn first_user_becomes_root() {
     let db = Database::create(&path).unwrap();
     let store = UserStore::new(&db);
 
-    store.create("admin_user", "p1").unwrap();
-    store.create("app_user", "p2").unwrap();
+    store.create("admin_user", "p1", None).unwrap();
+    store.create("app_user", "p2", None).unwrap();
 
     let listed = store.list();
     let role_of = |name: &str| -> String {
@@ -127,19 +127,117 @@ fn create_update_drop_lifecycle() {
     let db = Database::create(&path).unwrap();
     let store = UserStore::new(&db);
 
-    store.create("alice", "old").unwrap();
-    assert!(store.create("alice", "x").is_err(), "重复创建应报错");
+    store.create("alice", "old", None).unwrap();
+    assert!(store.create("alice", "x", None).is_err(), "重复创建应报错");
 
     let before = store.credential("alice").unwrap().stored_key;
-    store.set_password("alice", "new").unwrap();
+    store.update("alice", Some("new"), None).unwrap();
     let after = store.credential("alice").unwrap().stored_key;
     assert_ne!(before, after, "改密码应换掉 StoredKey");
 
-    assert!(store.set_password("ghost", "x").is_err(), "改不存在的用户应报错");
+    assert!(store.update("ghost", Some("x"), None).is_err(), "改不存在的用户应报错");
 
     assert!(store.drop_user("alice").unwrap());
     assert!(!store.drop_user("alice").unwrap(), "重复删除应返回 false");
     assert!(!store.has_users(), "删完账号后认证应关闭");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn role_grants_matrix() {
+    use nodblite::auth::{Action, Role};
+    let mk = |name: &str| Role { role: name.to_string(), db: "admin".to_string() };
+    for (role, read, write, admin, uadmin) in [
+        ("read", true, false, false, false),
+        ("readWrite", true, true, false, false),
+        ("dbAdmin", false, false, true, false),
+        ("userAdmin", false, false, false, true),
+        ("dbOwner", true, true, true, true),
+        ("root", true, true, true, true),
+    ] {
+        let r = mk(role);
+        assert_eq!(r.grants(Action::Read), read, "角色 {} 的 Read", role);
+        assert_eq!(r.grants(Action::Write), write, "角色 {} 的 Write", role);
+        assert_eq!(r.grants(Action::Admin), admin, "角色 {} 的 Admin", role);
+        assert_eq!(r.grants(Action::UserAdmin), uadmin, "角色 {} 的 UserAdmin", role);
+    }
+    // 未知角色不授权任何动作
+    assert!(!mk("hacker").grants(Action::Read));
+}
+
+#[test]
+fn parse_roles_rejects_unknown() {
+    use nodblite::auth::parse_roles;
+    let good = serde_json::json!([{"role": "read", "db": "admin"}]);
+    assert!(parse_roles(&good).is_ok());
+    let bad = serde_json::json!([{"role": "superuser", "db": "admin"}]);
+    assert!(parse_roles(&bad).is_err(), "未知角色必须报错");
+    let not_array = serde_json::json!({"role": "read"});
+    assert!(parse_roles(&not_array).is_err());
+}
+
+#[test]
+fn context_loads_roles_and_see_user_rule() {
+    use nodblite::auth::{Action, Role};
+    let path = temp_nodb("ctx");
+    let db = Database::create(&path).unwrap();
+    let store = UserStore::new(&db);
+    store.create("boss", "p1", None).unwrap();
+    store
+        .create(
+            "ro",
+            "p2",
+            Some(vec![Role { role: "read".to_string(), db: "admin".to_string() }]),
+        )
+        .unwrap();
+
+    let boss = store.context("boss").expect("应能取到 boss 的上下文");
+    assert!(boss.allows(Action::Write), "root 应能写");
+    let ro = store.context("ro").expect("应能取到 ro 的上下文");
+    assert!(ro.allows(Action::Read));
+    assert!(!ro.allows(Action::Write), "read 不应能写");
+    assert!(ro.can_see_user("ro"), "能看自己");
+    assert!(!ro.can_see_user("boss"), "read 角色不能看别人");
+
+    // update 可单独改角色
+    store
+        .update(
+            "ro",
+            None,
+            Some(vec![Role { role: "readWrite".to_string(), db: "admin".to_string() }]),
+        )
+        .unwrap();
+    let ro2 = store.context("ro").unwrap();
+    assert!(ro2.allows(Action::Write), "改角色后应能写");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// 未知角色必须被拒绝 —— 不论从 wire 还是从 CLI 进来。
+///
+/// 曾经的缺陷:CLI 直接构造 `Role` 绕过 `parse_roles`,于是 `superuser` 被静默写进库。
+#[test]
+fn unknown_role_rejected_at_store_level() {
+    use nodblite::auth::Role;
+    let path = temp_nodb("badrole");
+    let db = Database::create(&path).unwrap();
+    let store = UserStore::new(&db);
+
+    let bad = vec![Role { role: "superuser".to_string(), db: "admin".to_string() }];
+    assert!(
+        store.create("hacker", "pwd", Some(bad.clone())).is_err(),
+        "创建时未知角色必须报错"
+    );
+    assert!(!store.has_users(), "失败的创建不应留下账号");
+
+    store.create("ok", "pwd", None).unwrap();
+    assert!(
+        store.update("ok", None, Some(bad)).is_err(),
+        "改角色时未知角色必须报错"
+    );
 
     drop(db);
     let _ = std::fs::remove_file(path);
@@ -151,7 +249,7 @@ fn users_persist_across_reopen() {
     let path = temp_nodb("persist");
     {
         let db = Database::create(&path).unwrap();
-        UserStore::new(&db).create("alice", "pencil").unwrap();
+        UserStore::new(&db).create("alice", "pencil", None).unwrap();
     }
     let db = Database::open(&path).unwrap();
     let store = UserStore::new(&db);
@@ -179,7 +277,7 @@ fn legacy_db_without_system_collections() {
     assert_eq!(db.collections().unwrap(), vec!["items".to_string()]);
 
     // 旧库上也能直接建账号
-    UserStore::new(&db).create("alice", "pencil").unwrap();
+    UserStore::new(&db).create("alice", "pencil", None).unwrap();
     assert!(UserStore::new(&db).has_users());
 
     drop(db);

@@ -6,6 +6,7 @@
 
 > 更新记录,按时间倒序(最新在上),条目需外链到对应 taolun 记录与项目进度。
 
+- 2026.11.16: **角色授权(B 阶段)** —— 6 个内置角色(`read`/`readWrite`/`dbAdmin`/`userAdmin`/`dbOwner`/`root`),检查下沉到 wire 边界(嵌入式仍不认证);堵掉三个凭据读旁路(`distinct`/`aggregate`/`$lookup` 指向 `admin.system.users`),修掉「账号管理命令绕过角色闸」的真实漏洞。630 例全绿,Go 9 项 / Node 8 项带角色验收通过。参见 [taolun #85](#85-20261116-设计b-阶段--角色下沉认证之后是授权) / [#86](#86-20261116-执行b-阶段--角色下沉) / [项目进度-已完成](#已完成)。
 - 2026.11.16: **账号认证(SCRAM-SHA-256)** —— 与 MongoDB 同一套机制,官方 Go/Node 驱动可直接带账号密码连接。库内**无账号时不做认证**(等同 `noauth`),`.user add` 建第一个账号即开启;B 阶段角色暂不检查(通过认证即全权限)。账号存在**真实集合** `admin.system.users`(`admin` 为保留命名空间,建库即写 `admin.system.version`),写路径拒绝 `system.*`、读时剥掉 `credentials`。密码原语(SHA-256/HMAC/PBKDF2/base64)零依赖自实现并用 RFC 向量锁定,`getrandom` 是唯一新依赖。参见 [taolun #83](#83-20261116-设计账号认证scram-sha-256保留命名空间-admin) / [#84](#84-20261116-执行账号认证scram-sha-256保留命名空间-admin) / [项目进度-已完成](#已完成)。
 
 - 2026.11.16: **`.compact` 文件压缩**(CLI + C ABI `nodblite_compact`)—— 删除数据不会缩小 `.nodb`(空闲页只供后续写入复用),故提供显式压缩把空洞还给文件系统。实测 2.0 MiB → 16.0 KiB。**不做自动后台压缩**(不可预期停顿代价大于省磁盘收益),**wire 层不曝**(会阻塞整个服务进程)。加密不做,文档指引 OS 级全盘加密。参见 [taolun #82](#82-20261116-文件压缩compact与加密取舍) / [项目进度-已完成](#已完成)。
@@ -1699,6 +1700,80 @@
 - 文档:新增 `site/guide/auth.md`(边界、默认零账号、连接串、管理方式、支持范围与「只做认证不做授权」的明说),
   FAQ 增补两条,侧栏加「账号与认证」。
 
+### 85. 2026.11.16 设计:B 阶段 —— 角色下沉(认证之后是授权)
+
+- 背景:A 阶段(v0.7.0)只做了认证,`roles` 字段已存但不检查。B 阶段把授权做掉。
+- **架构决定(先说清,免得选错层)**:检查放在 **wire 边界**,不是 `Database` 门面里。
+  理由:嵌入式(CLI/C ABI)打开文件 = 拥有文件,天然全权限;把权限塞进 `Database`
+  会逼着每个调用方都传一个「假装有权限」的上下文,是假安全。服务端每条命令在
+  分发前过一遍 `authorize`,这层就是「数据访问层」对 wire 的投影。
+- **角色语义**(MongoDB 词汇,单库架构下精确定义,文档如实写):
+
+  | 角色 | 读数据 | 写数据 | 索引/集合管理 | 账号管理 |
+  |---|---|---|---|---|
+  | `read` | ✅ | ❌ | ❌ | ❌ |
+  | `readWrite` | ✅ | ✅ | ❌ | ❌ |
+  | `dbAdmin` | ❌ | ❌ | ✅ | ❌ |
+  | `userAdmin` | ❌ | ❌ | ❌ | ✅ |
+  | `dbOwner` | ✅ | ✅ | ✅ | ✅ |
+  | `root` | ✅ | ✅ | ✅ | ✅ |
+
+  角色里的 `db` 字段只作记录(单库架构),不按库隔离。未知角色名报错(MongoDB 语义)。
+- **命令 → 动作映射**:`find/aggregate/count/distinct/explain/getMore/killCursors/
+  listCollections/listIndexes/listDatabases` → Read;`insert/update/delete/findAndModify`
+  → Write;`createIndexes/dropIndexes/drop/dropDatabase/create` → Admin;
+  `createUser/updateUser/dropUser/usersInfo` → UserAdmin。
+- **三个真实旁路(A 阶段没堵的,这次一起修)**:
+  1. `distinct admin.system.users credentials` → 把密码摘要当普通字段值返回 → **拒绝**;
+  2. `aggregate` 在 `admin.system.users` 上跑管道 → 同上 → **拒绝**;
+  3. `$lookup: {from: "admin.system.users"}` → join 出凭据 → **拒绝**(普通集合无此限)。
+  `find` 不受影响(已在响应前剥 `credentials`;游标里存的也是剥后的文档,
+  `getMore` 天然安全)。`count` 无泄漏,放行。
+- **usersInfo 规则**:查自己永远放行;查别人要 `userAdmin`/`root`。
+- **`createUser` 接受 `roles` 参数**(此前被忽略,建的永远是 readWrite);
+  `updateUser` 支持改 `roles`。`connectionStatus` 返回真实角色。
+- 不做:字段级/行级权限(应用职责)、`$out`/`$merge`(未实现,无从查)、
+  每集合独立角色(MongoDB 也没有,只有用户级)。
+
+### 86. 2026.11.16 执行:B 阶段 —— 角色下沉
+
+- **角色与动作**:`Role { role, db }` + `Action { Read, Write, Admin, UserAdmin }`,
+  `Role::grants` 是唯一的授权真相源(6 个内置角色,未知角色解析期报错)。
+- **检查位置:wire 边界**(`dispatch` 的 ③),不进 `Database` 门面 ——
+  嵌入式打开文件就是全权限,往里塞权限上下文是假安全。
+  `ConnState` 从「用户名」升级为 `Option<AuthContext>`(用户名 + 角色),
+  SCRAM 成功后连角色一起装入。
+- **命令 → 动作**:`command_action(lower)` 单点映射;noauth 模式下 `allows()` 恒真,
+  所以首账号创建不受影响。
+- **一个真实漏洞(被 Go 测试打出来的)**:`createUser` / `updateUser` / `dropUser` 在
+  dispatch 的「认证命令」提前返回分支里,**跳过了 ③ 的角色检查** ——
+  于是 `readWrite` 账号也能给自己建号。修法:这三个函数内部各加一道
+  `state.allows(Action::UserAdmin)`。**教训:把命令在 dispatch 里提前 return 时,
+  必须逐条重新过一遍权限闸,不能假设后面的统一检查还管得到它。**
+- **三个凭据读旁路(一并堵死)**:
+  - `distinct admin.system.users credentials` → 拒绝;
+  - `aggregate` 直接打在 `admin.system.users` 上 → 拒绝;
+  - `$lookup` / `$unionWith` 指向 `admin.system.users` → 拒绝
+    (`deny_credential_leak` 递归扫管道,含 `$facet` 子管道);
+  - `find` 不变(响应前剥 `credentials`,游标里存的也是剥后文档,`getMore` 天然安全)。
+- **usersInfo**:查自己永远放行,查别人要 `userAdmin`/`root`(比命令级闸更细一层)。
+- **又一个真实缺陷(CLI 冒烟抓到)**:未知角色名只校验在 wire 的 `parse_roles` 里,
+  CLI `.user add <name> superuser` 直接构造 `Role` 绕过了解析层 —— `superuser` 被静默写进库,
+  而它不授予任何权限(等于建了个废账号,且不报错)。
+  修法:把校验放进 `UserStore::create`/`update`(`validate_roles`),所有入口一起覆盖。
+  **教训:校验要放在「所有调用路径都会经过」的最内层,而不是某一个解析入口。**
+- **createUser 的 `roles` 生效了**(A 阶段被忽略,永远建成 readWrite),
+  `updateUser` 支持只改密码 / 只改角色,MongoDB 的字符串简写 `roles: ["read"]` 也接受。
+- CLI:`.user add <name> [role]`;`connectionStatus` 返回真实角色。
+- 测试:**630 例全绿**(`tests/auth.rs` +4:角色矩阵、未知角色解析报错、上下文与「看自己」规则、
+  未知角色在存储层被拒);
+  真实驱动:**Go 9 项 + Node 8 项带角色验收全过**
+  (只读账号写/建索引被拒、readWrite 建号被拒、userAdmin 建号与看别人通过、
+  `$lookup` 与 `distinct`/`aggregate` 读凭据被拒、`find` 放行且已脱敏);
+  clippy `-D warnings` 零警告。
+- 文档:`site/guide/auth.md` 新增「角色与权限」(含动作覆盖面、未授权报错示例、
+  `db` 字段只作记录、明确不做行级/字段级);系统集合保护补上 `distinct`/`aggregate`/`$lookup` 三条。
+
 ## Agents
 
 ### 规范
@@ -1778,6 +1853,7 @@
 | `find` 全量延迟 | 7.3–8.8 µs/条 | 不劣化 | 8.25 µs/条(macOS)/1.19(Linux) | ✅ |
 
 #### 已完成
+- 2026.11.16:**角色授权(B 阶段)** —— 6 个内置角色 + 命令级授权检查 + 凭据旁路全堵;Go 9 项 / Node 8 项验收;629 例全绿。
 - 2026.11.16:**账号认证(SCRAM-SHA-256)** —— 真实集合 `admin.system.users` + 保留命名空间 `admin` + wire `saslStart/saslContinue` + `createUser/updateUser/dropUser/usersInfo` + CLI `.user`;真实 Go/Node 驱动带账号验收通过;626 例全绿。
 - 2026.11.16:`.compact` 压缩(CLI + `nodblite_compact` C ABI)+ `tests/compact.rs`;确认不做加密(指引 OS 级全盘加密)。
 - 2026.11.16:聚合 `$unwind/$lookup/$facet/$bucket/$replaceRoot/$count/$unset` + 9 个累加器;查询 `$expr/$mod/$regex $options`;更新 `$bit` + 数组位置运算符 `$[]`/`$[id]`;新增共用表达式求值器。
@@ -1838,6 +1914,12 @@
   写「JSON ↔ 二进制」两向映射时,必须两个方向都写测试,否则单向支持会以「卡住」这种最难查的方式暴露。
 - **`ping` / `hello` 是免认证命令**:MongoDB 允许未认证连接探活(驱动与监控依赖),
   真正的闸门在数据命令上。所以「未认证连接必须失败」这个直觉是错的 —— 要断言的是「不能读写」。
+- **在 dispatch 里提前 `return` 的命令会绕过后面统一的权限检查**:`createUser`/`updateUser`/`dropUser`
+  在「认证命令」分支里直接 return,结果 `readWrite` 账号也能建号 —— 被 Go 测试抓到。
+  凡是在统一闸之前 return 的命令,都要自己再过一遍权限闸。
+- **凭据泄漏不止 `find` 一条路**:`distinct` 能把字段值当普通返回值带走,
+  `$lookup` 能把别的集合 join 进结果。保护「某个集合不许读」时,要枚举**所有**能触达该集合的命令,
+  而不是只拦 `find`。
 - **SCRAM 的硬证据只有一种**:用 RFC 7677 官方测试向量。自己写服务端再自己写客户端对拍,
   两边错在同一处也照样「通过」。真实驱动验收同理 —— Go/Node 各跑一遍才知道协议齐不齐。
 

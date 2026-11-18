@@ -93,8 +93,8 @@ pub enum ShellCommand {
 pub enum UserOp {
     /// `.user`(无参)或 `.user list`:列出账号(不含密码摘要)。
     List,
-    /// `.user add <name>`:创建账号(密码取自 `NODBLITE_PASSWORD` 或交互输入)。
-    Add(String),
+    /// `.user add <name> [role]`:创建账号(密码取自 `NODBLITE_PASSWORD` 或交互输入)。
+    Add(String, Option<String>),
     /// `.user drop <name>`:删除账号。
     Drop(String),
     /// `.user passwd <name>`:重设密码(忘记密码时的逃生通道)。
@@ -267,7 +267,10 @@ pub fn parse_shell(args: &[String]) -> Result<ShellCommand, String> {
         [cmd] if cmd == ".user" => Ok(ShellCommand::User(UserOp::List)),
         [cmd, sub] if cmd == ".user" && sub == "list" => Ok(ShellCommand::User(UserOp::List)),
         [cmd, sub, name] if cmd == ".user" && sub == "add" => {
-            Ok(ShellCommand::User(UserOp::Add(name.to_string())))
+            Ok(ShellCommand::User(UserOp::Add(name.to_string(), None)))
+        }
+        [cmd, sub, name, role] if cmd == ".user" && sub == "add" => {
+            Ok(ShellCommand::User(UserOp::Add(name.to_string(), Some(role.clone()))))
         }
         [cmd, sub, name] if cmd == ".user" && (sub == "drop" || sub == "del") => {
             Ok(ShellCommand::User(UserOp::Drop(name.to_string())))
@@ -1002,7 +1005,7 @@ fn exec_import(db: &Database, collection: &str, path: &str) -> ExitCode {
 /// 密码来源:`NODBLITE_PASSWORD` 环境变量优先,否则交互式读取。
 /// 命令行参数里不放密码 —— `ps` 能看到进程参数。
 fn exec_user(db: &Database, op: UserOp) -> ExitCode {
-    use crate::auth::UserStore;
+    use crate::auth::{Role, UserStore};
     let store = UserStore::new(db);
     match op {
         UserOp::List => {
@@ -1027,11 +1030,18 @@ fn exec_user(db: &Database, op: UserOp) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        UserOp::Add(name) => {
+        UserOp::Add(name, role) => {
             let Some(pwd) = read_password(&name) else {
                 return ExitCode::FAILURE;
             };
-            match store.create(&name, &pwd) {
+            // 显式指定角色(给了就照给,第一个账号也不再自动升 root)
+            let roles = role.map(|r| {
+                vec![Role {
+                    role: r,
+                    db: "admin".to_string(),
+                }]
+            });
+            match store.create(&name, &pwd, roles) {
                 Ok(()) => {
                     println!("账号 `{}` 已创建(此后连接需认证)", name);
                     ExitCode::SUCCESS
@@ -1063,7 +1073,7 @@ fn exec_user(db: &Database, op: UserOp) -> ExitCode {
             let Some(pwd) = read_password(&name) else {
                 return ExitCode::FAILURE;
             };
-            match store.set_password(&name, &pwd) {
+            match store.update(&name, Some(&pwd), None) {
                 Ok(()) => {
                     println!("账号 `{}` 密码已更新", name);
                     ExitCode::SUCCESS
@@ -1229,7 +1239,7 @@ fn print_shell_help() {
     println!();
     println!("账号(库内有账号后,wire 连接需认证):");
     println!("  .user                                 列出账号");
-    println!("  .user add <name>                      创建账号(密码取 NODBLITE_PASSWORD 或交互输入)");
+    println!("  .user add <name> [role]               创建账号(密码取 NODBLITE_PASSWORD 或交互输入)");
     println!("  .user passwd <name>                   重设密码(忘记密码的逃生通道)");
     println!("  .user drop <name>                     删除账号");
     println!("  .help                                 显示本帮助");

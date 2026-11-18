@@ -65,3 +65,97 @@ test('createUser / usersInfo / dropUser 走 wire', async () => {
     await client.close();
   }
 });
+
+// ---------- B 阶段:角色授权 ----------
+
+/** 用 root 建指定角色的账号,返回带账号密码的连接串。 */
+async function createUserWithRole(uri, user, pwd, role) {
+  const root = await connect(uri);
+  try {
+    const admin = root.db('admin');
+    await admin.command({ dropUser: user }).catch(() => {});
+    await admin.command({ createUser: user, pwd, roles: [{ role, db: 'admin' }] });
+  } finally {
+    await root.close();
+  }
+  return uri.replace(/:\/\/([^:]+):[^@]*@/, `://${user}:${pwd}@`);
+}
+
+test('只读账号:能读,不能写/建索引', async () => {
+  const viewer = await createUserWithRole(uri, 'node_viewer', 'v_pwd', 'read');
+  const client = await connect(viewer);
+  try {
+    const coll = client.db('nodeauth').collection('items');
+    await assert.rejects(() => coll.insertOne({ n: 1 }));
+    await assert.rejects(() => coll.updateOne({}, { $set: { n: 2 } }));
+    await assert.rejects(() => coll.deleteOne({}));
+    await assert.rejects(() => client.db('nodeauth').command({
+      createIndexes: 'items', indexes: [{ key: { n: 1 }, name: 'n_1' }],
+    }));
+    assert.equal(await coll.countDocuments({}) >= 0, true, '只读账号应能 count');
+  } finally {
+    await client.close();
+  }
+});
+
+test('readWrite 不能建账号;userAdmin 可以', async () => {
+  const rw = await createUserWithRole(uri, 'node_rw', 'rw_pwd', 'readWrite');
+  const c1 = await connect(rw);
+  try {
+    await assert.rejects(() => c1.db('admin').command({
+      createUser: 'nope', pwd: 'x', roles: [],
+    }));
+  } finally {
+    await c1.close();
+  }
+
+  const ua = await createUserWithRole(uri, 'node_ua', 'ua_pwd', 'userAdmin');
+  const c2 = await connect(ua);
+  try {
+    await c2.db('admin').command({ createUser: 'node_temp2', pwd: 't', roles: [] });
+    const info = await c2.db('admin').command({ usersInfo: 'node_viewer' });
+    assert.equal(info.users.length, 1);
+    assert.equal(info.users[0].credentials, undefined, 'usersInfo 不应泄漏 credentials');
+    await c2.db('admin').command({ dropUser: 'node_temp2' });
+  } finally {
+    await c2.close();
+  }
+});
+
+test('$lookup 不得 join 出 admin.system.users 的凭据', async () => {
+  const root = await connect(uri);
+  try {
+    const src = root.db('nodeauth').collection('src');
+    await src.drop().catch(() => {});
+    await src.insertOne({ x: 'a' });
+  } finally {
+    await root.close();
+  }
+  const viewer = await createUserWithRole(uri, 'node_viewer2', 'v2_pwd', 'read');
+  const c = await connect(viewer);
+  try {
+    await assert.rejects(() => c.db('nodeauth').command({
+      aggregate: 'src',
+      pipeline: [{ $lookup: { from: 'admin.system.users', localField: 'x', foreignField: '_id', as: 'u' } }],
+      cursor: {},
+    }));
+  } finally {
+    await c.close();
+  }
+});
+
+test('distinct / aggregate 不得在 admin.system.users 上读凭据;find 已剥掉', async () => {
+  const viewer = await createUserWithRole(uri, 'node_viewer3', 'v3_pwd', 'read');
+  const c = await connect(viewer);
+  try {
+    await assert.rejects(() => c.db('admin').command({ distinct: 'system.users', key: 'credentials' }));
+    await assert.rejects(() => c.db('admin').command({ aggregate: 'system.users', pipeline: [], cursor: {} }));
+    const docs = await c.db('admin').collection('system.users').find({}).toArray();
+    assert.ok(docs.length > 0, 'system.users 应有账号');
+    for (const d of docs) {
+      assert.equal(d.credentials, undefined, 'find 返回不应含 credentials');
+    }
+  } finally {
+    await c.close();
+  }
+});

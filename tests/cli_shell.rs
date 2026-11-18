@@ -285,7 +285,7 @@ fn parse_user_commands() {
     );
     assert_eq!(
         parse_line(".user add alice").unwrap(),
-        ShellCommand::User(UserOp::Add("alice".to_string()))
+        ShellCommand::User(UserOp::Add("alice".to_string(), None))
     );
     assert_eq!(
         parse_line(".user passwd alice").unwrap(),

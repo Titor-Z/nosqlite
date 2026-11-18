@@ -50,7 +50,9 @@ fn start_server_with_user(tag: &str, user: &str, pwd: &str) -> (ServerGuard, Pat
     let db_path = temp_path(tag);
     {
         let db = Database::create(&db_path).expect("建库应成功");
-        UserStore::new(&db).create(user, pwd).expect("建账号应成功");
+        UserStore::new(&db)
+        .create(user, pwd, None)
+        .expect("建账号应成功");
     }
 
     let exe = env!("CARGO_BIN_EXE_nodblite-server");
@@ -119,7 +121,7 @@ fn go_driver_authenticates() {
     );
 
     let out = Command::new("go")
-        .args(["test", "-count=1", "-run", "^TestAuth", "./..."])
+        .args(["test", "-count=1", "-run", "^TestAuth|^TestReadOnly|^TestUserAdmin|^TestLookup|^TestSystemUsers", "./..."])
         .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/go_compat"))
         .env("NOSQLITE_AUTH_URI", &uri)
         .output()

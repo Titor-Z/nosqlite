@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
-use crate::auth::{MECHANISM, USERS_COLLECTION, UserStore};
+use crate::auth::{Action, AuthContext, MECHANISM, USERS_COLLECTION, UserStore};
 use crate::database::{Database, UpsertResult};
 use crate::document::Document;
 use crate::query::{Filter, FindOptions, Projection, SortSpec, Update};
@@ -237,8 +237,8 @@ fn handle_connection(mut stream: TcpStream, db: Arc<Database>) -> std::io::Resul
 ///
 /// 认证是**访问路径**的属性:嵌入式(CLI/C ABI)不认证,只有 wire 连接才有这份状态。
 struct ConnState {
-    /// 已认证的用户名(未认证为 `None`)。
-    user: Option<String>,
+    /// 已认证的身份与角色(未认证为 `None`)。
+    ctx: Option<AuthContext>,
     /// 进行中的 SCRAM 会话(每连接最多一个)。
     scram: Option<ScramServer>,
     /// 数据库当前是否有用户(有则要求认证)。
@@ -250,7 +250,7 @@ struct ConnState {
 impl ConnState {
     fn new(db: &Database) -> Self {
         ConnState {
-            user: None,
+            ctx: None,
             scram: None,
             users_required: UserStore::new(db).has_users(),
         }
@@ -258,7 +258,38 @@ impl ConnState {
 
     /// 是否需要认证且尚未认证。
     fn needs_login(&self) -> bool {
-        self.users_required && self.user.is_none()
+        self.users_required && self.ctx.is_none()
+    }
+
+    /// 当前连接是否拥有某动作的权限(noauth 模式一律放行)。
+    fn allows(&self, action: Action) -> bool {
+        match &self.ctx {
+            None => true,
+            Some(ctx) => ctx.allows(action),
+        }
+    }
+}
+
+/// 生成 `13 Unauthorized` 响应。
+fn unauthorized(action: Action, detail: &str) -> Map<String, Value> {
+    err_doc(
+        13,
+        "Unauthorized",
+        &format!("当前用户没有{}权限: {}", action.describe(), detail),
+    )
+}
+
+/// 命令 → 所需动作(数据命令按角色检查;返回 `None` 表示不做角色检查)。
+///
+/// 注意:这只是**粗粒度**的一道闸。`aggregate` 的 `$lookup`、`explain` 的内层命令、
+/// `getMore` 的游标归属等旁路,在各自的处理函数里另行检查。
+fn command_action(lower: &str) -> Option<Action> {
+    match lower {
+        "find" | "aggregate" | "count" | "distinct" | "explain" | "getmore" | "killcursors"
+        | "listcollections" | "listindexes" | "listdatabases" => Some(Action::Read),
+        "insert" | "update" | "delete" | "findandmodify" => Some(Action::Write),
+        "createindexes" | "dropindexes" | "drop" | "dropdatabase" | "create" => Some(Action::Admin),
+        _ => None,
     }
 }
 
@@ -339,7 +370,7 @@ fn dispatch(
         "saslstart" => return cmd_sasl_start(db, state, cmd),
         "saslcontinue" => return cmd_sasl_continue(db, state, cmd),
         "logout" => {
-            state.user = None;
+            state.ctx = None;
             state.scram = None;
             return ok_doc([]);
         }
@@ -347,13 +378,39 @@ fn dispatch(
         "createuser" => return cmd_create_user(db, state, cmd),
         "updateuser" => return cmd_update_user(db, state, cmd),
         "dropuser" => return cmd_drop_user(db, state, cmd),
-        "usersinfo" => return cmd_users_info(db, cmd),
+        "usersinfo" => return cmd_users_info(db, state, cmd),
         _ => {}
+    }
+
+    // ③ 授权:有账号时,数据命令按角色检查(noauth 模式跳过)
+    if state.users_required && let Some(action) = command_action(&lower) && !state.allows(action) {
+        return unauthorized(action, &format!("命令 `{}`", lower));
+    }
+
+    // ③c `$lookup` / `$unionWith` 旁路:聚合管道可以触达**别的**集合,
+    // 其中指向 `admin.system.users` 的会把凭据 join 进结果,必须堵死。
+    if lower == "aggregate" {
+        if let Some(pipeline) = cmd.get("pipeline") {
+            if let Some(resp) = deny_credential_leak(pipeline) {
+                return resp;
+            }
+        }
     }
 
     // ③ 集合命名空间映射 + 系统集合写保护
     let cmd = &rewrite_collection(cmd, &lower, db_name);
     let coll = collection_name(cmd, &lower);
+
+    // ③b 系统集合的读旁路:`distinct` / `aggregate` 能把 credentials 当普通字段读出来
+    // (`find` 已在响应前剥掉,无需拦;`count` 只回数字,无泄漏)
+    if coll == USERS_COLLECTION && matches!(lower.as_str(), "distinct" | "aggregate") {
+        return err_doc(
+            13,
+            "Unauthorized",
+            "不允许对 admin.system.users 执行 distinct / aggregate,请用 usersInfo 查看账号",
+        );
+    }
+
     if is_system_collection(&coll) {
         const WRITES: &[&str] = &[
             "insert",
@@ -531,7 +588,11 @@ fn cmd_sasl_continue(
     match server.continue_with(&payload) {
         Ok(step) => {
             if step.done {
-                state.user = Some(server.user().to_string());
+                // 连角色一起装进连接状态,后续每条命令按此授权
+                let ctx = UserStore::new(db)
+                    .context(server.user())
+                    .unwrap_or_else(|| AuthContext { user: server.user().to_string(), roles: vec![] });
+                state.ctx = Some(ctx);
             }
             // 认证后刷新「是否需要认证」的缓存(账号可能刚被创建/删除)
             state.users_required = UserStore::new(db).has_users();
@@ -550,29 +611,44 @@ fn cmd_sasl_continue(
 
 /// `connectionStatus`:告知客户端当前身份。
 fn cmd_connection_status(state: &ConnState) -> Map<String, Value> {
-    let users = match &state.user {
-        Some(name) => json!([{"user": name, "db": "admin"}]),
-        None => json!([]),
+    let (users, roles) = match &state.ctx {
+        Some(ctx) => (
+            json!([{"user": ctx.user, "db": "admin"}]),
+            json!(ctx.roles.iter().map(|r| json!({"role": r.role, "db": r.db})).collect::<Vec<_>>()),
+        ),
+        None => (json!([]), json!([])),
     };
     ok_doc([(
         "authInfo",
         json!({
             "authenticatedUsers": users,
-            "authenticatedUserRoles": [],
+            "authenticatedUserRoles": roles,
         }),
     )])
 }
 
 /// `createUser`:`{createUser: "alice", pwd: "...", roles: [...]}`
 fn cmd_create_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
+    // 账号管理命令也要过角色闸(noauth 模式 state.allows 恒真,不影响首账号创建)
+    if !state.allows(Action::UserAdmin) {
+        return unauthorized(Action::UserAdmin, "createUser");
+    }
     let Some(name) = cmd.get("createUser").and_then(|v| v.as_str()) else {
         return err_doc(2, "BadValue", "createUser 需要用户名");
     };
     let Some(pwd) = cmd.get("pwd").and_then(|v| v.as_str()) else {
         return err_doc(2, "BadValue", "createUser 需要 pwd(不接受空密码)");
     };
+    // roles 可省(默认:首账号 root,其余 readWrite);给了就必须全部是内置角色
+    let given = match cmd.get("roles") {
+        Some(v) => match crate::auth::parse_roles(v) {
+            Ok(r) => Some(r),
+            Err(e) => return err_doc(2, "BadValue", &e),
+        },
+        None => None,
+    };
     let store = UserStore::new(db);
-    match store.create(name, pwd) {
+    match store.create(name, pwd, given) {
         Ok(()) => {
             state.users_required = true;
             ok_doc([])
@@ -583,14 +659,26 @@ fn cmd_create_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value
 
 /// `updateUser`:目前支持改密码(`{updateUser: "alice", pwd: "新密码"}`)。
 fn cmd_update_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
+    // 账号管理命令也要过角色闸(noauth 模式 state.allows 恒真,不影响首账号创建)
+    if !state.allows(Action::UserAdmin) {
+        return unauthorized(Action::UserAdmin, "updateUser");
+    }
     let Some(name) = cmd.get("updateUser").and_then(|v| v.as_str()) else {
         return err_doc(2, "BadValue", "updateUser 需要用户名");
     };
-    let Some(pwd) = cmd.get("pwd").and_then(|v| v.as_str()) else {
-        return err_doc(2, "BadValue", "updateUser 目前只支持改密码(需要 pwd)");
+    let pwd = cmd.get("pwd").and_then(|v| v.as_str());
+    let given = match cmd.get("roles") {
+        Some(v) => match crate::auth::parse_roles(v) {
+            Ok(r) => Some(r),
+            Err(e) => return err_doc(2, "BadValue", &e),
+        },
+        None => None,
     };
+    if pwd.is_none() && given.is_none() {
+        return err_doc(2, "BadValue", "updateUser 需要 pwd 或 roles 至少一项");
+    }
     let store = UserStore::new(db);
-    match store.set_password(name, pwd) {
+    match store.update(name, pwd, given) {
         Ok(()) => {
             state.users_required = store.has_users();
             ok_doc([])
@@ -601,6 +689,10 @@ fn cmd_update_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value
 
 /// `dropUser`:`{dropUser: "alice"}`
 fn cmd_drop_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
+    // 账号管理命令也要过角色闸(noauth 模式 state.allows 恒真,不影响首账号创建)
+    if !state.allows(Action::UserAdmin) {
+        return unauthorized(Action::UserAdmin, "dropUser");
+    }
     let Some(name) = cmd.get("dropUser").and_then(|v| v.as_str()) else {
         return err_doc(2, "BadValue", "dropUser 需要用户名");
     };
@@ -616,7 +708,10 @@ fn cmd_drop_user(db: &Database, state: &mut ConnState, cmd: &Map<String, Value>)
 }
 
 /// `usersInfo`:返回账号信息(**已剥掉 `credentials`**)。
-fn cmd_users_info(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> {
+///
+/// 权限:查自己永远放行;查别人需要 `userAdmin`/`root`(在 dispatch 的
+/// UserAdmin 检查之后,这里再细分到「是不是本人」)。
+fn cmd_users_info(db: &Database, state: &ConnState, cmd: &Map<String, Value>) -> Map<String, Value> {
     let all = UserStore::new(db).list();
     // `{usersInfo: 1}` / `{usersInfo: "alice"}` / `{usersInfo: {user: "alice", db: "admin"}}`
     let asked = match cmd.get("usersInfo") {
@@ -624,6 +719,14 @@ fn cmd_users_info(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value>
         Some(Value::Object(m)) => m.get("user").and_then(|v| v.as_str()).map(str::to_string),
         _ => None,
     };
+    // 查别人(或不加过滤)需要 userAdmin;查自己不需要
+    let need_admin = match &asked {
+        Some(name) => state.ctx.as_ref().is_none_or(|c| !c.can_see_user(name)),
+        None => state.ctx.is_none(),
+    };
+    if need_admin {
+        return unauthorized(Action::UserAdmin, "usersInfo 查看其他账号");
+    }
     let users: Vec<Value> = all
         .into_iter()
         .filter(|doc| match &asked {
@@ -1488,6 +1591,47 @@ fn cmd_aggregate(db: &Database, cmd: &Map<String, Value>) -> Map<String, Value> 
         }
         Err(e) => err_doc(e.code, "BadValue", &e.message),
     }
+}
+
+/// 扫描聚合管道,拒绝任何指向 `admin.system.users` 的 `$lookup` / `$unionWith`。
+///
+/// 角色只能管「读不读数据」,管不了「读哪个系统集合」—— 凭据对任何角色都不可 join。
+/// `$facet` 的子管道递归检查。
+fn deny_credential_leak(pipeline: &Value) -> Option<Map<String, Value>> {
+    let stages = pipeline.as_array()?;
+    for stage in stages {
+        let Some(map) = stage.as_object() else { continue };
+        for (key, val) in map {
+            match key.as_str() {
+                "$lookup" | "$unionWith" => {
+                    let target = val
+                        .get("from")
+                        .or_else(|| val.get("coll"))
+                        .and_then(|v| v.as_str())
+                        .or_else(|| val.as_str())
+                        .unwrap_or("");
+                    if target == USERS_COLLECTION {
+                        return Some(err_doc(
+                            13,
+                            "Unauthorized",
+                            "不允许通过 $lookup / $unionWith 读取 admin.system.users(凭据)",
+                        ));
+                    }
+                }
+                "$facet" => {
+                    if let Some(subs) = val.as_object() {
+                        for sub in subs.values() {
+                            if let Some(resp) = deny_credential_leak(sub) {
+                                return Some(resp);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// `explain`:`{explain: {find: "coll", filter: {...}, sort: {...}}}`

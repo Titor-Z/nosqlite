@@ -2,6 +2,35 @@
 
 版本号采用语义版本。完整设计与决策记录见 [AGENTS.md](./AGENTS.md) 的 `taolun` 章节。
 
+## [0.7.1] - 2026-11-16
+
+角色授权:认证之后补上授权,按 MongoDB 的 6 个内置角色做集合级权限。
+
+### 角色
+- `read` / `readWrite` / `dbAdmin` / `userAdmin` / `dbOwner` / `root`,
+  未知角色名解析期报错;
+- 检查落在 **wire 边界**(嵌入式/CLI 仍不认证 —— 能打开文件就是全权限);
+- `createUser` 的 `roles` 参数真正生效(此前被忽略,一律建成 `readWrite`);
+  `updateUser` 支持只改密码或只改角色;`roles: ["read"]` 字符串简写也接受;
+- `usersInfo` 加细规则:查自己永远可以,查别人要 `userAdmin` / `root`;
+- `connectionStatus` 返回真实角色。
+
+### 安全修复
+- 三个凭据读旁路被堵死:`distinct admin.system.users credentials`、
+  `aggregate` 直接打在 `admin.system.users`、`$lookup` / `$unionWith` 指向它
+  (`$facet` 子管道递归检查);`find` 保持放行但响应前剥掉 `credentials`;
+- 修掉「账号管理命令绕过角色闸」—— `createUser` / `updateUser` / `dropUser`
+  在 dispatch 的认证命令分支提前返回,跳过了统一权限检查,导致 `readWrite` 账号也能建号;
+- 修掉「未知角色被静默写进库」—— 校验只做在 wire 解析层,CLI `.user add <name> superuser`
+  绕过了它;现改在 `UserStore` 层校验,所有入口一起覆盖。
+
+### 测试
+- 630 例 Rust 全绿;真实驱动:Go 9 项、Node 8 项带角色验收(只读账号写/建索引被拒、
+  readWrite 建号被拒、userAdmin 建号与看别人通过、`$lookup`/`distinct`/`aggregate`
+  读凭据被拒)。
+
+参见 AGENTS.md taolun #85–#86。
+
 ## [0.7.0] - 2026-11-16
 
 聚合 / 查询 / 更新语义补齐、文件压缩、账号认证(SCRAM-SHA-256)。

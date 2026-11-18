@@ -141,6 +141,148 @@ impl Credential {
     }
 }
 
+/// 内置角色(用 MongoDB 的词汇表;单库架构下语义如下,见 [`AuthContext`])。
+pub const BUILTIN_ROLES: &[&str] = &[
+    "read",
+    "readWrite",
+    "dbAdmin",
+    "userAdmin",
+    "dbOwner",
+    "root",
+];
+
+/// 授权检查要判定的动作类别。
+///
+/// 不做更细的粒度:字段级 / 行级权限永远是应用的职责(MongoDB 也一样)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// 读数据与元数据(find / aggregate / count / distinct / explain / getMore …)。
+    Read,
+    /// 写数据(insert / update / delete / findAndModify)。
+    Write,
+    /// 集合与索引管理(createIndexes / drop / dropDatabase …)。
+    Admin,
+    /// 账号管理(createUser / dropUser / usersInfo …)。
+    UserAdmin,
+}
+
+impl Action {
+    /// 用于错误信息的中文名。
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Action::Read => "读取",
+            Action::Write => "写入",
+            Action::Admin => "管理(索引/集合)",
+            Action::UserAdmin => "管理账号",
+        }
+    }
+}
+
+/// 一个角色条目,形状与 MongoDB 的用户文档一致:`{role, db}`。
+///
+/// `db` 在我们的单库架构下只作记录,不影响授权范围。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Role {
+    pub role: String,
+    pub db: String,
+}
+
+impl Role {
+    /// 从 `{"role": "...", "db": "..."}` 还原。
+    pub fn from_json(v: &Value) -> Option<Self> {
+        let m = v.as_object()?;
+        Some(Role {
+            role: m.get("role")?.as_str()?.to_string(),
+            db: m
+                .get("db")
+                .and_then(|v| v.as_str())
+                .unwrap_or("admin")
+                .to_string(),
+        })
+    }
+
+    /// 该角色授予哪些动作。
+    pub fn grants(&self, action: Action) -> bool {
+        match self.role.as_str() {
+            "root" | "dbOwner" => true,
+            "readWrite" => matches!(action, Action::Read | Action::Write),
+            "read" => matches!(action, Action::Read),
+            "dbAdmin" => matches!(action, Action::Admin),
+            "userAdmin" => matches!(action, Action::UserAdmin),
+            // 未知角色名不应走到这里(`parse_roles` 会先报错),此处兜底为不授权
+            _ => false,
+        }
+    }
+}
+
+/// 解析 `roles` 数组;未知角色名报错(MongoDB 语义:角色必须先存在)。
+pub fn parse_roles(v: &Value) -> Result<Vec<Role>, String> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| "roles 必须是数组".to_string())?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        // MongoDB 允许字符串简写:`roles: ["readWrite"]`(db 缺省为 admin)
+        let (role, db) = match item {
+            Value::String(s) => (s.clone(), "admin".to_string()),
+            Value::Object(m) => (
+                m.get("role")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "角色项缺少 role 字段".to_string())?
+                    .to_string(),
+                m.get("db")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("admin")
+                    .to_string(),
+            ),
+            _ => return Err("roles 每一项必须是 {role, db} 对象或角色名字符串".to_string()),
+        };
+        if !BUILTIN_ROLES.contains(&role.as_str()) {
+            return Err(format!("未知角色: {}(内置:{})", role, BUILTIN_ROLES.join(", ")));
+        }
+        out.push(Role { role, db });
+    }
+    Ok(out)
+}
+
+/// 校验角色名全是内置角色。
+///
+/// 放在 `UserStore` 里而不是只放在 wire 解析层 —— CLI 的 `.user add <name> <role>`
+/// 直接构造 `Role`,不经过 `parse_roles`,遗漏会让未知角色被静默写进库。
+fn validate_roles(roles: &[Role]) -> Result<(), String> {
+    for r in roles {
+        if !BUILTIN_ROLES.contains(&r.role.as_str()) {
+            return Err(format!(
+                "未知角色: {}(内置:{})",
+                r.role,
+                BUILTIN_ROLES.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 认证通过后的身份与角色(每条连接一份,随认证结果装入 `ConnState`)。
+#[derive(Debug, Clone)]
+pub struct AuthContext {
+    /// 用户名。
+    pub user: String,
+    /// 角色列表。
+    pub roles: Vec<Role>,
+}
+
+impl AuthContext {
+    /// 是否拥有某动作的权限(任一角色授予即可)。
+    pub fn allows(&self, action: Action) -> bool {
+        self.roles.iter().any(|r| r.grants(action))
+    }
+
+    /// 能否看指定用户的资料:自己永远可以,看别人要 `userAdmin`/`root`。
+    pub fn can_see_user(&self, name: &str) -> bool {
+        name == self.user || self.allows(Action::UserAdmin)
+    }
+}
+
 /// 用户文档的 `_id`:MongoDB 用 `<db>.<user>`,我们只有 admin。
 pub fn user_id(name: &str) -> String {
     format!("admin.{}", name)
@@ -179,8 +321,23 @@ impl<'a> UserStore<'a> {
         docs.into_iter().map(strip_secrets).collect()
     }
 
-    /// 创建用户。已存在时返回错误(用 [`Self::set_password`] 改密码)。
-    pub fn create(&self, name: &str, password: &str) -> Result<(), String> {
+    /// 取认证上下文(用户名 + 角色);用户不存在返回 `None`。
+    pub fn context(&self, name: &str) -> Option<AuthContext> {
+        let doc = self.db.get_by_id(USERS_COLLECTION, &user_id(name)).ok()??;
+        let roles = parse_roles(doc.get("roles")?).ok()?;
+        Some(AuthContext {
+            user: name.to_string(),
+            roles,
+        })
+    }
+
+    /// 创建用户,角色由调用方指定(`None` = 默认:首账号 `root`,其余 `readWrite`)。
+    pub fn create(
+        &self,
+        name: &str,
+        password: &str,
+        roles: Option<Vec<Role>>,
+    ) -> Result<(), String> {
         validate_name(name)?;
         if self.credential(name).is_some()
             || self
@@ -191,13 +348,23 @@ impl<'a> UserStore<'a> {
         {
             return Err(format!("用户已存在: {}", name));
         }
+        let roles = roles.unwrap_or_else(|| default_roles(!self.has_users()));
+        validate_roles(&roles)?;
         let cred = Credential::from_password(password);
-        self.write_user(name, &cred)
+        self.write_user(name, &cred, &roles)
     }
 
-    /// 重设密码(用户不存在则报错)。
-    pub fn set_password(&self, name: &str, password: &str) -> Result<(), String> {
+    /// 改密码 / 改角色(至少给一项;`None` 表示不修改该项)。
+    pub fn update(
+        &self,
+        name: &str,
+        password: Option<&str>,
+        roles: Option<Vec<Role>>,
+    ) -> Result<(), String> {
         validate_name(name)?;
+        if password.is_none() && roles.is_none() {
+            return Err("updateUser 需要 pwd 或 roles 至少一项".to_string());
+        }
         if self
             .db
             .get_by_id(USERS_COLLECTION, &user_id(name))
@@ -206,8 +373,17 @@ impl<'a> UserStore<'a> {
         {
             return Err(format!("用户不存在: {}", name));
         }
-        let cred = Credential::from_password(password);
-        self.write_user(name, &cred)
+        let cred = match password {
+            Some(pwd) => Credential::from_password(pwd),
+            None => self.credential(name).expect("上面已确认用户存在"),
+        };
+        let roles = roles.unwrap_or_else(|| {
+            self.context(name)
+                .map(|c| c.roles)
+                .unwrap_or_else(|| default_roles(false))
+        });
+        validate_roles(&roles)?;
+        self.write_user(name, &cred, &roles)
     }
 
     /// 删除用户,返回是否真的删掉了。
@@ -217,13 +393,17 @@ impl<'a> UserStore<'a> {
             .map_err(|e| e.to_string())
     }
 
-    /// 写入(覆盖)用户文档。第一个用户自动获得 `root` 角色。
-    fn write_user(&self, name: &str, cred: &Credential) -> Result<(), String> {
-        let roles = if self.has_users() {
-            json!([{"role": "readWrite", "db": "admin"}])
-        } else {
-            json!([{"role": "root", "db": "admin"}])
-        };
+    /// 写入(覆盖)用户文档。
+    fn write_user(
+        &self,
+        name: &str,
+        cred: &Credential,
+        roles: &[Role],
+    ) -> Result<(), String> {
+        let roles = json!(roles
+            .iter()
+            .map(|r| json!({"role": r.role, "db": r.db}))
+            .collect::<Vec<_>>());
         let fields = json!({
             "user": name,
             "db": "admin",
@@ -266,6 +446,14 @@ impl<'a> UserStore<'a> {
 pub fn strip_secrets(mut doc: Map<String, Value>) -> Map<String, Value> {
     doc.remove("credentials");
     doc
+}
+
+/// 默认角色:库里还没有任何账号时第一个账号给 `root`,否则 `readWrite`。
+fn default_roles(first_user: bool) -> Vec<Role> {
+    vec![Role {
+        role: (if first_user { "root" } else { "readWrite" }).to_string(),
+        db: "admin".to_string(),
+    }]
 }
 
 /// 用户名合法性(与 MongoDB 一致:非空、不含空格与 `$`、不以 `.` 结尾)。
