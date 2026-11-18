@@ -114,6 +114,10 @@ export function loadBindings(libPath = resolveLibPath()) {
     update: fn(
       'void *nodblite_update(void *db, const char *coll, const char *filter, const char *upd)',
     ),
+    updateArrayFilters: fn(
+      'void *nodblite_update_array_filters(void *db, const char *coll, ' +
+        'const char *filter, const char *upd, const char *array_filters)',
+    ),
     delete: fn('void *nodblite_delete(void *db, const char *coll, const char *filter)'),
     upsert: fn(
       'void *nodblite_upsert(void *db, const char *coll, const char *filter, const char *upd)',

@@ -118,6 +118,16 @@ const rows = db.aggregate('orders', [
 `$replaceRoot` / `$replaceWith`。累加器:`$sum` `$avg` `$min` `$max` `$first`
 `$last` `$push` `$addToSet` `$count`。
 
+跨集合 join:
+
+```js
+db.aggregate('books', [
+  { $lookup: { from: 'authors', localField: 'authorId', foreignField: '_id', as: 'author' } },
+  { $unwind: '$author' },
+  { $project: { title: 1, 'author.name': 1 } },
+]);
+```
+
 未实现的阶段会**明确抛错**,不会静默返回空结果。
 
 ## 集合与运维
@@ -157,14 +167,23 @@ db.update<User>('users', {}, { $inc: { age: 'x' } }); // ❌ 类型错误
 
 ## 支持的查询操作符
 
-`$eq` `$ne` `$gt` `$gte` `$lt` `$lte` `$in` `$nin` `$regex`
-`$exists` `$type` `$all` `$size` `$elemMatch`
-`$and` `$or` `$nor` `$not`
+比较:`$eq` `$ne` `$gt` `$gte` `$lt` `$lte` `$in` `$nin` `$regex`(支持 `$options`: `i`/`m`/`s`/`x`)
+
+数组/类型:`$exists` `$type` `$all` `$size` `$elemMatch`
+
+逻辑:`$and` `$or` `$nor` `$not`(可字段级)
+
+表达式:`$expr`(配合 `$gt` `$eq` `$multiply` `$add` `$cond` `$ifNull` 等 25 个表达式操作符,
+用于「字段之间」比较)
+
+取模:`$mod`
 
 ## 支持的更新操作符
 
-`$set` `$unset` `$inc` `$mul` `$min` `$max` `$rename`
-`$push` `$addToSet` `$pull` `$pop` `$currentDate`
+`$set` `$setOnInsert` `$unset` `$inc` `$mul` `$min` `$max` `$rename`
+`$push` `$addToSet` `$pull` `$pop` `$currentDate` `$bit`
+
+数组位置运算符:`$[]`(全部元素)、`$[id]`(经 `arrayFilters` 过滤的元素)
 
 ## 资源管理
 

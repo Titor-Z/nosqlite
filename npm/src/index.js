@@ -235,8 +235,30 @@ export class Database {
     return JSON.parse(r.value);
   }
 
-  /** 更新,返回实际修改条数。 */
-  update(collection, filter, update) {
+  /**
+   * 更新,返回实际修改条数。
+   *
+   * `opts.arrayFilters` 用于 `$[id]` 位置运算符(与 MongoDB 同名同语义):
+   * ```js
+   * db.update('users', {}, { $inc: { 'items.$[e].qty': 1 } }, {
+   *   arrayFilters: [{ 'e.qty': { $lt: 100 } }],
+   * });
+   * ```
+   */
+  update(collection, filter, update, opts = {}) {
+    const filters = opts.arrayFilters;
+    if (filters !== undefined) {
+      if (!Array.isArray(filters)) throw new TypeError('arrayFilters 需要数组');
+      return this.#call(
+        this.#f.updateArrayFilters(
+          this.#db,
+          collection,
+          JSON.stringify(filter),
+          JSON.stringify(update),
+          JSON.stringify(filters),
+        ),
+      ).affected;
+    }
     return this.#call(
       this.#f.update(this.#db, collection, JSON.stringify(filter), JSON.stringify(update)),
     ).affected;

@@ -176,6 +176,13 @@ NodbliteResult *nodblite_get(NodbliteDb *db, const char *collection, const char 
 /* 更新匹配文档。affected = 实际修改条数。 */
 NodbliteResult *nodblite_update(NodbliteDb *db, const char *collection,
                                 const char *filter_json, const char *update_json);
+/*
+ * 带 arrayFilters 的更新(支持 $[id] 位置运算符)。
+ * array_filters_json 为 JSON 数组,如 [{"e.x": {"$gt": 5}}],对应更新里的 $[e]。
+ */
+NodbliteResult *nodblite_update_array_filters(NodbliteDb *db, const char *collection,
+                                             const char *filter_json, const char *update_json,
+                                             const char *array_filters_json);
 
 /* 更新或插入。value = {"inserted":"<id>"} 或 {"updated":N}。 */
 NodbliteResult *nodblite_upsert(NodbliteDb *db, const char *collection,

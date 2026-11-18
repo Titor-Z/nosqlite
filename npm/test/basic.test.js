@@ -238,3 +238,106 @@ test('compact 压缩文件', () => {
   db.close();
   if (existsSync(DB)) unlinkSync(DB);
 });
+
+test('$lookup 跨集合 join', () => {
+  const db = fresh();
+  db.insertMany('authors', [
+    { _id: 'a1', name: '张三', country: 'CN' },
+    { _id: 'a2', name: 'Bob', country: 'US' },
+  ]);
+  db.insertMany('books', [
+    { _id: 'b1', title: '书一', authorId: 'a1' },
+    { _id: 'b2', title: '书二', authorId: 'a1' },
+    { _id: 'b3', title: '书三', authorId: 'a2' },
+  ]);
+
+  const rows = db.aggregate('books', [
+    {
+      $lookup: {
+        from: 'authors',
+        localField: 'authorId',
+        foreignField: '_id',
+        as: 'author',
+      },
+    },
+    { $unwind: '$author' },
+    { $sort: { _id: 1 } },
+  ]);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].author.name, '张三');
+  assert.equal(rows[2].author.country, 'US');
+
+  // $facet 里也能跑(子管道递归)
+  const [facet] = db.aggregate('books', [
+    {
+      $facet: {
+        left: [{ $match: { authorId: 'a1' } }, { $count: 'n' }],
+        right: [{ $match: { authorId: 'a2' } }, { $count: 'n' }],
+      },
+    },
+  ]);
+  assert.equal(facet.left[0].n, 2);
+  assert.equal(facet.right[0].n, 1);
+
+  db.close();
+  if (existsSync(DB)) unlinkSync(DB);
+});
+
+test('$expr / $mod / $regex $options', () => {
+  const db = fresh();
+  db.insertMany('products', [
+    { _id: 'p1', price: 10, cost: 4, name: 'Apple' },
+    { _id: 'p2', price: 20, cost: 15, name: 'banana' },
+    { _id: 'p3', price: 30, cost: 10, name: 'Cherry' },
+  ]);
+
+  // 字段间比较
+  const profitable = db.find('products', {
+    $expr: { $gt: ['$price', { $multiply: ['$cost', 2] }] },
+  });
+  assert.deepEqual(profitable.map((d) => d._id), ['p1', 'p3']);
+
+  // 取模
+  const even = db.find('products', { price: { $mod: [20, 0] } });
+  assert.deepEqual(even.map((d) => d._id), ['p2']);
+
+  // 正则 + 大小写不敏感
+  const matched = db.find('products', { name: { $regex: '^a', $options: 'i' } });
+  assert.deepEqual(matched.map((d) => d._id), ['p1']);
+
+  db.close();
+  if (existsSync(DB)) unlinkSync(DB);
+});
+
+test('$bit 与 $[id] 位置运算符(arrayFilters)', () => {
+  const db = fresh();
+  db.insert('flags', { _id: 'f1', mask: 6 });
+
+  db.update('flags', { _id: 'f1' }, { $bit: { mask: { and: 3 } } });
+  assert.equal(db.get('flags', 'f1').mask, 2);
+
+  db.insert('cart', {
+    _id: 'c1',
+    items: [
+      { sku: 'a', qty: 1 },
+      { sku: 'b', qty: 5 },
+      { sku: 'a', qty: 3 },
+    ],
+  });
+  // 只加 qty < 4 的元素
+  const n = db.update(
+    'cart',
+    { _id: 'c1' },
+    { $inc: { 'items.$[e].qty': 1 } },
+    { arrayFilters: [{ 'e.qty': { $lt: 4 } }] },
+  );
+  assert.equal(n, 1);
+  const doc = db.get('cart', 'c1');
+  assert.deepEqual(doc.items.map((i) => i.qty), [2, 5, 4]);
+
+  // 不存在的占位符必须报错,不能静默无操作
+  assert.throws(() => db.update('cart', {}, { $inc: { 'items.$[ghost].qty': 1 } }));
+
+  db.close();
+  if (existsSync(DB)) unlinkSync(DB);
+});

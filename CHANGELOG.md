@@ -28,7 +28,12 @@
 - 补上三个此前有 C ABI 却没暴露的接口:`aggregate`(聚合管道)、`dropCollection`、
   `compact`(文件压缩)—— 绑定 + 封装 + 类型声明 + README + 测试一起补齐;
 - 嵌入模式不暴露账号/角色(能打开文件即全权限),README 写明该场景用 `nodblite-server`;
-- npm 测试 15 项全过,`tsc -p tsconfig.json` 通过。
+- 新增 C ABI `nodblite_update_array_filters` —— `$[id]` 位置运算符需要 `arrayFilters`,
+  而原 `nodblite_update` 签名里没有该参数,导致**嵌入模式用不了 `$[id]`**;
+  npm 侧暴露为 `update(collection, filter, update, { arrayFilters })`;
+- README 操作符清单补全(`$expr`/`$mod`/`$regex $options`/`$bit`/`$[]`/`$[id]`/`$setOnInsert`)
+  并加 `$lookup` 示例;
+- npm 测试 18 项全过(含 `$lookup` 跨集合、`$expr`、`$[id]`+arrayFilters),`tsc` 通过。
 
 ### 测试
 - 630 例 Rust 全绿;真实驱动:Go 9 项、Node 8 项带角色验收(只读账号写/建索引被拒、

@@ -848,6 +848,74 @@ pub unsafe extern "C" fn nodblite_update(
     unsafe { update_or_delete(db, collection, filter_json, update_json, true) }
 }
 
+/// 带 `arrayFilters` 的更新(支持 `$[id]` 位置运算符)。
+///
+/// `array_filters_json` 是 JSON 数组,如 `[{"e.x": {"$gt": 5}}]`,
+/// 对应更新里的 `$[e]`。既有的 `nodblite_update` 不带此参数(等价于空数组),
+/// 保持签名不变 —— ABI 演进靠新增函数,不改老函数。
+///
+/// # Safety
+///
+/// 指针参数须合法;返回值须用 [`nodblite_result_free`] 释放。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodblite_update_array_filters(
+    db: *mut NodbliteDb,
+    collection: *const c_char,
+    filter_json: *const c_char,
+    update_json: *const c_char,
+    array_filters_json: *const c_char,
+) -> *mut NodbliteResult {
+    let op = "update_array_filters";
+    let Some(db) = (unsafe { db.as_ref() }) else {
+        return err_result(set_error_msg(op, ErrorCode::Internal, "数据库句柄为空"));
+    };
+    let Some(coll) = (unsafe { read_str(collection, op, "collection") }) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+    let filter = match parse_filter(op, unsafe { opt_str(filter_json) }.as_deref()) {
+        Ok(f) => f,
+        Err(code) => return err_result(code),
+    };
+    let Some(text) = (unsafe { read_str(update_json, op, "update_json") }) else {
+        return err_result(LAST_CODE.with(|c| c.get().as_i32()));
+    };
+    // arrayFilters 与 update 一起解析:占位符必须先有定义
+    let raw = unsafe { opt_str(array_filters_json) }.unwrap_or_else(|| "[]".to_string());
+    let filters: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return err_result(set_error_msg(
+                op,
+                ErrorCode::InvalidUpdate,
+                &format!("arrayFilters 不是合法 JSON: {}", e),
+            ));
+        }
+    };
+    let Some(arr) = filters.as_array() else {
+        return err_result(set_error_msg(
+            op,
+            ErrorCode::InvalidUpdate,
+            "arrayFilters 必须是 JSON 数组",
+        ));
+    };
+    let update = match serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|e| e.to_string())
+        .and_then(|v| {
+            crate::query::Update::from_value_with_filters(&v, arr).map_err(|e| e.to_string())
+        }) {
+        Ok(u) => u,
+        Err(e) => return err_result(set_error_msg(op, ErrorCode::InvalidUpdate, &e)),
+    };
+    match db.inner.update(&coll, &filter, &update) {
+        Ok(n) => {
+            let r = unsafe { &mut *ok_empty() };
+            r.affected = n as u64;
+            r as *mut NodbliteResult
+        }
+        Err(e) => err_result(set_error(op, &e)),
+    }
+}
+
 /// 删除匹配文档,`affected` 为删除条数。
 ///
 /// # Safety

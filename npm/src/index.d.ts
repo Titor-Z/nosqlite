@@ -281,11 +281,16 @@ export class Database {
   /** 批量插入(单事务),返回 `_id` 数组。 */
   insertMany<T extends object>(collection: string, docs: T[]): string[];
 
-  /** 更新,返回实际修改条数。 */
+  /**
+   * 更新,返回实际修改条数。
+   *
+   * `opts.arrayFilters` 用于 `$[id]` 位置运算符(与 MongoDB 同名同语义)。
+   */
   update<T = Record<string, unknown>>(
     collection: string,
     filter: Filter<T>,
     update: Update<T>,
+    opts?: { arrayFilters?: Record<string, unknown>[] },
   ): number;
 
   /** 删除,返回删除条数。 */

@@ -1775,8 +1775,13 @@
   `aggregate`(聚合管道)、`dropCollection`(删除整集合)、`compact`(文件压缩)——
   `bindings.js` 签名 + `index.js` 封装 + `index.d.ts` 类型 + README + 测试一起补。
   嵌入模式**不暴露账号/角色**(能打开文件就是全权限),README 写明该用 `nodblite-server`。
-  npm 测试 15 项全过(新增聚合 `$group`/`$unwind`、`dropCollection`、`compact` 压缩断言),
+  npm 测试 18 项全过(新增聚合 `$group`/`$unwind`、`dropCollection`、`compact` 压缩断言、
+  `$lookup` 跨集合、`$expr`/`$mod`/`$regex $options`、`$bit` + `$[id]`),
   `tsc -p tsconfig.json` 通过。
+- **又一处 ABI 缺口**:`$[id]` 位置运算符需要 `arrayFilters`,而 `nodblite_update`
+  的签名里没有这个参数 —— **嵌入模式根本用不了 `$[id]`**。新增
+  `nodblite_update_array_filters`(不改老函数签名,ABI 演进靠新增),npm 侧
+  `update(collection, filter, update, { arrayFilters })`。
 - 文档:`site/guide/auth.md` 新增「角色与权限」(含动作覆盖面、未授权报错示例、
   `db` 字段只作记录、明确不做行级/字段级);系统集合保护补上 `distinct`/`aggregate`/`$lookup` 三条。
 
