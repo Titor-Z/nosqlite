@@ -1778,6 +1778,16 @@
   npm 测试 18 项全过(新增聚合 `$group`/`$unwind`、`dropCollection`、`compact` 压缩断言、
   `$lookup` 跨集合、`$expr`/`$mod`/`$regex $options`、`$bit` + `$[id]`),
   `tsc -p tsconfig.json` 通过。
+- **第三处同类漂移:wasm 宿主与 studio**(`web/nodblite.js`、`studio-ui/src/lib/nodblite.js`)。
+  新增测试 `js_hosts_cover_all_c_abi_functions` 后立刻抓出 `web/nodblite.js` 缺 6 个:
+  `find_page`/`upsert`/`explain`/`create_index_composite`/`find_cursor`/`cursor_next`(及 close)。
+  全部补上(游标用 `readCStr` 读 NUL 结尾字符串);studio 不用流式游标,进 STUDIO_SKIP 并写理由。
+  - **wasm 的 `uint64_t` 参数必须传 BigInt** —— `findPage`/`cursor` 传 Number 会报
+    `Cannot convert 0 to a BigInt`(老代码 `find` 里已有 `BigInt(...)`,新写时漏了)。
+  - 顺手对齐返回形态:wasm `findPage` 与 npm 一致为 `{ total, items }`,
+    其中 `total` 取 C ABI 的 **`affected`**(`count` 是当页条数,容易取错)。
+  - `web/smoke.mjs` 扩到 **22 项**(新增 findPage/upsert/aggregate/explain/复合索引/游标/dropCollection)。
+  - `npm/test/basic.test.js` 的库路径改为按 `pid+时间戳` 唯一 —— 原来固定 `/tmp/...`,并行跑会互相踩。
 - **加了防漂移测试** `npm_bindings_cover_all_c_abi_functions`(`tests/c_api.rs`):
   从 `include/nodblite.h` 抽出全部 `nodblite_*` 函数名,与 `npm/src/bindings.js`
   里声明的逐个比对;有意不暴露的 9 个(malloc/free/open_ex/exec/find_cursor/bulk_*)

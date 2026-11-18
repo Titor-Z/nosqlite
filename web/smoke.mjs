@@ -129,12 +129,63 @@ try {
     assert.throws(() => db.find('users', { n: { $badOp: 1 } }));
   });
 
+  // ---------- v0.7.x 新增能力(此前 wasm 宿主漏绑,这里锁死) ----------
+  check('findPage 返回总数与当页', () => {
+    const page = db.findPage('users', {}, { sort: { n: 1 }, limit: 2 });
+    assert.equal(page.total, 5);
+    assert.equal(page.items.length, 2);
+    // 按 n 升序:缺 n 的(张三)排最前,其后是 n=1
+    assert.equal(typeof page.items[1].n, 'number');
+  });
+
+  check('upsert 未命中则插入', () => {
+    const r = db.upsert('users', { name: '新来的' }, { $set: { n: 99 } });
+    assert.ok(r.inserted, `应返回 inserted,实际 ${JSON.stringify(r)}`);
+  });
+
+  check('aggregate 聚合管道', () => {
+    const rows = db.aggregate('users', [
+      { $group: { _id: null, total: { $sum: '$n' } } },
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(typeof rows[0].total, 'number');
+  });
+
+  check('explain 返回计划', () => {
+    const plan = db.explain('users', {});
+    assert.ok(plan && plan.stage, `应有 stage,实际 ${JSON.stringify(plan)}`);
+  });
+
+  check('复合索引 + 列表', () => {
+    db.createIndexComposite('users', 'n_name', ['n', 'name']);
+    const names = db.listIndexes('users').map((i) => i.name);
+    assert.ok(names.includes('n_name'), `索引应存在,实际 ${JSON.stringify(names)}`);
+  });
+
+  check('游标逐条遍历', () => {
+    const cur = db.cursor('users', {}, { sort: { n: 1 } });
+    let seen = 0;
+    let doc;
+    while ((doc = cur.next()) !== null) {
+      assert.ok(doc && typeof doc._id === 'string', '每条都应有 _id');
+      seen += 1;
+    }
+    assert.ok(seen >= 5, `应遍历至少 5 条,实际 ${seen}`);
+    cur.close();
+  });
+
+  check('dropCollection 返回条数', () => {
+    db.insertMany('tmp_coll', [{ a: 1 }, { a: 2 }]);
+    assert.equal(db.dropCollection('tmp_coll'), 2);
+    assert.ok(!db.listCollections().includes('tmp_coll'));
+  });
+
   db.close();
 
   // ---------- 持久化:重开后数据仍在 ----------
   const ex2 = await loadWasm({ wasmPath, preopens: { '/data': hostDir } });
   const db2 = openDb(ex2, '/data/smoke.nodb', false);
-  check('重开后数据持久化', () => assert.equal(db2.count('users'), 5));
+  check('重开后数据持久化', () => assert.equal(db2.count('users'), 6));
   db2.close();
 
   console.log(`\nWASM smoke: ALL PASSED (${passed} checks)`);

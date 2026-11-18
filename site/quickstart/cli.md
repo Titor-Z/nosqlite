@@ -23,6 +23,7 @@ nodblite app.nodb
 | `.import <集合> <文件>` | 导入(JSONL 或 JSON 数组,单事务) |
 | `.stats` | 显示文件与集合统计 |
 | `.compact` | 压缩文件,归还空闲页(需要独占访问) |
+| `.user` / `.user add <名字> [角色]` / `.user passwd` / `.user drop` | 账号管理,见 [账号与认证](../guide/auth.md) |
 | `.help` | 帮助 |
 | `.quit` / `.exit` | 退出 |
 
@@ -69,6 +70,37 @@ nodblite> .quit
 ```
 
 > `.import` 支持 JSON Lines 和 JSON 数组两种格式。整批在**一个事务**内完成,失败整体回滚。
+
+## 账号管理 {#users}
+
+库内**没有账号时不做认证**;建第一个账号即开启(只影响此后新建的连接)。
+
+```text
+nodblite> .user add admin
+请输入账号 `admin` 的密码(注:交互输入会回显;脚本请用 NODBLITE_PASSWORD):
+nodblite> 账号 `admin` 已创建(此后连接需认证)
+nodblite> .user
+  admin                    root
+```
+
+脚本里用环境变量传密码(命令行参数会被 `ps` 看到):
+
+```bash
+NODBLITE_PASSWORD=xxxx nodblite <<'EOF'
+.open app.nodb
+.user add admin
+EOF
+```
+
+| 命令 | 作用 |
+|---|---|
+| `.user` | 列出账号与角色 |
+| `.user add <名字> [角色]` | 创建账号(默认首账号 `root`,其余 `readWrite`) |
+| `.user passwd <名字>` | 重设密码(**忘记密码的逃生通道**) |
+| `.user drop <名字>` | 删除账号 |
+
+角色:`read` / `readWrite` / `dbAdmin` / `userAdmin` / `dbOwner` / `root`,
+语义见 [账号与认证](../guide/auth.md#角色与权限)。
 
 ## 文件压缩 {#compact}
 

@@ -10,7 +10,8 @@ import { existsSync, statSync, unlinkSync } from 'node:fs';
 const statSize = (p) => statSync(p).size;
 import { Database, Errors } from '../src/index.js';
 
-const DB = '/tmp/nodblite_npm_test.nodb';
+// 每次运行用独立路径:否则并行跑(或上一次残留)会互相踩
+const DB = `/tmp/nodblite_npm_test_${process.pid}_${Date.now()}.nodb`;
 
 function fresh() {
   if (existsSync(DB)) unlinkSync(DB);

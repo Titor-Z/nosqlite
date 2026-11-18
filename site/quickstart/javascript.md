@@ -126,6 +126,41 @@ db.explain('users', { age: { $gte: 18 } }, { age: -1 });
 
 单字段索引传字符串,复合索引传字段数组;`{ unique, sparse }` 可选。索引语义与选型见[索引](/guide/indexes)。
 
+### 聚合
+
+```js
+db.aggregate('orders', [
+  { $match: { status: 'paid' } },
+  { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+  { $unwind: '$user' },
+  { $group: { _id: '$user.city', total: { $sum: '$amount' } } },
+  { $sort: { total: -1 } },
+  { $limit: 10 },
+]);
+```
+
+支持的阶段与累加器见[聚合](/guide/aggregate)。未实现的阶段会**明确抛错**,不会静默返回空。
+
+### 数组位置运算符
+
+`$[id]` 需要 `arrayFilters`(与 MongoDB 同名同语义):
+
+```js
+db.update('users', { _id: 'u1' },
+  { $inc: { 'items.$[e].qty': 1 } },
+  { arrayFilters: [{ 'e.qty': { $lt: 100 } }] });
+```
+
+### 集合与运维
+
+```js
+db.collections();              // ['users', 'orders']
+db.dropCollection('orders');   // 返回删除的文档条数
+
+// 删除数据不会让文件变小(空闲页供后续写入复用),需要时手动压缩
+db.compact();
+```
+
 ---
 
 ## 错误处理

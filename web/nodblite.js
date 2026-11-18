@@ -149,6 +149,15 @@ function readString(exports, ptr, len) {
   return new TextDecoder().decode(new Uint8Array(exports.memory.buffer, ptr, len));
 }
 
+/** 读 wasm 线性内存里的 NUL 结尾 UTF-8 字符串(游标用)。 */
+function readCStr(exports, ptr) {
+  const mem = new Uint8Array(exports.memory.buffer);
+  let end = ptr;
+  // 逐字节找结尾,顺带上限保护,避免死循环
+  while (end < mem.length && mem[end] !== 0) end += 1;
+  return new TextDecoder().decode(mem.subarray(ptr, end));
+}
+
 /**
  * 解码一个 NodbliteResult* 并释放它(arena 语义:只 free 一次)。
  *
@@ -342,12 +351,59 @@ export class NodbliteDb {
     return r.docs.map((d) => JSON.parse(d));
   }
 
+  /**
+   * 分页查询:一次扫描同时返回「匹配总数」与当页文档。
+   *
+   * 返回形态与 npm 包一致:`{ total, items }`。
+   *
+   * @returns {{total: number, items: object[]}}
+   */
+  findPage(collection, filter = {}, { sort = null, fields = null, skip = 0, limit = null } = {}) {
+    const r = this.#call(
+      this.exports.nodblite_find_page,
+      collection,
+      [
+        JSON.stringify(filter),
+        sort ? JSON.stringify(sort) : null,
+        fields ? JSON.stringify(fields) : null,
+      ],
+      [BigInt(skip), BigInt(limit ?? 0), limit === null ? 1 : 0],
+    );
+    // C ABI 里 `affected` 放的是匹配总数,`count` 是当页条数
+    return { total: r.affected, items: r.docs.map((d) => JSON.parse(d)) };
+  }
+
   get(collection, id) {
     const r = this.#call(this.exports.nodblite_get, collection, [id]);
     return r.value ? JSON.parse(r.value) : null;
   }
 
-  update(collection, filter, update) {
+  /**
+   * 更新或插入。
+   *
+   * @returns {{updated: number} | {inserted: string}}
+   */
+  upsert(collection, filter, update) {
+    const r = this.#call(this.exports.nodblite_upsert, collection, [
+      JSON.stringify(filter),
+      JSON.stringify(update),
+    ]);
+    return r.value ? JSON.parse(r.value) : null;
+  }
+
+  /**
+   * 更新,返回实际修改条数。
+   *
+   * `opts.arrayFilters` 用于 `$[id]` 位置运算符(与 MongoDB 同名同语义)。
+   */
+  update(collection, filter, update, opts = {}) {
+    if (opts.arrayFilters !== undefined) {
+      return this.#call(this.exports.nodblite_update_array_filters, collection, [
+        JSON.stringify(filter),
+        JSON.stringify(update),
+        JSON.stringify(opts.arrayFilters),
+      ]).affected;
+    }
     return this.#call(this.exports.nodblite_update, collection, [
       JSON.stringify(filter),
       JSON.stringify(update),
@@ -379,6 +435,32 @@ export class NodbliteDb {
     return r.docs.map((d) => JSON.parse(d));
   }
 
+  /** 删除整个集合(含文档与索引),返回删除的文档条数。 */
+  dropCollection(collection) {
+    return this.#call(this.exports.nodblite_drop_collection, collection).affected;
+  }
+
+  /**
+   * 执行聚合管道。
+   *
+   * @param {string} collection
+   * @param {object[]} pipeline
+   * @returns {object[]}
+   */
+  aggregate(collection, pipeline) {
+    if (!Array.isArray(pipeline)) throw new TypeError('aggregate 需要 pipeline 数组');
+    const r = this.#call(this.exports.nodblite_aggregate, collection, [
+      JSON.stringify(pipeline),
+    ]);
+    return r.docs.map((d) => JSON.parse(d));
+  }
+
+  /** 压缩数据库文件(把空闲页还给文件系统)。需要独占访问。 */
+  compact() {
+    this.#call(this.exports.nodblite_compact, null);
+    return true;
+  }
+
   exec(command) {
     const r = this.#call(this.exports.nodblite_exec, null, [JSON.stringify(command)]);
     return r;
@@ -401,6 +483,39 @@ export class NodbliteDb {
     );
   }
 
+  /**
+   * 创建复合索引(遵循 MongoDB 前缀原则)。
+   *
+   * @param {string} collection
+   * @param {string} name
+   * @param {string[]} fields 字段路径列表
+   * @param {number[]} [directions] 1 升序 / -1 降序,缺省全 1
+   * @param {{unique?: boolean, sparse?: boolean}} [opts]
+   */
+  createIndexComposite(
+    collection,
+    name,
+    fields,
+    directions = fields.map(() => 1),
+    { unique = false, sparse = false } = {},
+  ) {
+    this.#call(
+      this.exports.nodblite_create_index_composite,
+      collection,
+      [name, JSON.stringify(fields), JSON.stringify(directions)],
+      [unique ? 1 : 0, sparse ? 1 : 0],
+    );
+  }
+
+  /** 查看查询计划。 */
+  explain(collection, filter = {}, sort = null) {
+    const r = this.#call(this.exports.nodblite_explain, collection, [
+      JSON.stringify(filter),
+      sort ? JSON.stringify(sort) : null,
+    ]);
+    return r.value ? JSON.parse(r.value) : null;
+  }
+
   /** 列出集合的索引定义。C ABI 把 JSON 数组放在 `value` 里。 */
   listIndexes(collection) {
     const r = this.#call(this.exports.nodblite_list_indexes, collection);
@@ -410,6 +525,67 @@ export class NodbliteDb {
   /** 删除索引。 */
   dropIndex(collection, name) {
     this.#call(this.exports.nodblite_drop_index, collection, [name]);
+  }
+
+  /**
+   * 流式游标:逐条取,内存 O(批大小)。
+   *
+   * ```js
+   * const cur = db.cursor('big', {}, { sort: { n: 1 } });
+   * let doc;
+   * while ((doc = cur.next())) console.log(doc);
+   * cur.close();
+   * ```
+   *
+   * @returns {{next: () => object | null, close: () => void}}
+   */
+  cursor(collection, filter = {}, { sort = null, fields = null, skip = 0, limit = null } = {}) {
+    const coll = allocString(this.exports, collection);
+    const strs = [
+      JSON.stringify(filter),
+      sort ? JSON.stringify(sort) : null,
+      fields ? JSON.stringify(fields) : null,
+    ].map((t) => (t === null ? null : allocString(this.exports, t)));
+    let curPtr;
+    try {
+      curPtr = this.exports.nodblite_find_cursor(
+        this.handle,
+        coll.ptr,
+        ...strs.map((a) => (a === null ? 0 : a.ptr)),
+        BigInt(skip),
+        BigInt(limit ?? 0),
+        limit === null ? 1 : 0,
+      );
+    } finally {
+      freeString(this.exports, coll);
+      for (const a of strs) if (a !== null) this.exports.nodblite_free(a.ptr, a.len);
+    }
+    if (!curPtr) {
+      const err = lastError(this.exports);
+      const e = new Error(err?.message ?? '创建游标失败');
+      e.code = -1;
+      throw e;
+    }
+
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      this.exports.nodblite_cursor_close(curPtr);
+    };
+    return {
+      next: () => {
+        if (closed) return null;
+        const ptr = this.exports.nodblite_cursor_next(curPtr);
+        const text = ptr ? readCStr(this.exports, ptr) : null;
+        if (text === null) {
+          close();
+          return null;
+        }
+        return JSON.parse(text);
+      },
+      close,
+    };
   }
 
   close() {

@@ -35,6 +35,19 @@
   并加 `$lookup` 示例;
 - npm 测试 18 项全过(含 `$lookup` 跨集合、`$expr`、`$[id]`+arrayFilters),`tsc` 通过。
 
+### wasm 与 studio
+- `web/nodblite.js` 补上 `findPage` / `upsert` / `explain` / 复合索引 / 流式游标 /
+  `dropCollection` / `compact`,并支持 `update(..., { arrayFilters })` —— 这些在 C 端早就有,
+  JS 宿主一直漏(浏览器里调用会直接报 `undefined`);
+- wasm 冒烟扩到 **22 项**;studio 的 wasm 封装同步补 `compact` 与 `arrayFilters`。
+
+### 文档
+- `site/reference/compatibility.md`「服务端能力」由「无认证」改为实测事实:
+  SCRAM-SHA-256 + 6 个内置角色,并列出仍未支持项(SCRAM-SHA-1、行级权限、TLS 等);
+- `site/quickstart/cli.md` 新增 `.user` 章节;
+- `site/quickstart/javascript.md` 新增聚合、`$[id]`+arrayFilters、集合与运维小节;
+- `site/quickstart/wasm.md` 修正「findPage/explain/复合索引/upsert 没有封装」的过期说明。
+
 ### 防漂移
 - 新增测试 `npm_bindings_cover_all_c_abi_functions`:头文件里每个 `nodblite_*` 必须被
   `npm/src/bindings.js` 绑定,或进入带理由的 SKIP 清单;反向校验 SKIP 不腐化。

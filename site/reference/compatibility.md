@@ -166,8 +166,16 @@ await db.collection('orders').find({ snowflake: '1234567890123456789' })
 - 规划器是**纯规则匹配**,没有区分度估算(小集合或低选择率时可能不选索引)
 
 ### 服务端能力
-- 无认证、无副本集、无分片、无 change stream
-- 无 schema validation
+已支持:SCRAM-SHA-256 认证、6 个内置角色(`read`/`readWrite`/`dbAdmin`/`userAdmin`/
+`dbOwner`/`root`,集合级授权)、`createUser`/`updateUser`/`dropUser`/`usersInfo`。
+
+未支持:SCRAM-SHA-1 / MONGODB-CR、行级与字段级权限、副本集、分片、change stream、
+`local` / `config` 库、schema validation、TLS(请置于受信网络或反向代理之后)
+
+::: tip 认证只保护网络
+嵌入式(Rust / C ABI / CLI)打开文件时**不做认证** —— 能读文件字节就等于拥有全部数据。
+文件本身的保护靠 OS 权限与全盘加密。详见 [账号与认证](../guide/auth.md)。
+:::
 
 ### upsert 的限制
 
@@ -195,7 +203,8 @@ Prisma 的可插入面只有 **SQL 方言**与 **wire 协议**两处,`provider` 
 文档模型的 ORM 首选是 Mongoose。
 :::
 
-已实现命令:`hello`/`ping`/`insert`/`find`/`update`/`delete`/`findAndModify`/`count`/`distinct`/`aggregate`/`explain`/`createIndexes`/`listIndexes`/`dropIndexes`/`listCollections`/`listDatabases`/`drop`/`dropDatabase`/`buildInfo`/`endSessions`/`getMore`/`killCursors`
+已实现命令:`hello`/`ping`/`insert`/`find`/`update`/`delete`/`findAndModify`/`count`/`distinct`/`aggregate`/`explain`/`createIndexes`/`listIndexes`/`dropIndexes`/`listCollections`/`listDatabases`/`drop`/`dropDatabase`/`buildInfo`/`endSessions`/`getMore`/`killCursors`,
+以及认证与账号管理:`saslStart`/`saslContinue`/`logout`/`connectionStatus`/`createUser`/`updateUser`/`dropUser`/`usersInfo`
 
 ---
 

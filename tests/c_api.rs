@@ -271,3 +271,77 @@ fn npm_bindings_cover_all_c_abi_functions() {
         );
     }
 }
+
+/// wasm 宿主(`web/nodblite.js`)与 studio(`studio-ui/src/lib/nodblite.js`)同样要跟头文件。
+///
+/// 这两处比 npm 更容易漂:它们在 JS 里手写 `this.exports.nodblite_xxx`,
+/// 没有类型系统帮忙,漏了就是运行时报 `undefined is not a function`。
+#[test]
+fn js_hosts_cover_all_c_abi_functions() {
+    use std::collections::BTreeSet;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let header = std::fs::read_to_string(root.join("include/nodblite.h")).expect("应能读头文件");
+
+    let names = |text: &str| -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while let Some(pos) = text[i..].find("nodblite_") {
+            let start = i + pos;
+            let mut end = start + "nodblite_".len();
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            out.insert(text[start..end].to_string());
+            i = end.max(start + 1);
+        }
+        out
+    };
+    let in_header = names(&header);
+
+    // wasm 宿主与 studio 只用到「数据 + 账号无关」的那部分:
+    // 它们跑在浏览器里,本身就是从本地文件拿到的句柄,拿不到也不该有网络权限。
+    const HOST_SKIP: &[(&str, &str)] = &[
+        ("nodblite_malloc", "宿主通过 Node WASI 自己分配字符串,不用导出"),
+        ("nodblite_free", "同上"),
+        ("nodblite_open_ex", "未使用版本化 options"),
+        ("nodblite_exec", "studio 用专用方法"),
+        ("nodblite_bulk_begin", "studio 用 insertMany"),
+        ("nodblite_bulk_add", "同上"),
+        ("nodblite_bulk_commit", "同上"),
+        ("nodblite_bulk_abort", "同上"),
+        ("nodblite_last_error_code", "用 nodblite_last_error 取结构化错误"),
+        ("nodblite_last_error", "由 readResult/lastError 内部封装,不算缺失"),
+    ];
+
+    // studio 只在应用内按页取数,不做流式遍历,因此不绑游标
+    const STUDIO_SKIP: &[(&str, &str)] = &[
+        ("nodblite_find_cursor", "studio 用 find 按页取"),
+        ("nodblite_cursor_next", "同上"),
+        ("nodblite_cursor_close", "同上"),
+    ];
+
+    for rel in ["web/nodblite.js", "studio-ui/src/lib/nodblite.js"] {
+        let text = std::fs::read_to_string(root.join(rel)).expect("应能读 JS 宿主");
+        let host = names(&text);
+        let missing: Vec<&String> = in_header
+            .iter()
+            .filter(|n| !host.contains(*n))
+            .filter(|n| !HOST_SKIP.iter().any(|(s, _)| s == &n.as_str()))
+            .filter(|n| !(rel.starts_with("studio-ui") && STUDIO_SKIP.iter().any(|(s, _)| s == &n.as_str())))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} 缺少绑定的 C ABI 函数: {:?}\n\
+             这些函数在浏览器里调用会直接报 undefined。若是有意不暴露,请加入 HOST_SKIP。",
+            rel,
+            missing
+        );
+    }
+}

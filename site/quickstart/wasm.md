@@ -122,7 +122,13 @@ const out = fs.getFile('app.nodb');
 | `exec(command)` | 原始命令兜底 |
 | `close()` | 关闭 |
 
-与 npm 包的差异:`findPage`(一次扫描给总数+当页)、`explain`、复合索引、`upsert` **没有**封装。需要时用 `exec()` 兜底,或走 [wire 协议](/quickstart/wire)。
+与 npm 包的差异:只有 `exec()` 兜底入口不同;数据面方法(`find` / `findPage` / `get` /
+`insert` / `insertMany` / `bulkInsert` / `update`(含 `arrayFilters`)/ `upsert` /
+`delete` / `count` / `aggregate` / `explain` / 索引 / `cursor` 流式游标 /
+`dropCollection` / `compact`)全部对齐。
+
+> 浏览器里没有账号体系 —— wasm 宿主拿到的就是本地文件句柄,认证这层的意义在网络边界,
+> 见 [账号与认证](/guide/auth)。
 
 每次调用失败都会抛 `Error`,带 `code`(数字)与 `codeStr`(稳定错误码)。
 

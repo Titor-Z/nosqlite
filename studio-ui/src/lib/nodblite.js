@@ -169,7 +169,19 @@ export class NodbliteDb {
     return { total: r.affected, docs: r.docs.map((d) => JSON.parse(d)) };
   }
 
-  update(collection, filter, update) {
+  /**
+   * 更新,返回实际修改条数。
+   *
+   * `opts.arrayFilters` 用于 `$[id]` 位置运算符(与 MongoDB 同名同语义)。
+   */
+  update(collection, filter, update, opts = {}) {
+    if (opts.arrayFilters !== undefined) {
+      return this.#call(this.exports.nodblite_update_array_filters, collection, [
+        JSON.stringify(filter),
+        JSON.stringify(update),
+        JSON.stringify(opts.arrayFilters),
+      ]).affected;
+    }
     return this.#call(this.exports.nodblite_update, collection, [
       JSON.stringify(filter),
       JSON.stringify(update),
@@ -242,6 +254,12 @@ export class NodbliteDb {
       sort ? JSON.stringify(sort) : null,
     ]);
     return r.value ? JSON.parse(r.value) : null;
+  }
+
+  /** 压缩数据库文件(把空闲页还给文件系统)。studio 内为内存文件系统,主要是保持一致。 */
+  compact() {
+    this.#call(this.exports.nodblite_compact, null);
+    return true;
   }
 
   close() {
